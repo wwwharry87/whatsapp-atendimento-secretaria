@@ -4,8 +4,13 @@ import { handleCitizenMessage, handleAgentMessage } from "../services/sessionSer
 import { MensagemTipo } from "../entities/Mensagem";
 import { AppDataSource } from "../database/data-source";
 import { Departamento } from "../entities/Departamento";
+import { Usuario } from "../entities/Usuario";
 
 const router = Router();
+
+function normalizePhone(num: string): string {
+  return num.replace(/\D/g, "");
+}
 
 // Verificação do webhook (GET)
 router.get("/", (req: Request, res: Response) => {
@@ -22,21 +27,48 @@ router.get("/", (req: Request, res: Response) => {
   }
 });
 
-// Função auxiliar: verifica no BANCO se o número é de um responsável de departamento
+// Verifica no BANCO se o número é de um agente
 async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
-  const normalized = whatsappNumber.replace(/\D/g, "");
+  const normalized = normalizePhone(whatsappNumber);
+  const last11 = normalized.slice(-11); // celular BR (DDD + número)
 
-  const repo = AppDataSource.getRepository(Departamento);
+  const depRepo = AppDataSource.getRepository(Departamento);
+  const userRepo = AppDataSource.getRepository(Usuario);
 
-  const departamento = await repo
+  // 1) Verifica se é responsável de algum departamento
+  const dep = await depRepo
     .createQueryBuilder("d")
     .where(
-      "regexp_replace(coalesce(d.responsavelNumero, ''), '\\D', '', 'g') = :num",
-      { num: normalized }
+      "regexp_replace(coalesce(d.responsavelNumero, ''), '\\D', '', 'g') LIKE :last11",
+      { last11: `%${last11}` }
     )
     .getOne();
 
-  return !!departamento;
+  if (dep) {
+    console.log(
+      `Número ${whatsappNumber} reconhecido como AGENTE via Departamento (${dep.nome})`
+    );
+    return true;
+  }
+
+  // 2) Verifica se é um usuário cadastrado com telefone_whatsapp
+  const usuario = await userRepo
+    .createQueryBuilder("u")
+    .where(
+      "regexp_replace(coalesce(u.telefone_whatsapp, ''), '\\D', '', 'g') LIKE :last11",
+      { last11: `%${last11}` }
+    )
+    .getOne();
+
+  if (usuario) {
+    console.log(
+      `Número ${whatsappNumber} reconhecido como AGENTE via Usuario (${usuario.nome})`
+    );
+    return true;
+  }
+
+  console.log(`Número ${whatsappNumber} NÃO encontrado como agente no banco.`);
+  return false;
 }
 
 // Webhook de mensagens (POST)
@@ -44,7 +76,6 @@ router.post("/", async (req: Request, res: Response) => {
   try {
     const body = req.body;
 
-    // Estrutura padrão do WhatsApp Cloud API
     if (!body || !body.entry || !Array.isArray(body.entry)) {
       return res.sendStatus(200);
     }
@@ -55,7 +86,6 @@ router.post("/", async (req: Request, res: Response) => {
         const value = change.value;
         if (!value) continue;
 
-        // Ignora notificações de status, entrega, etc.
         const messages = value.messages;
         if (!messages || !Array.isArray(messages)) continue;
 
@@ -69,7 +99,6 @@ router.post("/", async (req: Request, res: Response) => {
           let mimeType: string | undefined = undefined;
           let fileName: string | undefined = undefined;
 
-          // Identifica tipo da mensagem
           if (message.type === "text" && message.text) {
             tipo = "TEXT";
             texto = message.text.body;
@@ -93,16 +122,14 @@ router.post("/", async (req: Request, res: Response) => {
             mimeType = message.document.mime_type;
             fileName = message.document.filename;
           } else {
-            // Tipos que não vamos tratar por enquanto (sticker, location, etc.)
-            console.log("Mensagem de tipo não suportado por enquanto:", message.type);
+            console.log("Mensagem de tipo não suportado ainda:", message.type);
             continue;
           }
 
-          // Descobre se é AGENTE ou CIDADÃO
           const isAgent = await isAgentFromDatabase(from);
 
           const incoming = {
-            from,
+            from, // número original do WhatsApp
             text: texto,
             whatsappMessageId: message.id,
             tipo,
@@ -112,17 +139,16 @@ router.post("/", async (req: Request, res: Response) => {
           };
 
           if (isAgent) {
-            console.log("Mensagem de AGENTE:", from, texto);
+            console.log("→ Roteando como AGENTE:", from, texto);
             await handleAgentMessage(incoming);
           } else {
-            console.log("Mensagem de CIDADÃO:", from, texto);
+            console.log("→ Roteando como CIDADÃO:", from, texto);
             await handleCitizenMessage(incoming);
           }
         }
       }
     }
 
-    // WhatsApp espera 200 OK rápido
     res.sendStatus(200);
   } catch (err) {
     console.error("Erro no webhook:", err);
