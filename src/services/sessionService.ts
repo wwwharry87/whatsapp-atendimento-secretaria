@@ -25,7 +25,7 @@ export type Session = {
   atendimentoId: string;
 };
 
-// Mapa em memória (rápido para roteamento em tempo real)
+// mapas em memória para roteamento em tempo real
 const sessionsByCitizen = new Map<string, Session>();
 const sessionsByAgent = new Map<string, Session>();
 
@@ -94,7 +94,7 @@ async function getOrCreateSession(citizenNumber: string): Promise<Session> {
   return session;
 }
 
-// Números de agentes: usa o mapa de sessões (já vinculados)
+// checa se o número é de um agente
 export function isAgentNumber(whatsappNumber: string): boolean {
   const normalized = whatsappNumber.replace(/\D/g, "");
   for (const [agentNumber] of sessionsByAgent.entries()) {
@@ -111,7 +111,40 @@ async function atualizarAtendimento(
   await repo.update(session.atendimentoId, parcial);
 }
 
-// CIDADÃO
+/**
+ * Agenda um lembrete para o agente depois de 2 minutos
+ * apenas se o atendimento ainda estiver em WAITING_AGENT_CONFIRMATION.
+ */
+function scheduleBusyReminder(session: Session) {
+  const agentNumber = session.agentNumber;
+  const atendimentoId = session.atendimentoId;
+
+  if (!agentNumber) return;
+
+  setTimeout(async () => {
+    const current = sessionsByAgent.get(agentNumber);
+    if (!current) return;
+
+    // garante que é o mesmo atendimento e ainda está aguardando confirmação
+    if (
+      current.atendimentoId !== atendimentoId ||
+      current.status !== "WAITING_AGENT_CONFIRMATION"
+    ) {
+      return;
+    }
+
+    await sendTextMessage(
+      agentNumber,
+      `⏰ Você ainda tem um atendimento pendente com *${current.citizenName ?? "um cidadão"}* (${current.citizenNumber}).\n\n` +
+        `Digite:\n` +
+        `1 - Para atender agora\n` +
+        `2 - Para continuar ocupado (lembraremos mais tarde novamente).`
+    );
+  }, 2 * 60 * 1000); // 2 minutos
+}
+
+// ====================== CIDADÃO ======================
+
 export async function handleCitizenMessage(msg: IncomingMessage) {
   const { from, text = "", tipo, whatsappMessageId, mediaId, mimeType, fileName } =
     msg;
@@ -119,7 +152,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   const session = await getOrCreateSession(from);
 
-  // Salvar mensagem recebida (texto, áudio, imagem, etc.)
+  // salva mensagem do cidadão (texto / mídia)
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "CITIZEN",
@@ -280,7 +313,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   sessionsByCitizen.delete(from);
 }
 
-// AGENTE
+// ====================== AGENTE ======================
+
 export async function handleAgentMessage(msg: IncomingMessage) {
   const { from, text = "", whatsappMessageId, tipo, mediaId, mimeType, fileName } =
     msg;
@@ -295,7 +329,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // Salvar mensagem do agente
+  // salva mensagem do agente
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "AGENT",
@@ -340,6 +374,9 @@ export async function handleAgentMessage(msg: IncomingMessage) {
         `O responsável de *${session.departmentName}* está ocupado no momento.\n` +
           `Sua solicitação foi registrada e será atendida assim que possível. ⏳`
       );
+
+      // agenda o lembrete em 2 minutos
+      scheduleBusyReminder(session);
       return;
     }
 
