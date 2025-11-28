@@ -4,6 +4,9 @@ import { env } from "../config/env";
 import { Departamento } from "../entities/Departamento";
 import { Atendimento } from "../entities/Atendimento";
 import { Mensagem } from "../entities/Mensagem";
+import { Usuario } from "../entities/Usuario";
+import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
+import { AtendimentoEvento } from "../entities/AtendimentoEvento";
 
 export const AppDataSource = new DataSource({
   type: "postgres",
@@ -12,9 +15,16 @@ export const AppDataSource = new DataSource({
   username: env.db.username,
   password: env.db.password,
   database: env.db.database,
-  synchronize: true, // em produção depois trocamos para migrations
+  synchronize: true, // depois podemos trocar pra migrations
   logging: false,
-  entities: [Departamento, Atendimento, Mensagem],
+  entities: [
+    Departamento,
+    Atendimento,
+    Mensagem,
+    Usuario,
+    UsuarioDepartamento,
+    AtendimentoEvento
+  ],
   ssl: {
     rejectUnauthorized: false
   }

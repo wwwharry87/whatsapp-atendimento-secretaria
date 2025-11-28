@@ -2,6 +2,7 @@ import express from "express";
 import { env } from "./config/env";
 import webhookRouter from "./routes/webhook";
 import { AppDataSource } from "./database/data-source";
+import atendimentosRouter from "./routes/atendimentos";
 
 const app = express();
 app.use(express.json());
@@ -10,7 +11,11 @@ app.get("/", (req, res) => {
   res.send("API de Atendimento WhatsApp - Secretaria");
 });
 
+// Webhook do WhatsApp
 app.use("/", webhookRouter);
+
+// Rotas de gestão / painel
+app.use("/api", atendimentosRouter);
 
 async function start() {
   try {
