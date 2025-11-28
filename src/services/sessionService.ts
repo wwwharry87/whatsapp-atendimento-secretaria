@@ -12,7 +12,9 @@ export type SessionStatus =
   | "ASK_NAME"
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
-  | "ACTIVE";
+  | "ACTIVE"
+  | "ASK_ANOTHER_DEPARTMENT"
+  | "FINISHED";
 
 export type Session = {
   citizenNumber: string;
@@ -23,6 +25,7 @@ export type Session = {
   agentName?: string;
   status: SessionStatus;
   atendimentoId: string;
+  busyReminderCount?: number; // quantas vezes já lembramos o agente
 };
 
 // mapas em memória para roteamento em tempo real
@@ -44,6 +47,21 @@ async function criarNovoAtendimento(citizenNumber: string): Promise<Atendimento>
   const atendimento = repo.create({
     cidadaoNumero: citizenNumber,
     status: "ASK_NAME" as AtendimentoStatus
+  });
+  await repo.save(atendimento);
+  return atendimento;
+}
+
+// novo atendimento para outro departamento (já sabe o nome)
+async function criarNovoAtendimentoParaOutroSetor(
+  citizenNumber: string,
+  citizenName?: string
+): Promise<Atendimento> {
+  const repo = AppDataSource.getRepository(Atendimento);
+  const atendimento = repo.create({
+    cidadaoNumero: citizenNumber,
+    cidadaoNome: citizenName,
+    status: "ASK_DEPARTMENT" as AtendimentoStatus
   });
   await repo.save(atendimento);
   return atendimento;
@@ -82,7 +100,8 @@ async function getOrCreateSession(citizenNumber: string): Promise<Session> {
     departmentName: atendimento.departamento?.nome ?? undefined,
     agentNumber: atendimento.agenteNumero ?? undefined,
     agentName: atendimento.agenteNome ?? undefined,
-    atendimentoId: atendimento.id
+    atendimentoId: atendimento.id,
+    busyReminderCount: 0
   };
 
   sessionsByCitizen.set(citizenNumber, session);
@@ -112,8 +131,9 @@ async function atualizarAtendimento(
 }
 
 /**
- * Agenda um lembrete para o agente depois de 2 minutos
- * apenas se o atendimento ainda estiver em WAITING_AGENT_CONFIRMATION.
+ * Agenda lembretes para o agente quando ele marcou "ocupado".
+ * Tenta no máximo 3 vezes a cada 2 minutos.
+ * Se após 3 tentativas ele não mudar o status, avisamos o cidadão.
  */
 function scheduleBusyReminder(session: Session) {
   const agentNumber = session.agentNumber;
@@ -121,18 +141,39 @@ function scheduleBusyReminder(session: Session) {
 
   if (!agentNumber) return;
 
+  const attempt = (session.busyReminderCount ?? 0) + 1;
+  session.busyReminderCount = attempt;
+
   setTimeout(async () => {
     const current = sessionsByAgent.get(agentNumber);
     if (!current) return;
 
-    // garante que é o mesmo atendimento e ainda está aguardando confirmação
     if (
       current.atendimentoId !== atendimentoId ||
       current.status !== "WAITING_AGENT_CONFIRMATION"
     ) {
+      // se já atendeu ou mudou de status, não faz nada
       return;
     }
 
+    // se já passou de 3 tentativas, avisar o cidadão e encerrar lembretes
+    if ((current.busyReminderCount ?? 0) >= 3) {
+      await sendTextMessage(
+        agentNumber,
+        "🔔 Você ainda possui um atendimento pendente, mas já fizemos diversas tentativas de contato.\n" +
+          "Informamos ao cidadão que você está sem acesso no momento (fora de área ou sem internet)."
+      );
+
+      await sendTextMessage(
+        current.citizenNumber,
+        `⚠️ O responsável de *${current.departmentName}* está sem acesso no momento (fora de área ou sem internet).\n` +
+          `Sua solicitação continua registrada. Assim que houver retorno, a equipe poderá entrar em contato novamente.`
+      );
+
+      return;
+    }
+
+    // ainda dentro do limite → manda lembrete
     await sendTextMessage(
       agentNumber,
       `⏰ Você ainda tem um atendimento pendente com *${current.citizenName ?? "um cidadão"}* (${current.citizenNumber}).\n\n` +
@@ -140,6 +181,9 @@ function scheduleBusyReminder(session: Session) {
         `1 - Para atender agora\n` +
         `2 - Para continuar ocupado (lembraremos mais tarde novamente).`
     );
+
+    // agenda a próxima tentativa
+    scheduleBusyReminder(current);
   }, 2 * 60 * 1000); // 2 minutos
 }
 
@@ -152,7 +196,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   const session = await getOrCreateSession(from);
 
-  // salva mensagem do cidadão (texto / mídia)
+  // salva mensagem do cidadão (texto / mídia), independente do status
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "CITIZEN",
@@ -166,6 +210,55 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     fileSize: null,
     remetenteNumero: from
   });
+
+  // cidadão respondendo se quer falar com outro departamento
+  if (session.status === "ASK_ANOTHER_DEPARTMENT") {
+    if (trimmed === "1") {
+      // cria novo atendimento só pra outro setor
+      const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
+        session.citizenNumber,
+        session.citizenName
+      );
+
+      session.atendimentoId = novoAtendimento.id;
+      session.status = "ASK_DEPARTMENT";
+      session.departmentId = undefined;
+      session.departmentName = undefined;
+      session.agentNumber = undefined;
+      session.agentName = undefined;
+      session.busyReminderCount = 0;
+
+      await sendTextMessage(
+        session.citizenNumber,
+        "Perfeito! Vou te encaminhar para outro setor.\n\n" +
+          "Agora, escolha o novo Departamento / Setor que deseja falar:"
+      );
+
+      const menu = await montarMenuDepartamentos();
+      await sendTextMessage(session.citizenNumber, menu);
+      return;
+    }
+
+    if (trimmed === "2") {
+      session.status = "FINISHED";
+      await atualizarAtendimento(session, {
+        status: "FINISHED",
+        encerradoEm: new Date()
+      });
+
+      await sendTextMessage(
+        session.citizenNumber,
+        "✅ Atendimento encerrado. Agradecemos o contato! Se precisar novamente, é só mandar um *oi*."
+      );
+      return;
+    }
+
+    await sendTextMessage(
+      session.citizenNumber,
+      "Não entendi. Responda apenas:\n1 - Para falar com outro departamento\n2 - Para encerrar o atendimento."
+    );
+    return;
+  }
 
   if (session.status === "ASK_NAME") {
     if (!session.citizenName) {
@@ -225,6 +318,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.agentNumber = departamento.responsavelNumero || undefined;
     session.agentName = departamento.responsavelNome || "Responsável";
     session.status = "WAITING_AGENT_CONFIRMATION";
+    session.busyReminderCount = 0;
 
     await atualizarAtendimento(session, {
       departamentoId: departamento.id,
@@ -240,7 +334,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     await sendTextMessage(
       session.citizenNumber,
       `Ótimo! Vou te encaminhar para o setor: *${departamento.nome}*.\n` +
-        `Vou verificar a disponibilidade do responsável, aguarde um instante. ⏳`
+        `Vou verificar a disponibilidade do responsável, aguarde um instante. ⏳\n\n` +
+        `Enquanto isso, você já pode ir explicando sua situação aqui. Suas mensagens serão registradas e o setor poderá visualizar tudo depois.`
     );
 
     if (session.agentNumber) {
@@ -267,8 +362,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
     await sendTextMessage(
       session.citizenNumber,
-      "Ainda estou aguardando a confirmação do responsável. 🙏\n" +
-        "Assim que ele aceitar o atendimento, eu te aviso."
+      "O responsável ainda não confirmou o atendimento. 🙏\n" +
+        "Mas fique tranquilo(a): *sua mensagem já foi registrada* e ficará disponível para o setor.\n\n" +
+        "Se quiser, pode continuar explicando sua situação aqui normalmente. Assim que o responsável estiver com acesso, poderá visualizar tudo e responder."
     );
     return;
   }
@@ -306,6 +402,14 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
+  if (session.status === "FINISHED") {
+    await sendTextMessage(
+      session.citizenNumber,
+      "Este atendimento já foi encerrado. Se quiser iniciar um novo, mande um *oi*."
+    );
+    return;
+  }
+
   await sendTextMessage(
     session.citizenNumber,
     "Não entendi sua mensagem. Vamos começar de novo? Mande um *oi*."
@@ -318,7 +422,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 export async function handleAgentMessage(msg: IncomingMessage) {
   const { from, text = "", whatsappMessageId, tipo, mediaId, mimeType, fileName } =
     msg;
-  const trimmed = text.trim();
+  const trimmed = text.trim().toLowerCase();
 
   const session = sessionsByAgent.get(from);
   if (!session) {
@@ -344,6 +448,35 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     remetenteNumero: from
   });
 
+  // agente pode encerrar digitando "encerrar" ou "3"
+  if (session.status === "ACTIVE" && (trimmed === "encerrar" || trimmed === "3")) {
+    session.status = "ASK_ANOTHER_DEPARTMENT";
+
+    // tira esse agente da sessão (ele não está mais em atendimento ativo)
+    sessionsByAgent.delete(from);
+
+    await atualizarAtendimento(session, {
+      status: "FINISHED",
+      encerradoEm: new Date()
+    });
+
+    await sendTextMessage(
+      from,
+      "Você encerrou este atendimento. O cidadão será informado e poderá escolher falar com outro departamento ou finalizar."
+    );
+
+    await sendTextMessage(
+      session.citizenNumber,
+      `✅ O atendimento com o setor *${session.departmentName}* foi encerrado.\n\n` +
+        "Você deseja falar com *outro departamento* também?\n\n" +
+        "Responda:\n" +
+        "1 - Sim, quero falar com outro departamento\n" +
+        "2 - Não, pode encerrar o atendimento"
+    );
+
+    return;
+  }
+
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
     if (trimmed === "1") {
       session.status = "ACTIVE";
@@ -365,6 +498,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     }
 
     if (trimmed === "2") {
+      session.busyReminderCount = 0;
       await sendTextMessage(
         from,
         "Ok, avisei o cidadão que você está ocupado no momento. Quando puder, digite 1 para iniciar o atendimento."
@@ -375,14 +509,14 @@ export async function handleAgentMessage(msg: IncomingMessage) {
           `Sua solicitação foi registrada e será atendida assim que possível. ⏳`
       );
 
-      // agenda o lembrete em 2 minutos
+      // agenda lembretes recorrentes (até 3 vezes)
       scheduleBusyReminder(session);
       return;
     }
 
     await sendTextMessage(
       from,
-      "Por favor, responda apenas:\n1 - Para atender agora\n2 - Para avisar que está ocupado."
+      "Por favor, responda apenas:\n1 - Para atender agora\n2 - Para avisar que está ocupado.\nOu, se já estiver em atendimento e quiser encerrar, digite *encerrar*."
     );
     return;
   }
@@ -410,6 +544,14 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     }
 
     await sendTextMessage(session.citizenNumber, body);
+    return;
+  }
+
+  if (session.status === "ASK_ANOTHER_DEPARTMENT") {
+    await sendTextMessage(
+      from,
+      "Este atendimento já foi encerrado para o setor. O cidadão está decidindo se quer falar com outro departamento."
+    );
     return;
   }
 
