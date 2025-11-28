@@ -104,8 +104,11 @@ async function carregarAtendimentoAberto(
 }
 
 /**
- * Recupera sessão de agente a partir do banco
- * (quando o servidor reinicia e limpa a memória)
+ * Recupera sessão do AGENTE a partir do banco.
+ * Procura tanto por atendimentos onde:
+ *  - agente_numero = telefone, quanto
+ *  - departamento.responsavel_numero = telefone
+ * Assim corrigimos casos em que agente_numero não foi preenchido direito.
  */
 async function recoverAgentSession(agentNumberRaw: string): Promise<Session | undefined> {
   const agentFull = normalizePhone(agentNumberRaw);
@@ -113,16 +116,30 @@ async function recoverAgentSession(agentNumberRaw: string): Promise<Session | un
 
   const repo = AppDataSource.getRepository(Atendimento);
 
-  const atendimento = await repo.findOne({
-    where: [
-      { agenteNumero: agentFull, status: "WAITING_AGENT_CONFIRMATION" },
-      { agenteNumero: agentFull, status: "ACTIVE" },
-      { agenteNumero: agentFull, status: "LEAVE_MESSAGE_DECISION" }
-    ],
-    relations: ["departamento"]
-  });
+  const statuses: AtendimentoStatus[] = [
+    "WAITING_AGENT_CONFIRMATION",
+    "ACTIVE",
+    "LEAVE_MESSAGE_DECISION"
+  ];
+
+  const atendimento = await repo
+    .createQueryBuilder("a")
+    .leftJoinAndSelect("a.departamento", "d")
+    .where("a.status IN (:...statuses)", { statuses })
+    .andWhere(
+      "(a.agenteNumero = :num OR d.responsavelNumero = :num)",
+      { num: agentFull }
+    )
+    .orderBy("a.atualizadoEm", "DESC")
+    .getOne();
 
   if (!atendimento) return undefined;
+
+  // Se o agenteNumero do atendimento estiver diferente, corrige no banco
+  if (normalizePhone(atendimento.agenteNumero) !== agentFull) {
+    await repo.update(atendimento.id, { agenteNumero: agentFull });
+    atendimento.agenteNumero = agentFull;
+  }
 
   const session: Session = {
     citizenNumber: atendimento.cidadaoNumero,
