@@ -14,6 +14,8 @@ export type SessionStatus =
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
   | "ASK_ANOTHER_DEPARTMENT"
+  | "LEAVE_MESSAGE_DECISION"
+  | "LEAVE_MESSAGE"
   | "FINISHED";
 
 export type Session = {
@@ -130,10 +132,70 @@ async function atualizarAtendimento(
   await repo.update(session.atendimentoId, parcial);
 }
 
+// gera um número de protocolo amigável
+function generateProtocol(atendimentoId: string): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const short = atendimentoId.replace(/-/g, "").slice(0, 6).toUpperCase();
+  return `ATD-${yyyy}${mm}${dd}-${short}`;
+}
+
+// fecha atendimento no banco + protocolo
+async function fecharAtendimentoComProtocolo(session: Session): Promise<string> {
+  const repo = AppDataSource.getRepository(Atendimento);
+  const atendimento = await repo.findOne({
+    where: { id: session.atendimentoId }
+  });
+
+  let protocolo = atendimento?.protocolo || null;
+  if (!protocolo) {
+    protocolo = generateProtocol(session.atendimentoId);
+  }
+
+  await repo.update(session.atendimentoId, {
+    status: "FINISHED" as AtendimentoStatus,
+    encerradoEm: new Date(),
+    protocolo
+  });
+
+  session.status = "FINISHED";
+  return protocolo;
+}
+
 /**
- * Agenda lembretes para o agente quando ele marcou "ocupado".
- * Tenta no máximo 3 vezes a cada 2 minutos.
- * Se após 3 tentativas ele não mudar o status, avisamos o cidadão.
+ * Agenda auto-encerramento do modo "deixar recado".
+ * Depois de X minutos, se ainda estiver em LEAVE_MESSAGE, encerra e gera protocolo.
+ */
+function scheduleLeaveMessageAutoClose(session: Session) {
+  const citizen = session.citizenNumber;
+  const atendimentoId = session.atendimentoId;
+
+  // tempo em minutos para auto-encerrar o recado
+  const MINUTOS = 10;
+
+  setTimeout(async () => {
+    const current = sessionsByCitizen.get(citizen);
+    if (!current) return;
+    if (current.atendimentoId !== atendimentoId) return;
+    if (current.status !== "LEAVE_MESSAGE") return;
+
+    const protocolo = await fecharAtendimentoComProtocolo(current);
+
+    await sendTextMessage(
+      current.citizenNumber,
+      `✅ Sua mensagem foi registrada e o atendimento foi encerrado.\n` +
+        `Número de protocolo: *${protocolo}*.\n` +
+        `Guarde este número para acompanhar sua solicitação junto à Secretaria.`
+    );
+  }, MINUTOS * 60 * 1000);
+}
+
+/**
+ * Agenda lembretes para o agente quando ele marcou "ocupado"
+ * ou não respondeu. Tenta no máximo 3 vezes a cada 2 minutos.
+ * Depois disso, oferece ao cidadão a opção de deixar recado.
  */
 function scheduleBusyReminder(session: Session) {
   const agentNumber = session.agentNumber;
@@ -156,18 +218,24 @@ function scheduleBusyReminder(session: Session) {
       return;
     }
 
-    // se já passou de 3 tentativas, avisar o cidadão e encerrar lembretes
+    // se já passou de 3 tentativas, oferece recado ao cidadão
     if ((current.busyReminderCount ?? 0) >= 3) {
       await sendTextMessage(
         agentNumber,
         "🔔 Você ainda possui um atendimento pendente, mas já fizemos diversas tentativas de contato.\n" +
-          "Informamos ao cidadão que você está sem acesso no momento (fora de área ou sem internet)."
+          "O cidadão será orientado a deixar um recado registrado para análise posterior."
       );
+
+      current.status = "LEAVE_MESSAGE_DECISION";
 
       await sendTextMessage(
         current.citizenNumber,
         `⚠️ O responsável de *${current.departmentName}* está sem acesso no momento (fora de área ou sem internet).\n` +
-          `Sua solicitação continua registrada. Assim que houver retorno, a equipe poderá entrar em contato novamente.`
+          `Sua solicitação continua registrada.\n\n` +
+          `Você deseja *deixar um recado detalhado* para que o setor possa analisar assim que estiver online?\n\n` +
+          `Responda:\n` +
+          `1 - Sim, quero deixar um recado\n` +
+          `2 - Não, pode encerrar o atendimento`
       );
 
       return;
@@ -211,10 +279,60 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     remetenteNumero: from
   });
 
+  // CIDADÃO RESPONDENDO SE QUER DEIXAR RECADO
+  if (session.status === "LEAVE_MESSAGE_DECISION") {
+    if (trimmed === "1") {
+      session.status = "LEAVE_MESSAGE";
+
+      await sendTextMessage(
+        session.citizenNumber,
+        "Perfeito! 👍\n" +
+          "Pode escrever aqui, com o máximo de detalhes, o que está acontecendo.\n" +
+          "Você também pode enviar fotos, áudios ou documentos se achar necessário.\n\n" +
+          "Após um período sem novas mensagens, sua conversa será encerrada automaticamente, mas tudo ficará registrado no sistema."
+      );
+
+      // começa a contar tempo para auto-encerramento
+      scheduleLeaveMessageAutoClose(session);
+      return;
+    }
+
+    if (trimmed === "2") {
+      const protocolo = await fecharAtendimentoComProtocolo(session);
+
+      await sendTextMessage(
+        session.citizenNumber,
+        `✅ Atendimento encerrado.\n` +
+          `Número de protocolo: *${protocolo}*.\n` +
+          `Agradecemos o contato! Se precisar novamente, é só mandar um *oi*.`
+      );
+      return;
+    }
+
+    await sendTextMessage(
+      session.citizenNumber,
+      "Não entendi. Responda apenas:\n1 - Para deixar um recado\n2 - Para encerrar o atendimento."
+    );
+    return;
+  }
+
+  // CIDADÃO DEIXANDO RECADO (tudo sendo registrado)
+  if (session.status === "LEAVE_MESSAGE") {
+    await sendTextMessage(
+      session.citizenNumber,
+      "Sua mensagem foi registrada. ✅\n" +
+        "Você pode continuar explicando, se quiser.\n\n" +
+        "Quando ficar um tempo sem enviar novas mensagens, encerraremos automaticamente e geraremos um número de protocolo."
+    );
+
+    // renova o timer de auto-encerramento
+    scheduleLeaveMessageAutoClose(session);
+    return;
+  }
+
   // cidadão respondendo se quer falar com outro departamento
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
     if (trimmed === "1") {
-      // cria novo atendimento só pra outro setor
       const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
         session.citizenNumber,
         session.citizenName
@@ -240,15 +358,13 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     }
 
     if (trimmed === "2") {
-      session.status = "FINISHED";
-      await atualizarAtendimento(session, {
-        status: "FINISHED",
-        encerradoEm: new Date()
-      });
+      const protocolo = await fecharAtendimentoComProtocolo(session);
 
       await sendTextMessage(
         session.citizenNumber,
-        "✅ Atendimento encerrado. Agradecemos o contato! Se precisar novamente, é só mandar um *oi*."
+        `✅ Atendimento encerrado.\n` +
+          `Número de protocolo: *${protocolo}*.\n` +
+          `Agradecemos o contato! Se precisar novamente, é só mandar um *oi*.`
       );
       return;
     }
@@ -335,7 +451,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.citizenNumber,
       `Ótimo! Vou te encaminhar para o setor: *${departamento.nome}*.\n` +
         `Vou verificar a disponibilidade do responsável, aguarde um instante. ⏳\n\n` +
-        `Enquanto isso, você já pode ir explicando sua situação aqui. Suas mensagens serão registradas e o setor poderá visualizar tudo depois.`
+        `Enquanto isso, você já pode ir explicando sua situação aqui.\n` +
+        `Suas mensagens serão registradas e o setor poderá visualizar tudo depois.`
     );
 
     if (session.agentNumber) {
@@ -349,6 +466,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
           `1 - Para atender agora\n` +
           `2 - Para informar que está ocupado (o cidadão será avisado)`
       );
+
+      // mesmo sem o agente responder nada, já começamos a lembrar depois de um tempo
+      scheduleBusyReminder(session);
     } else {
       await sendTextMessage(
         session.citizenNumber,
@@ -364,7 +484,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.citizenNumber,
       "O responsável ainda não confirmou o atendimento. 🙏\n" +
         "Mas fique tranquilo(a): *sua mensagem já foi registrada* e ficará disponível para o setor.\n\n" +
-        "Se quiser, pode continuar explicando sua situação aqui normalmente. Assim que o responsável estiver com acesso, poderá visualizar tudo e responder."
+        "Se quiser, pode continuar explicando sua situação aqui normalmente."
     );
     return;
   }
@@ -450,24 +570,22 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   // agente pode encerrar digitando "encerrar" ou "3"
   if (session.status === "ACTIVE" && (trimmed === "encerrar" || trimmed === "3")) {
-    session.status = "ASK_ANOTHER_DEPARTMENT";
+    const protocolo = await fecharAtendimentoComProtocolo(session);
 
-    // tira esse agente da sessão (ele não está mais em atendimento ativo)
+    // tira esse agente da sessão atual (encerrado pra ele)
     sessionsByAgent.delete(from);
-
-    await atualizarAtendimento(session, {
-      status: "FINISHED",
-      encerradoEm: new Date()
-    });
+    session.status = "ASK_ANOTHER_DEPARTMENT";
 
     await sendTextMessage(
       from,
-      "Você encerrou este atendimento. O cidadão será informado e poderá escolher falar com outro departamento ou finalizar."
+      `Você encerrou este atendimento. Protocolo: *${protocolo}*.\n` +
+        "O cidadão será informado e poderá escolher falar com outro departamento ou finalizar."
     );
 
     await sendTextMessage(
       session.citizenNumber,
-      `✅ O atendimento com o setor *${session.departmentName}* foi encerrado.\n\n` +
+      `✅ O atendimento com o setor *${session.departmentName}* foi encerrado.\n` +
+        `Número de protocolo: *${protocolo}*.\n\n` +
         "Você deseja falar com *outro departamento* também?\n\n" +
         "Responda:\n" +
         "1 - Sim, quero falar com outro departamento\n" +
@@ -550,7 +668,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
     await sendTextMessage(
       from,
-      "Este atendimento já foi encerrado para o setor. O cidadão está decidindo se quer falar com outro departamento."
+      "Este atendimento já foi encerrado para este setor. O cidadão está decidindo se quer falar com outro departamento."
     );
     return;
   }

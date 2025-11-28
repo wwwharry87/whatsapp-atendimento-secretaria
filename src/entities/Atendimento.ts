@@ -43,6 +43,10 @@ export class Atendimento {
   @Column({ type: "varchar", length: 50 })
   status!: AtendimentoStatus;
 
+  // número de protocolo para futura consulta
+  @Column({ name: "protocolo", nullable: true })
+  protocolo?: string | null;
+
   @CreateDateColumn({ name: "criado_em" })
   criadoEm!: Date;
 
