@@ -14,6 +14,9 @@ export type AtendimentoStatus =
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
+  | "ASK_ANOTHER_DEPARTMENT"   // 👈 novo status (cidadão decide outro setor ou encerrar)
+  | "LEAVE_MESSAGE_DECISION"   // 👈 novo status (perguntando se quer deixar recado)
+  | "LEAVE_MESSAGE"            // 👈 novo status (modo recado, registrando mensagens)
   | "FINISHED";
 
 @Entity("atendimentos")
