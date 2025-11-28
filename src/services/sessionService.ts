@@ -29,10 +29,9 @@ export type Session = {
   status: SessionStatus;
   atendimentoId: string;
   busyReminderCount?: number;
-  lastActiveAt?: number; // usado para auto-encerrar por inatividade
+  lastActiveAt?: number;
 };
 
-// caches em memória
 const sessionsByCitizen = new Map<string, Session>();
 const sessionsByAgent = new Map<string, Session>();
 
@@ -46,21 +45,20 @@ export type IncomingMessage = {
   fileName?: string;
 };
 
-// ====================== FUNÇÕES AUXILIARES ======================
+// ====================== AUXILIARES ======================
 
 function normalizePhone(num?: string | null): string {
   if (!num) return "";
   return num.replace(/\D/g, "");
 }
 
-// chave para mapear agente — usa 11 dígitos finais (ou menos, se não tiver)
 function getAgentKey(num?: string | null): string {
   const normalized = normalizePhone(num);
   if (!normalized) return "";
   return normalized.length > 11 ? normalized.slice(-11) : normalized;
 }
 
-// ====================== ACESSO AO BANCO ======================
+// ====================== BANCO ======================
 
 async function criarNovoAtendimento(citizenNumber: string): Promise<Atendimento> {
   const repo = AppDataSource.getRepository(Atendimento);
@@ -72,7 +70,6 @@ async function criarNovoAtendimento(citizenNumber: string): Promise<Atendimento>
   return atendimento;
 }
 
-// novo atendimento, já sabendo o nome (quando o cidadão quer outro setor)
 async function criarNovoAtendimentoParaOutroSetor(
   citizenNumber: string,
   citizenName?: string
@@ -87,7 +84,6 @@ async function criarNovoAtendimentoParaOutroSetor(
   return atendimento;
 }
 
-// carrega um atendimento "ainda em andamento" para esse cidadão
 async function carregarAtendimentoAberto(
   citizenNumber: string
 ): Promise<Atendimento | null> {
@@ -108,12 +104,12 @@ async function carregarAtendimentoAberto(
 }
 
 /**
- * Recupera sessão de AGENTE a partir do banco
- * (quando o servidor reinicia e os Maps em memória zeram)
+ * Recupera sessão de agente a partir do banco
+ * (quando o servidor reinicia e limpa a memória)
  */
-async function recoverAgentSession(agentNumberRaw: string): Promise<Session | null> {
+async function recoverAgentSession(agentNumberRaw: string): Promise<Session | undefined> {
   const agentFull = normalizePhone(agentNumberRaw);
-  if (!agentFull) return null;
+  if (!agentFull) return undefined;
 
   const repo = AppDataSource.getRepository(Atendimento);
 
@@ -126,9 +122,7 @@ async function recoverAgentSession(agentNumberRaw: string): Promise<Session | nu
     relations: ["departamento"]
   });
 
-  if (!atendimento) {
-    return null;
-  }
+  if (!atendimento) return undefined;
 
   const session: Session = {
     citizenNumber: atendimento.cidadaoNumero,
@@ -150,7 +144,7 @@ async function recoverAgentSession(agentNumberRaw: string): Promise<Session | nu
   sessionsByAgent.set(agentKey, session);
 
   console.log(
-    `🔄 Sessão de agente recuperada do DB: agente=${agentFull}, cidadao=${citizenKey}, status=${session.status}`
+    `🔄 Sessão recuperada: agente=${agentFull}, cidadao=${citizenKey}, status=${session.status}`
   );
 
   return session;
@@ -232,9 +226,8 @@ async function fecharAtendimentoComProtocolo(session: Session): Promise<string> 
   return protocolo;
 }
 
-// ====================== TIMERS / AUTOMAÇÕES ======================
+// ====================== TIMERS ======================
 
-// auto-encerrar após período em modo "deixar recado"
 function scheduleLeaveMessageAutoClose(session: Session) {
   const citizenKey = normalizePhone(session.citizenNumber);
   const atendimentoId = session.atendimentoId;
@@ -259,14 +252,13 @@ function scheduleLeaveMessageAutoClose(session: Session) {
   }, MINUTOS * 60 * 1000);
 }
 
-// auto-encerrar atendimento ativo após inatividade
 function scheduleActiveAutoClose(session: Session) {
   const citizenKey = normalizePhone(session.citizenNumber);
   const agentFull = session.agentNumber ? normalizePhone(session.agentNumber) : null;
   const agentKey = session.agentNumber ? getAgentKey(session.agentNumber) : null;
   const atendimentoId = session.atendimentoId;
 
-  // ⏱ Tempo de inatividade: 2 minutos (120 segundos)
+  // 2 minutos de inatividade
   const TIMEOUT_MINUTOS = 2;
 
   const scheduledAt = Date.now();
@@ -277,7 +269,7 @@ function scheduleActiveAutoClose(session: Session) {
     if (!current) return;
     if (current.atendimentoId !== atendimentoId) return;
     if (current.status !== "ACTIVE") return;
-    if (current.lastActiveAt !== scheduledAt) return; // já houve nova interação
+    if (current.lastActiveAt !== scheduledAt) return;
 
     const protocolo = await fecharAtendimentoComProtocolo(current);
 
@@ -307,7 +299,6 @@ function scheduleActiveAutoClose(session: Session) {
   }, TIMEOUT_MINUTOS * 60 * 1000);
 }
 
-// lembretes para agente ocupado / sem responder
 function scheduleBusyReminder(session: Session) {
   if (!session.agentNumber) return;
 
@@ -323,9 +314,8 @@ function scheduleBusyReminder(session: Session) {
   setTimeout(async () => {
     let current = sessionsByAgent.get(key);
 
-    // se perdemos a sessão da memória, tenta recuperar a partir do banco
     if (!current) {
-      current == await recoverAgentSession(agenteNumeroEnvio);
+      current = await recoverAgentSession(agenteNumeroEnvio);
     }
     if (!current) return;
 
@@ -402,7 +392,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     remetenteNumero: citizenKey
   });
 
-  // 1) decisão sobre deixar recado
+  // LEAVE_MESSAGE_DECISION
   if (session.status === "LEAVE_MESSAGE_DECISION") {
     if (onlyDigits === "1") {
       session.status = "LEAVE_MESSAGE";
@@ -427,7 +417,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // 2) cidadão está deixando recado
+  // LEAVE_MESSAGE
   if (session.status === "LEAVE_MESSAGE") {
     await sendTextMessage(
       session.citizenNumber,
@@ -437,7 +427,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // 3) cidadão decidindo se quer outro departamento
+  // ASK_ANOTHER_DEPARTMENT
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
     if (onlyDigits === "1") {
       const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
@@ -473,7 +463,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // 4) perguntando o nome — NÃO usar "Oi" como nome
+  // ASK_NAME — não aceitar só saudação como nome
   if (session.status === "ASK_NAME") {
     if (!session.citizenName) {
       const greetings = [
@@ -488,7 +478,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         "hi",
         "hello"
       ];
-      const isGreeting = greetings.includes(trimmedLower);
+
+      const isGreeting = greetings.some((g) =>
+        trimmedLower.includes(g)
+      );
 
       if (!trimmed || trimmed.length < 3 || isGreeting) {
         await sendTextMessage(
@@ -515,7 +508,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     }
   }
 
-  // 5) cidadão escolhendo o departamento
+  // ASK_DEPARTMENT
   if (session.status === "ASK_DEPARTMENT") {
     const numero = parseInt(trimmed, 10);
     if (isNaN(numero)) {
@@ -564,10 +557,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       const key = getAgentKey(session.agentNumber);
       sessionsByAgent.set(key, session);
 
+      const displayName =
+        session.citizenName && session.citizenName.length > 2
+          ? session.citizenName
+          : "Nome não informado";
+
       await sendTextMessage(
         agenteEnvio,
         `📲 *Nova solicitação - ${departamento.nome}*\n\n` +
-          `Munícipe: *${session.citizenName ?? "Não informado"}*\n` +
+          `Munícipe: *${displayName}*\n` +
           `Telefone: ${session.citizenNumber}\n\n` +
           `Digite:\n` +
           `1 - Atender agora\n` +
@@ -585,7 +583,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // 6) agente ainda não confirmou
+  // WAITING_AGENT_CONFIRMATION
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
     await sendTextMessage(
       session.citizenNumber,
@@ -596,9 +594,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // 7) atendimento ativo — troca normal com o agente
+  // ACTIVE
   if (session.status === "ACTIVE") {
-    // cidadão pode pedir encerramento
     if (
       ["encerrar", "finalizar", "sair"].includes(trimmedLower) ||
       onlyDigits === "3"
@@ -628,7 +625,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
-    // mensagem normal → encaminhar para o agente
     if (session.agentNumber) {
       const agenteEnvio = normalizePhone(session.agentNumber);
       let body = `👤 ${session.citizenName ?? "Munícipe"} (${session.citizenNumber}):\n`;
@@ -663,6 +659,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
+  // FINISHED
   if (session.status === "FINISHED") {
     await sendTextMessage(
       session.citizenNumber,
@@ -700,9 +697,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   let session = sessionsByAgent.get(key);
 
-  // se não achou na memória, tenta recuperar do banco
   if (!session) {
-    session == await recoverAgentSession(agentFullNumber);
+    session = await recoverAgentSession(agentFullNumber);
   }
 
   if (!session) {
@@ -732,7 +728,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     remetenteNumero: agentFullNumber
   });
 
-  // comando de ajuda
   if (trimmedLower === "ajuda" || trimmedLower === "menu") {
     await sendTextMessage(
       agentFullNumber,
@@ -746,7 +741,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // agente encerrando atendimento
   if (
     session.status === "ACTIVE" &&
     (onlyDigits === "3" ||
@@ -775,7 +769,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // agente confirmando / ocupado
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
     if (onlyDigits === "1") {
       session.status = "ACTIVE";
@@ -819,7 +812,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // transferência de atendimento para outro setor
+  // transferência
   if (session.status === "ACTIVE") {
     const words = trimmedLower.split(/\s+/);
     const cmd = words[0];
@@ -870,7 +863,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
       await sendTextMessage(
         session.citizenNumber,
-        `🔄 Seu atendimento está sendo transferido para o setor *${novoDep.nome}*. \n` +
+        `🔄 Seu atendimento está sendo transferido para o setor *${novoDep.nome}*.\n` +
           `Aguarde um momento, por favor.`
       );
 
@@ -885,10 +878,15 @@ export async function handleAgentMessage(msg: IncomingMessage) {
         sessionsByAgent.set(newKey, session);
 
         const novoAgenteZap = normalizePhone(session.agentNumber);
+        const displayName =
+          session.citizenName && session.citizenName.length > 2
+            ? session.citizenName
+            : "Nome não informado";
+
         await sendTextMessage(
           novoAgenteZap,
           `📲 *Atendimento transferido de outro setor*\n\n` +
-            `Munícipe: *${session.citizenName ?? "Não informado"}*\n` +
+            `Munícipe: *${displayName}*\n` +
             `Telefone: ${session.citizenNumber}\n` +
             `Setor anterior: *${oldDepName}*\n` +
             `Novo setor: *${novoDep.nome}*\n\n` +
@@ -909,7 +907,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     }
   }
 
-  // troca normal de mensagens agente → cidadão
+  // troca normal agente → cidadão
   if (session.status === "ACTIVE") {
     let body = `👨‍💼 ${session.agentName ?? "Atendente"}:\n`;
 
