@@ -115,7 +115,7 @@ async function getOrCreateSession(citizenNumber: string): Promise<Session> {
   return session;
 }
 
-// checa se o número é de um agente
+// checa se o número é de um agente (usado em alguns fluxos)
 export function isAgentNumber(whatsappNumber: string): boolean {
   const normalized = whatsappNumber.replace(/\D/g, "");
   for (const [agentNumber] of sessionsByAgent.entries()) {
@@ -193,8 +193,8 @@ function scheduleLeaveMessageAutoClose(session: Session) {
 }
 
 /**
- * Agenda lembretes para o agente quando ele marcou "ocupado"
- * ou não respondeu. Tenta no máximo 3 vezes a cada 2 minutos.
+ * Agenda lembretes para o agente quando ele marcou "ocupado".
+ * Tenta no máximo 3 vezes a cada 2 minutos.
  * Depois disso, oferece ao cidadão a opção de deixar recado.
  */
 function scheduleBusyReminder(session: Session) {
@@ -468,8 +468,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
           `2 - Para informar que está ocupado (o cidadão será avisado)`
       );
 
-      // mesmo sem o agente responder nada, já começamos a lembrar depois de um tempo
-      scheduleBusyReminder(session);
+      // ⚠️ AQUI NÃO chamamos scheduleBusyReminder.
+      // Só vamos lembrar/oferecer recado se o agente responder 2 (ocupado).
     } else {
       await sendTextMessage(
         session.citizenNumber,
@@ -541,7 +541,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 // ====================== AGENTE ======================
 
 export async function handleAgentMessage(msg: IncomingMessage) {
-  const { from, text = "", whatsappMessageId, tipo, mediaId, mimeType, fileName } =
+  const { from, text = "", tipo, whatsappMessageId, mediaId, mimeType, fileName } =
     msg;
   const trimmed = text.trim().toLowerCase();
   const onlyDigits = trimmed.replace(/\D/g, "");
@@ -632,7 +632,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
           `Sua solicitação foi registrada e será atendida assim que possível. ⏳`
       );
 
-      // agenda lembretes recorrentes (até 3 vezes)
+      // agenda lembretes recorrentes (até 3 vezes) → só entra em recado se ele insistir em ficar ocupado
       scheduleBusyReminder(session);
       return;
     }
