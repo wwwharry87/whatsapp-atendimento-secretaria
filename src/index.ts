@@ -7,14 +7,15 @@ import atendimentosRouter from "./routes/atendimentos";
 const app = express();
 app.use(express.json());
 
+// rota raiz só pra teste/healthcheck
 app.get("/", (req, res) => {
   res.send("API de Atendimento WhatsApp - Secretaria");
 });
 
-// Webhook do WhatsApp
-app.use("/", webhookRouter);
+// 🔹 Webhook do WhatsApp fica em /webhook (GET e POST)
+app.use("/webhook", webhookRouter);
 
-// Rotas de gestão / painel
+// 🔹 Rotas de gestão / painel
 app.use("/api", atendimentosRouter);
 
 async function start() {
