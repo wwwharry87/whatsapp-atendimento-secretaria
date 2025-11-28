@@ -261,6 +261,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   const { from, text = "", tipo, whatsappMessageId, mediaId, mimeType, fileName } =
     msg;
   const trimmed = text.trim();
+  const onlyDigits = trimmed.replace(/\D/g, ""); // pega só números
 
   const session = await getOrCreateSession(from);
 
@@ -281,7 +282,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   // CIDADÃO RESPONDENDO SE QUER DEIXAR RECADO
   if (session.status === "LEAVE_MESSAGE_DECISION") {
-    if (trimmed === "1") {
+    if (onlyDigits === "1") {
       session.status = "LEAVE_MESSAGE";
 
       await sendTextMessage(
@@ -297,7 +298,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
-    if (trimmed === "2") {
+    if (onlyDigits === "2") {
       const protocolo = await fecharAtendimentoComProtocolo(session);
 
       await sendTextMessage(
@@ -332,7 +333,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   // cidadão respondendo se quer falar com outro departamento
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
-    if (trimmed === "1") {
+    if (onlyDigits === "1") {
       const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
         session.citizenNumber,
         session.citizenName
@@ -357,7 +358,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
-    if (trimmed === "2") {
+    if (onlyDigits === "2") {
       const protocolo = await fecharAtendimentoComProtocolo(session);
 
       await sendTextMessage(
@@ -543,6 +544,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   const { from, text = "", whatsappMessageId, tipo, mediaId, mimeType, fileName } =
     msg;
   const trimmed = text.trim().toLowerCase();
+  const onlyDigits = trimmed.replace(/\D/g, "");
 
   const session = sessionsByAgent.get(from);
   if (!session) {
@@ -569,7 +571,10 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   });
 
   // agente pode encerrar digitando "encerrar" ou "3"
-  if (session.status === "ACTIVE" && (trimmed === "encerrar" || trimmed === "3")) {
+  if (
+    session.status === "ACTIVE" &&
+    (onlyDigits === "3" || trimmed === "encerrar")
+  ) {
     const protocolo = await fecharAtendimentoComProtocolo(session);
 
     // tira esse agente da sessão atual (encerrado pra ele)
@@ -596,7 +601,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   }
 
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
-    if (trimmed === "1") {
+    if (onlyDigits === "1") {
       session.status = "ACTIVE";
 
       await atualizarAtendimento(session, {
@@ -615,7 +620,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       return;
     }
 
-    if (trimmed === "2") {
+    if (onlyDigits === "2") {
       session.busyReminderCount = 0;
       await sendTextMessage(
         from,
@@ -634,7 +639,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
     await sendTextMessage(
       from,
-      "Por favor, responda apenas:\n1 - Para atender agora\n2 - Para avisar que está ocupado.\nOu, se já estiver em atendimento e quiser encerrar, digite *encerrar*."
+      "Por favor, responda apenas:\n1 - Para atender agora\n2 - Para avisar que está ocupado.\nOu, se já estiver em atendimento e quiser encerrar, digite *3* ou *encerrar*."
     );
     return;
   }
