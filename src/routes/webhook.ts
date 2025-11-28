@@ -30,7 +30,7 @@ router.get("/", (req: Request, res: Response) => {
 // Verifica no BANCO se o número é de um agente
 async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   const normalized = normalizePhone(whatsappNumber);
-  const last11 = normalized.slice(-11); // celular BR (DDD + número)
+  const last8 = normalized.slice(-8); // ex: 91296984
 
   const depRepo = AppDataSource.getRepository(Departamento);
   const userRepo = AppDataSource.getRepository(Usuario);
@@ -39,8 +39,8 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   const dep = await depRepo
     .createQueryBuilder("d")
     .where(
-      "regexp_replace(coalesce(d.responsavelNumero, ''), '\\D', '', 'g') LIKE :last11",
-      { last11: `%${last11}` }
+      "right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8",
+      { last8 }
     )
     .getOne();
 
@@ -55,8 +55,8 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   const usuario = await userRepo
     .createQueryBuilder("u")
     .where(
-      "regexp_replace(coalesce(u.telefone_whatsapp, ''), '\\D', '', 'g') LIKE :last11",
-      { last11: `%${last11}` }
+      "right(regexp_replace(coalesce(u.telefone_whatsapp, ''), '\\D', '', 'g'), 8) = :last8",
+      { last8 }
     )
     .getOne();
 
@@ -70,6 +70,7 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   console.log(`Número ${whatsappNumber} NÃO encontrado como agente no banco.`);
   return false;
 }
+
 
 // Webhook de mensagens (POST)
 router.post("/", async (req: Request, res: Response) => {
