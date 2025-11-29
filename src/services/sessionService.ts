@@ -22,6 +22,7 @@ export type SessionStatus =
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
+  | "IN_QUEUE"
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
@@ -290,6 +291,146 @@ async function fecharAtendimentoComProtocolo(
   return protocolo;
 }
 
+// ====================== FILA (QUEUE) ======================
+
+/**
+ * Verifica se o agente já está ocupado (tem atendimento ACTIVE ou WAITING_AGENT_CONFIRMATION)
+ * e quantas pessoas já estão na fila (IN_QUEUE).
+ */
+async function getAgentBusyAndQueueCount(
+  agentNumber: string
+): Promise<{ busy: boolean; queueCount: number }> {
+  const repo = AppDataSource.getRepository(Atendimento);
+  const normalized = normalizePhone(agentNumber);
+  const last8 = normalized.slice(-8);
+
+  // Agente ocupado? (existe atendimento ativo/aguardando)
+  const busyCount = await repo
+    .createQueryBuilder("a")
+    .leftJoin("a.departamento", "d")
+    .where("a.status IN (:...statuses)", {
+      statuses: ["WAITING_AGENT_CONFIRMATION", "ACTIVE"] as AtendimentoStatus[],
+    })
+    .andWhere(
+      "(" +
+        "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
+        "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8" +
+        ")",
+      { last8 }
+    )
+    .getCount();
+
+  // Quantos já estão na fila (IN_QUEUE) pra esse mesmo agente
+  const queueCount = await repo
+    .createQueryBuilder("a")
+    .leftJoin("a.departamento", "d")
+    .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus })
+    .andWhere(
+      "(" +
+        "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
+        "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8" +
+        ")",
+      { last8 }
+    )
+    .getCount();
+
+  return {
+    busy: busyCount > 0,
+    queueCount,
+  };
+}
+
+/**
+ * Quando um atendimento encerra, chama o próximo da fila (IN_QUEUE), se existir.
+ */
+async function ativarProximoDaFila(sessionEncerrada: Session) {
+  const repo = AppDataSource.getRepository(Atendimento);
+
+  const agentNumber = sessionEncerrada.agentNumber
+    ? normalizePhone(sessionEncerrada.agentNumber)
+    : null;
+  const departmentId = sessionEncerrada.departmentId ?? null;
+
+  if (!agentNumber && !departmentId) {
+    return;
+  }
+
+  const qb = repo
+    .createQueryBuilder("a")
+    .leftJoinAndSelect("a.departamento", "d")
+    .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus });
+
+  if (agentNumber) {
+    const last8 = agentNumber.slice(-8);
+    qb.andWhere(
+      "(" +
+        "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
+        "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8" +
+        ")",
+      { last8 }
+    );
+  } else if (departmentId) {
+    qb.andWhere("a.departamento_id = :depId", { depId: departmentId });
+  }
+
+  const proximo = await qb.orderBy("a.criado_em", "ASC").getOne();
+  if (!proximo) {
+    return;
+  }
+
+  const citizenNumber = normalizePhone(proximo.cidadaoNumero);
+  const agentFull =
+    proximo.agenteNumero && proximo.agenteNumero.trim()
+      ? normalizePhone(proximo.agenteNumero)
+      : agentNumber;
+
+  const novaSession: Session = {
+    citizenNumber,
+    status: "WAITING_AGENT_CONFIRMATION",
+    citizenName: proximo.cidadaoNome ?? undefined,
+    departmentId: proximo.departamentoId ?? undefined,
+    departmentName: proximo.departamento?.nome ?? undefined,
+    agentNumber: agentFull ?? undefined,
+    agentName: proximo.agenteNome ?? undefined,
+    atendimentoId: proximo.id,
+    busyReminderCount: 0,
+    lastActiveAt: Date.now(),
+    protocolo: proximo.protocolo ?? undefined,
+  };
+
+  sessionsByCitizen.set(citizenNumber, novaSession);
+
+  if (agentFull) {
+    const agentKey = getAgentKey(agentFull);
+    if (agentKey) sessionsByAgent.set(agentKey, novaSession);
+  }
+
+  await repo.update(proximo.id, {
+    status: "WAITING_AGENT_CONFIRMATION" as AtendimentoStatus,
+    agenteNumero: novaSession.agentNumber ?? proximo.agenteNumero,
+    agenteNome: novaSession.agentName ?? proximo.agenteNome,
+  });
+
+  await sendTextMessage(
+    novaSession.citizenNumber,
+    `📢 Chegou a sua vez! Estamos chamando o responsável de *${novaSession.departmentName}* para iniciar seu atendimento.`
+  );
+
+  if (novaSession.agentNumber) {
+    const agenteEnvio = normalizePhone(novaSession.agentNumber);
+    await sendTextMessage(
+      agenteEnvio,
+      `📲 *Nova solicitação (fila) - ${novaSession.departmentName}*\n\n` +
+        `Munícipe: *${novaSession.citizenName ?? "Cidadão"}*\n` +
+        `Telefone: ${novaSession.citizenNumber}\n\n` +
+        `Digite:\n` +
+        `1 - Atender agora\n` +
+        `2 - Informar que está ocupado`
+    );
+    scheduleBusyReminder(novaSession);
+  }
+}
+
 // ====================== TIMERS ======================
 
 // auto-encerrar recado depois de X minutos
@@ -312,6 +453,8 @@ function scheduleLeaveMessageAutoClose(session: Session) {
         `Número de protocolo: *${protocolo}*.\n` +
         `Guarde este número para acompanhar sua solicitação.`
     );
+
+    await ativarProximoDaFila(current);
 
     sessionsByCitizen.delete(citizenKey);
   }, MINUTOS * 60 * 1000);
@@ -362,6 +505,8 @@ function scheduleActiveAutoClose(session: Session) {
         } encerrou por inatividade.\nProtocolo: *${protocolo}*.`
       );
     }
+
+    await ativarProximoDaFila(current);
 
     sessionsByCitizen.delete(citizenKey);
   }, TIMEOUT_MINUTOS * 60 * 1000);
@@ -494,6 +639,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         session.citizenNumber,
         `✅ Atendimento encerrado.\nProtocolo: *${protocolo}*.`
       );
+
+      await ativarProximoDaFila(session);
+
       sessionsByCitizen.delete(citizenKey);
       return;
     }
@@ -510,6 +658,45 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "Recebido ✅. Se tiver mais informações, pode enviar. Encerraremos automaticamente em breve."
     );
     scheduleLeaveMessageAutoClose(session);
+    return;
+  }
+
+  // ---------- Fluxo: Fila (IN_QUEUE) ----------
+
+  if (session.status === "IN_QUEUE") {
+    const repo = AppDataSource.getRepository(Atendimento);
+    if (session.agentNumber) {
+      const normalized = normalizePhone(session.agentNumber);
+      const last8 = normalized.slice(-8);
+
+      const queueAhead = await repo
+        .createQueryBuilder("a")
+        .leftJoin("a.departamento", "d")
+        .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus })
+        .andWhere("a.id <> :id", { id: session.atendimentoId })
+        .andWhere(
+          "(" +
+            "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
+            "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8" +
+            ")",
+          { last8 }
+        )
+        .getCount();
+
+      const pos = queueAhead + 1;
+
+      await sendTextMessage(
+        session.citizenNumber,
+        `⏳ Todos os atendentes de *${session.departmentName}* ainda estão ocupados.\n` +
+          `Você está na posição *${pos}* da fila.\n` +
+          `Assim que chegar sua vez, vamos te avisar aqui.`
+      );
+    } else {
+      await sendTextMessage(
+        session.citizenNumber,
+        "Você está aguardando na fila deste setor. Assim que houver um atendente disponível, seu atendimento será iniciado."
+      );
+    }
     return;
   }
 
@@ -679,8 +866,53 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.departmentName = departamento.nome;
     session.agentNumber = departamento.responsavelNumero || undefined;
     session.agentName = departamento.responsavelNome || "Responsável";
-    session.status = "WAITING_AGENT_CONFIRMATION";
     session.busyReminderCount = 0;
+
+    if (!session.agentNumber) {
+      // sem agente configurado
+      await atualizarAtendimento(session, {
+        departamentoId: departamento.id,
+        status: "ASK_DEPARTMENT",
+      });
+
+      await sendTextMessage(
+        session.citizenNumber,
+        "Este setor está sem responsável configurado no momento. Sua solicitação foi registrada."
+      );
+      return;
+    }
+
+    // Verifica se o agente está ocupado e se há fila
+    const { busy, queueCount } = await getAgentBusyAndQueueCount(
+      session.agentNumber
+    );
+
+    if (busy) {
+      // coloca na fila
+      session.status = "IN_QUEUE";
+
+      await atualizarAtendimento(session, {
+        departamentoId: departamento.id,
+        agenteNumero: session.agentNumber,
+        agenteNome: session.agentName,
+        status: "IN_QUEUE" as AtendimentoStatus,
+      });
+
+      const pos = queueCount + 1;
+
+      await sendTextMessage(
+        session.citizenNumber,
+        `📥 Todos os atendentes de *${departamento.nome}* estão ocupados no momento.\n` +
+          `Você entrou na fila e está na posição *${pos}*.\n` +
+          `Quando chegar sua vez, vamos te avisar aqui.`
+      );
+
+      // Não avisa o agente ainda, só quando sair da fila
+      return;
+    }
+
+    // agente livre → segue fluxo normal (sem fila)
+    session.status = "WAITING_AGENT_CONFIRMATION";
 
     await atualizarAtendimento(session, {
       departamentoId: departamento.id,
@@ -689,34 +921,27 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       status: "WAITING_AGENT_CONFIRMATION",
     });
 
-    if (session.agentNumber) {
-      const key = getAgentKey(session.agentNumber);
-      if (key) sessionsByAgent.set(key, session);
-      const agenteEnvio = normalizePhone(session.agentNumber);
+    const key = getAgentKey(session.agentNumber);
+    if (key) sessionsByAgent.set(key, session);
+    const agenteEnvio = normalizePhone(session.agentNumber);
 
-      await sendTextMessage(
-        session.citizenNumber,
-        `Aguarde um instante, estou contatando o setor *${departamento.nome}*. ⏳\n` +
-          `Pode ir descrevendo sua situação aqui.`
-      );
+    await sendTextMessage(
+      session.citizenNumber,
+      `Aguarde um instante, estou contatando o setor *${departamento.nome}*. ⏳\n` +
+        `Pode ir descrevendo sua situação aqui.`
+    );
 
-      await sendTextMessage(
-        agenteEnvio,
-        `📲 *Nova solicitação - ${departamento.nome}*\n\n` +
-          `Munícipe: *${session.citizenName}*\n` +
-          `Telefone: ${session.citizenNumber}\n\n` +
-          `Digite:\n` +
-          `1 - Atender agora\n` +
-          `2 - Informar que está ocupado`
-      );
+    await sendTextMessage(
+      agenteEnvio,
+      `📲 *Nova solicitação - ${departamento.nome}*\n\n` +
+        `Munícipe: *${session.citizenName}*\n` +
+        `Telefone: ${session.citizenNumber}\n\n` +
+        `Digite:\n` +
+        `1 - Atender agora\n` +
+        `2 - Informar que está ocupado`
+    );
 
-      scheduleBusyReminder(session);
-    } else {
-      await sendTextMessage(
-        session.citizenNumber,
-        "Este setor está sem responsável configurado no momento. Sua solicitação foi registrada."
-      );
-    }
+    scheduleBusyReminder(session);
     return;
   }
 
@@ -747,6 +972,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         const key = getAgentKey(session.agentNumber);
         if (key) sessionsByAgent.delete(key);
       }
+
+      await ativarProximoDaFila(session);
 
       await iniciarPesquisaSatisfacao(session, protocolo);
       return;
@@ -887,6 +1114,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       agentFullNumber,
       `✅ Atendimento encerrado.\nProtocolo: *${protocolo}*.`
     );
+
+    await ativarProximoDaFila(session);
 
     await iniciarPesquisaSatisfacao(session, protocolo);
     return;

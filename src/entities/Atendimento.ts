@@ -14,6 +14,7 @@ export type AtendimentoStatus =
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
+  | "IN_QUEUE"               // 👈 NOVO STATUS
   | "ASK_ANOTHER_DEPARTMENT"   // cidadão decide outro setor ou encerrar
   | "LEAVE_MESSAGE_DECISION"   // perguntando se quer deixar recado
   | "LEAVE_MESSAGE"            // modo recado, registrando mensagens
