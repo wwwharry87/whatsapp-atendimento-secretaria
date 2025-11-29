@@ -1,7 +1,8 @@
+// src/services/messageService.ts
 import { AppDataSource } from "../database/data-source";
 import { Mensagem, MensagemDirecao, MensagemTipo } from "../entities/Mensagem";
 
-type SaveMensagemParams = {
+export type SaveMensagemParams = {
   atendimentoId: string;
   direcao: MensagemDirecao;
   tipo: MensagemTipo;
@@ -15,21 +16,30 @@ type SaveMensagemParams = {
   remetenteNumero: string;
 };
 
-export async function salvarMensagem(params: SaveMensagemParams) {
+export async function salvarMensagem(
+  params: SaveMensagemParams
+): Promise<Mensagem> {
   const repo = AppDataSource.getRepository(Mensagem);
+
+  // Se não foi passado mediaUrl mas temos um ID de mídia do WhatsApp,
+  // geramos uma URL padrão apontando para a rota /media/:mediaId
+  const mediaUrl =
+    params.mediaUrl ??
+    (params.whatsappMediaId ? `/media/${params.whatsappMediaId}` : undefined);
+
   const msg = repo.create({
-    atendimentoId: params.atendimentoId,
+    atendimento: { id: params.atendimentoId } as any,
     direcao: params.direcao,
     tipo: params.tipo,
-    conteudoTexto: params.conteudoTexto,
+    conteudoTexto: params.conteudoTexto ?? null,
     whatsappMessageId: params.whatsappMessageId,
     whatsappMediaId: params.whatsappMediaId,
-    mediaUrl: params.mediaUrl,
+    mediaUrl,
     mimeType: params.mimeType,
     fileName: params.fileName,
-    fileSize: params.fileSize,
+    fileSize: params.fileSize ?? null,
     remetenteNumero: params.remetenteNumero
   });
 
-  await repo.save(msg);
+  return await repo.save(msg);
 }
