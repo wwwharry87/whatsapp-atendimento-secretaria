@@ -1,9 +1,17 @@
 // src/services/sessionService.ts
 import {
   getDepartamentoPorIndice,
-  montarMenuDepartamentos
+  montarMenuDepartamentos,
 } from "./departmentService";
-import { sendTextMessage } from "./whatsappService";
+
+import {
+  sendTextMessage,
+  sendAudioMessageById,
+  sendImageMessageById,
+  sendDocumentMessageById,
+  sendVideoMessageById,
+} from "./whatsappService";
+
 import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { salvarMensagem } from "./messageService";
@@ -17,6 +25,8 @@ export type SessionStatus =
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
+  | "ASK_SATISFACTION_RESOLUTION"
+  | "ASK_SATISFACTION_RATING"
   | "FINISHED";
 
 export type Session = {
@@ -30,6 +40,7 @@ export type Session = {
   atendimentoId: string;
   busyReminderCount?: number;
   lastActiveAt?: number;
+  protocolo?: string;
 };
 
 const sessionsByCitizen = new Map<string, Session>();
@@ -56,18 +67,36 @@ function normalizePhone(num?: string | null): string {
 function getAgentKey(num?: string | null): string {
   const normalized = normalizePhone(num);
   if (!normalized) return "";
-  // assim não importa se veio com +55, 0 na frente, etc.
   return normalized.slice(-8);
+}
+
+function lowerTipo(tipo: MensagemTipo): string {
+  return String(tipo || "").toLowerCase();
 }
 
 // ====================== BANCO / ATENDIMENTOS ======================
 
-async function criarNovoAtendimento(citizenNumber: string): Promise<Atendimento> {
+async function criarNovoAtendimento(
+  citizenNumber: string
+): Promise<Atendimento> {
   const repo = AppDataSource.getRepository(Atendimento);
-  const atendimento = repo.create({
-    cidadaoNumero: normalizePhone(citizenNumber),
-    status: "ASK_NAME" as AtendimentoStatus
+  const numero = normalizePhone(citizenNumber);
+
+  // Tenta recuperar o último atendimento para este número
+  const ultimo = await repo.findOne({
+    where: { cidadaoNumero: numero },
+    order: { criadoEm: "DESC" },
   });
+
+  const temNomeAnterior = !!ultimo?.cidadaoNome;
+
+  const atendimento = repo.create({
+    cidadaoNumero: numero,
+    // só envia cidadaoNome se existir (não passa null)
+    ...(temNomeAnterior && { cidadaoNome: ultimo!.cidadaoNome }),
+    status: (temNomeAnterior ? "ASK_DEPARTMENT" : "ASK_NAME") as AtendimentoStatus,
+  });
+
   await repo.save(atendimento);
   return atendimento;
 }
@@ -77,11 +106,14 @@ async function criarNovoAtendimentoParaOutroSetor(
   citizenName?: string
 ): Promise<Atendimento> {
   const repo = AppDataSource.getRepository(Atendimento);
+  const numero = normalizePhone(citizenNumber);
+
   const atendimento = repo.create({
-    cidadaoNumero: normalizePhone(citizenNumber),
-    cidadaoNome: citizenName,
-    status: "ASK_DEPARTMENT" as AtendimentoStatus
+    cidadaoNumero: numero,
+    ...(citizenName && { cidadaoNome: citizenName }),
+    status: "ASK_DEPARTMENT" as AtendimentoStatus,
   });
+
   await repo.save(atendimento);
   return atendimento;
 }
@@ -95,20 +127,21 @@ async function carregarAtendimentoAberto(
   const atendimento = await repo.findOne({
     where: {
       cidadaoNumero: numero,
-      status: "ACTIVE"
+      status: "ACTIVE",
     },
     relations: ["departamento"],
-    order: { criadoEm: "DESC" }
+    order: { criadoEm: "DESC" },
   });
 
   return atendimento;
 }
 
 /**
- * Recupera sessão de AGENTE direto do banco caso o mapa em memória tenha se perdido
- * (ex: restart do servidor ou key de agente não bateu).
+ * Recupera sessão de AGENTE direto do banco caso o mapa em memória tenha se perdido.
  */
-async function recoverAgentSession(agentNumberRaw: string): Promise<Session | undefined> {
+async function recoverAgentSession(
+  agentNumberRaw: string
+): Promise<Session | undefined> {
   const agentFull = normalizePhone(agentNumberRaw);
   if (!agentFull) return;
 
@@ -123,14 +156,14 @@ async function recoverAgentSession(agentNumberRaw: string): Promise<Session | un
       statuses: [
         "WAITING_AGENT_CONFIRMATION",
         "ACTIVE",
-        "LEAVE_MESSAGE_DECISION"
-      ] as AtendimentoStatus[]
+        "LEAVE_MESSAGE_DECISION",
+      ] as AtendimentoStatus[],
     })
     .andWhere(
       "(" +
         "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
         "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8" +
-      ")",
+        ")",
       { last8 }
     )
     .orderBy("a.atualizado_em", "DESC")
@@ -157,7 +190,8 @@ async function recoverAgentSession(agentNumberRaw: string): Promise<Session | un
     agentName: atendimento.agenteNome ?? undefined,
     atendimentoId: atendimento.id,
     busyReminderCount: 0,
-    lastActiveAt: Date.now()
+    lastActiveAt: Date.now(),
+    protocolo: atendimento.protocolo ?? undefined,
   };
 
   const citizenKey = normalizePhone(session.citizenNumber);
@@ -165,9 +199,7 @@ async function recoverAgentSession(agentNumberRaw: string): Promise<Session | un
 
   if (session.agentNumber) {
     const agentKey = getAgentKey(session.agentNumber);
-    if (agentKey) {
-      sessionsByAgent.set(agentKey, session);
-    }
+    if (agentKey) sessionsByAgent.set(agentKey, session);
   }
 
   console.log(
@@ -198,7 +230,8 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     agentName: atendimento.agenteNome ?? undefined,
     atendimentoId: atendimento.id,
     busyReminderCount: 0,
-    lastActiveAt: Date.now()
+    lastActiveAt: Date.now(),
+    protocolo: atendimento.protocolo ?? undefined,
   };
 
   sessionsByCitizen.set(citizenKey, session);
@@ -233,9 +266,13 @@ function generateProtocol(atendimentoId: string): string {
   return `ATD-${yyyy}${mm}${dd}-${short}`;
 }
 
-async function fecharAtendimentoComProtocolo(session: Session): Promise<string> {
+async function fecharAtendimentoComProtocolo(
+  session: Session
+): Promise<string> {
   const repo = AppDataSource.getRepository(Atendimento);
-  const atendimento = await repo.findOne({ where: { id: session.atendimentoId } });
+  const atendimento = await repo.findOne({
+    where: { id: session.atendimentoId },
+  });
 
   let protocolo = atendimento?.protocolo || null;
   if (!protocolo) {
@@ -245,10 +282,11 @@ async function fecharAtendimentoComProtocolo(session: Session): Promise<string> 
   await repo.update(session.atendimentoId, {
     status: "FINISHED" as AtendimentoStatus,
     encerradoEm: new Date(),
-    protocolo
+    protocolo,
   });
 
   session.status = "FINISHED";
+  session.protocolo = protocolo;
   return protocolo;
 }
 
@@ -387,11 +425,34 @@ function scheduleBusyReminder(session: Session) {
   }, 2 * 60 * 1000);
 }
 
+// ====================== PESQUISA DE SATISFAÇÃO ======================
+
+async function iniciarPesquisaSatisfacao(session: Session, protocolo: string) {
+  session.protocolo = protocolo;
+  session.status = "ASK_SATISFACTION_RESOLUTION";
+
+  await sendTextMessage(
+    session.citizenNumber,
+    `✅ Atendimento finalizado.\nProtocolo: *${protocolo}*.\n\n` +
+      `Antes de encerrar de vez, gostaríamos de saber:\n` +
+      `Suas solicitações foram *resolvidas*?\n\n` +
+      `1 - Sim, foi resolvido\n` +
+      `2 - Não foi resolvido`
+  );
+}
+
 // ====================== CIDADÃO ======================
 
 export async function handleCitizenMessage(msg: IncomingMessage) {
-  const { from, text = "", tipo, whatsappMessageId, mediaId, mimeType, fileName } =
-    msg;
+  const {
+    from,
+    text = "",
+    tipo,
+    whatsappMessageId,
+    mediaId,
+    mimeType,
+    fileName,
+  } = msg;
 
   const citizenKey = normalizePhone(from);
   const trimmed = text.trim();
@@ -412,8 +473,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     mimeType,
     fileName,
     fileSize: null,
-    remetenteNumero: citizenKey
+    remetenteNumero: citizenKey,
   });
+
+  // ---------- Fluxo: cidadão decide se deixa recado ou encerra ----------
 
   if (session.status === "LEAVE_MESSAGE_DECISION") {
     if (onlyDigits === "1") {
@@ -450,6 +513,69 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
+  // ---------- Fluxo: Pesquisa de satisfação - resolvido? ----------
+
+  if (session.status === "ASK_SATISFACTION_RESOLUTION") {
+    if (onlyDigits === "1" || onlyDigits === "2") {
+      const foiResolvido = onlyDigits === "1";
+
+      await atualizarAtendimento(session, {
+        foiResolvido,
+      });
+
+      session.status = "ASK_SATISFACTION_RATING";
+
+      await sendTextMessage(
+        session.citizenNumber,
+        "Obrigado pela resposta! 🙏\n" +
+          "Agora, de *1 a 5*, qual nota você dá para o atendimento recebido?\n\n" +
+          "1 - Péssimo\n" +
+          "2 - Ruim\n" +
+          "3 - Regular\n" +
+          "4 - Bom\n" +
+          "5 - Ótimo"
+      );
+      return;
+    }
+
+    await sendTextMessage(
+      session.citizenNumber,
+      "Por favor, responda apenas:\n1 - Sim, foi resolvido\n2 - Não foi resolvido"
+    );
+    return;
+  }
+
+  // ---------- Fluxo: Pesquisa de satisfação - nota ----------
+
+  if (session.status === "ASK_SATISFACTION_RATING") {
+    const nota = parseInt(onlyDigits, 10);
+
+    if (isNaN(nota) || nota < 1 || nota > 5) {
+      await sendTextMessage(
+        session.citizenNumber,
+        "Envie apenas um número de 1 a 5 para avaliar o atendimento."
+      );
+      return;
+    }
+
+    await atualizarAtendimento(session, {
+      notaSatisfacao: nota,
+    });
+
+    session.status = "ASK_ANOTHER_DEPARTMENT";
+
+    await sendTextMessage(
+      session.citizenNumber,
+      "Agradecemos sua avaliação! 🌟\n\n" +
+        "Deseja falar com *outro setor*?\n" +
+        "1 - Sim, abrir atendimento em outro setor\n" +
+        "2 - Não, encerrar por aqui"
+    );
+    return;
+  }
+
+  // ---------- Fluxo: Cidadão decidir falar com outro setor após encerramento ----------
+
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
     if (onlyDigits === "1") {
       const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
@@ -464,29 +590,35 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.agentNumber = undefined;
       session.agentName = undefined;
       session.busyReminderCount = 0;
+      session.protocolo = undefined;
 
       const menu = await montarMenuDepartamentos();
       await sendTextMessage(
         session.citizenNumber,
-        "Para qual setor deseja ir agora?\n\n" + menu
+        "Perfeito! 👌\nCom qual setor deseja falar agora?\n\n" + menu
       );
       return;
     }
     if (onlyDigits === "2") {
-      const protocolo = await fecharAtendimentoComProtocolo(session);
+      const protocoloMsg = session.protocolo
+        ? `Protocolo: *${session.protocolo}*.\n`
+        : "";
+
       await sendTextMessage(
         session.citizenNumber,
-        `✅ Atendimento encerrado.\nProtocolo: *${protocolo}*.`
+        `✅ Atendimento encerrado.\n${protocoloMsg}Obrigado pelo contato!`
       );
       sessionsByCitizen.delete(citizenKey);
       return;
     }
     await sendTextMessage(
       session.citizenNumber,
-      "Responda:\n1 - Outro departamento\n2 - Encerrar"
+      "Responda:\n1 - Outro departamento\n2 - Não, encerrar"
     );
     return;
   }
+
+  // ---------- Fluxo: Nome do cidadão (ASK_NAME) ----------
 
   if (session.status === "ASK_NAME") {
     if (!session.citizenName) {
@@ -508,7 +640,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
       await atualizarAtendimento(session, {
         cidadaoNome: session.citizenName,
-        status: "ASK_DEPARTMENT"
+        status: "ASK_DEPARTMENT",
       });
 
       const menu = await montarMenuDepartamentos();
@@ -519,6 +651,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
   }
+
+  // ---------- Fluxo: Escolha de departamento ----------
 
   if (session.status === "ASK_DEPARTMENT") {
     const numero = parseInt(trimmed, 10);
@@ -552,7 +686,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       departamentoId: departamento.id,
       agenteNumero: session.agentNumber,
       agenteNome: session.agentName,
-      status: "WAITING_AGENT_CONFIRMATION"
+      status: "WAITING_AGENT_CONFIRMATION",
     });
 
     if (session.agentNumber) {
@@ -594,7 +728,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
+  // ---------- Fluxo: Atendimento ativo (CIDADÃO → AGENTE) ----------
+
   if (session.status === "ACTIVE") {
+    // comandos de encerramento pelo cidadão
     if (
       ["encerrar", "finalizar", "sair"].includes(trimmedLower) ||
       onlyDigits === "3"
@@ -611,22 +748,36 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         if (key) sessionsByAgent.delete(key);
       }
 
-      await sendTextMessage(
-        session.citizenNumber,
-        `✅ Atendimento finalizado.\nProtocolo: *${protocolo}*.\nAté logo!`
-      );
-      sessionsByCitizen.delete(citizenKey);
+      await iniciarPesquisaSatisfacao(session, protocolo);
       return;
     }
 
+    // encaminha mensagem do cidadão para o agente
     if (session.agentNumber) {
       const agenteEnvio = normalizePhone(session.agentNumber);
-      let body = `👤 *${session.citizenName}*: `;
 
-      if (tipo === "TEXT") body += text;
-      else body += `[Enviou mídia: ${tipo}] ${text || ""}`;
+      if (tipo === "TEXT") {
+        const body = `👤 *${session.citizenName}*: ${text}`;
+        await sendTextMessage(agenteEnvio, body);
+      } else {
+        const body =
+          `👤 *${session.citizenName}* enviou um ${lowerTipo(
+            tipo
+          )}.\n` + (text ? `Mensagem: ${text}` : "");
+        await sendTextMessage(agenteEnvio, body);
 
-      await sendTextMessage(agenteEnvio, body);
+        if (mediaId) {
+          const t = lowerTipo(tipo);
+          if (t === "audio") await sendAudioMessageById(agenteEnvio, mediaId);
+          else if (t === "image")
+            await sendImageMessageById(agenteEnvio, mediaId);
+          else if (t === "document")
+            await sendDocumentMessageById(agenteEnvio, mediaId);
+          else if (t === "video")
+            await sendVideoMessageById(agenteEnvio, mediaId);
+        }
+      }
+
       scheduleActiveAutoClose(session);
     } else {
       await sendTextMessage(
@@ -656,8 +807,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 // ====================== AGENTE ======================
 
 export async function handleAgentMessage(msg: IncomingMessage) {
-  const { from, text = "", tipo, whatsappMessageId, mediaId, mimeType, fileName } =
-    msg;
+  const {
+    from,
+    text = "",
+    tipo,
+    whatsappMessageId,
+    mediaId,
+    mimeType,
+    fileName,
+  } = msg;
 
   const agentFullNumber = normalizePhone(from);
   const key = getAgentKey(from);
@@ -695,7 +853,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     mimeType,
     fileName,
     fileSize: null,
-    remetenteNumero: agentFullNumber
+    remetenteNumero: agentFullNumber,
   });
 
   if (trimmedLower === "ajuda" || trimmedLower === "menu") {
@@ -711,6 +869,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
+  // ---------- Agente encerra atendimento ----------
+
   if (
     session.status === "ACTIVE" &&
     (onlyDigits === "3" ||
@@ -722,23 +882,17 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       const oldKey = getAgentKey(session.agentNumber);
       if (oldKey) sessionsByAgent.delete(oldKey);
     }
-    session.status = "ASK_ANOTHER_DEPARTMENT";
 
     await sendTextMessage(
       agentFullNumber,
       `✅ Atendimento encerrado.\nProtocolo: *${protocolo}*.`
     );
 
-    await sendTextMessage(
-      session.citizenNumber,
-      `✅ O atendimento com *${session.departmentName}* foi finalizado pelo agente.\n` +
-        `Protocolo: *${protocolo}*.\n\n` +
-        `Deseja falar com *outro setor*?\n` +
-        `1 - Sim\n` +
-        `2 - Não, encerrar`
-    );
+    await iniciarPesquisaSatisfacao(session, protocolo);
     return;
   }
+
+  // ---------- Agente decide confirmar ou ficar ocupado ----------
 
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
     if (onlyDigits === "1") {
@@ -780,7 +934,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // transferência de setor
+  // ---------- transferência de setor (AGENTE) ----------
+
   if (session.status === "ACTIVE") {
     const words = trimmedLower.split(/\s+/);
     if (words[0] === "transferir" || words[0] === "setor") {
@@ -796,7 +951,10 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
       const novoDep = await getDepartamentoPorIndice(idx);
       if (!novoDep) {
-        await sendTextMessage(agentFullNumber, "Setor inválido. Verifique a lista.");
+        await sendTextMessage(
+          agentFullNumber,
+          "Setor inválido. Verifique a lista."
+        );
         return;
       }
 
@@ -818,7 +976,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
         departamentoId: novoDep.id,
         agenteNumero: session.agentNumber,
         agenteNome: session.agentName,
-        status: "WAITING_AGENT_CONFIRMATION"
+        status: "WAITING_AGENT_CONFIRMATION",
       });
 
       await sendTextMessage(
@@ -850,12 +1008,32 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     }
   }
 
-  if (session.status === "ACTIVE") {
-    let body = `👨‍💼 *${session.agentName || "Atendente"}*: `;
-    if (tipo === "TEXT") body += text;
-    else body += `[Enviou mídia: ${tipo}] ${text || ""}`;
+  // ---------- Fluxo: Atendimento ativo (AGENTE → CIDADÃO) ----------
 
-    await sendTextMessage(session.citizenNumber, body);
+  if (session.status === "ACTIVE") {
+    if (tipo === "TEXT") {
+      const body = `👨‍💼 *${session.agentName || "Atendente"}*: ${text}`;
+      await sendTextMessage(session.citizenNumber, body);
+    } else {
+      const body =
+        `👨‍💼 *${session.agentName || "Atendente"}* enviou um ${lowerTipo(
+          tipo
+        )}.\n` + (text ? `Mensagem: ${text}` : "");
+      await sendTextMessage(session.citizenNumber, body);
+
+      if (mediaId) {
+        const t = lowerTipo(tipo);
+        if (t === "audio")
+          await sendAudioMessageById(session.citizenNumber, mediaId);
+        else if (t === "image")
+          await sendImageMessageById(session.citizenNumber, mediaId);
+        else if (t === "document")
+          await sendDocumentMessageById(session.citizenNumber, mediaId);
+        else if (t === "video")
+          await sendVideoMessageById(session.citizenNumber, mediaId);
+      }
+    }
+
     scheduleActiveAutoClose(session);
     return;
   }

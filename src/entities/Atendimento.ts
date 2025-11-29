@@ -14,9 +14,9 @@ export type AtendimentoStatus =
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
-  | "ASK_ANOTHER_DEPARTMENT"   // 👈 novo status (cidadão decide outro setor ou encerrar)
-  | "LEAVE_MESSAGE_DECISION"   // 👈 novo status (perguntando se quer deixar recado)
-  | "LEAVE_MESSAGE"            // 👈 novo status (modo recado, registrando mensagens)
+  | "ASK_ANOTHER_DEPARTMENT"   // cidadão decide outro setor ou encerrar
+  | "LEAVE_MESSAGE_DECISION"   // perguntando se quer deixar recado
+  | "LEAVE_MESSAGE"            // modo recado, registrando mensagens
   | "FINISHED";
 
 @Entity("atendimentos")
@@ -28,7 +28,8 @@ export class Atendimento {
   cidadaoNumero!: string;
 
   @Column({ name: "cidadao_nome", nullable: true })
-  cidadaoNome?: string;
+  cidadaoNome?: string | null;
+
 
   @ManyToOne(() => Departamento, { nullable: true })
   @JoinColumn({ name: "departamento_id" })
@@ -54,6 +55,22 @@ export class Atendimento {
     nullable: true
   })
   protocolo?: string | null;
+
+  // ✅ NOVO: se o cidadão informou se foi resolvido (pesquisa de satisfação)
+  @Column({
+    name: "foi_resolvido",
+    type: "boolean",
+    nullable: true
+  })
+  foiResolvido?: boolean | null;
+
+  // ✅ NOVO: nota de satisfação (1 a 5)
+  @Column({
+    name: "nota_satisfacao",
+    type: "int",
+    nullable: true
+  })
+  notaSatisfacao?: number | null;
 
   @CreateDateColumn({ name: "criado_em" })
   criadoEm!: Date;
