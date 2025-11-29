@@ -16,10 +16,10 @@ app.get("/", (req, res) => {
 // Webhook do WhatsApp
 app.use("/webhook", webhookRouter);
 
-// Rotas de painel (lista de atendimentos, detalhes, etc.)
+// Rotas de painel / API
 app.use("/api", atendimentosRouter);
 
-// Rota para servir mídias (proxy WhatsApp)
+// ✅ Rota que serve mídia (áudio, imagem, documento, etc.)
 app.use("/media", mediaRouter);
 
 async function start() {
