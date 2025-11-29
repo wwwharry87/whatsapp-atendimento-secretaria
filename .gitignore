@@ -8,7 +8,7 @@
 **/coverage/
 **/.cache/
 **/.pnpm-store/
-**/.zip
+*/.zip
 
 # env & logs
 *.log
