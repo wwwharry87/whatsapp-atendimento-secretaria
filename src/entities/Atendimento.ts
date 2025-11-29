@@ -5,7 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
-  JoinColumn
+  JoinColumn,
 } from "typeorm";
 import { Departamento } from "./Departamento";
 
@@ -24,25 +24,34 @@ export class Atendimento {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  @Column({ name: "cidadao_numero" })
+  @Column({ name: "cidadao_numero", type: "varchar", length: 20 })
   cidadaoNumero!: string;
 
-  @Column({ name: "cidadao_nome", nullable: true })
+  @Column({
+    name: "cidadao_nome",
+    type: "varchar",
+    length: 255,
+    nullable: true,
+  })
   cidadaoNome?: string | null;
-
 
   @ManyToOne(() => Departamento, { nullable: true })
   @JoinColumn({ name: "departamento_id" })
   departamento?: Departamento | null;
 
-  @Column({ name: "departamento_id", nullable: true })
+  @Column({ name: "departamento_id", type: "int", nullable: true })
   departamentoId?: number | null;
 
-  @Column({ name: "agente_numero", nullable: true })
-  agenteNumero?: string;
+  @Column({ name: "agente_numero", type: "varchar", length: 20, nullable: true })
+  agenteNumero?: string | null;
 
-  @Column({ name: "agente_nome", nullable: true })
-  agenteNome?: string;
+  @Column({
+    name: "agente_nome",
+    type: "varchar",
+    length: 255,
+    nullable: true,
+  })
+  agenteNome?: string | null;
 
   @Column({ type: "varchar", length: 50 })
   status!: AtendimentoStatus;
@@ -52,23 +61,23 @@ export class Atendimento {
     name: "protocolo",
     type: "varchar",
     length: 50,
-    nullable: true
+    nullable: true,
   })
   protocolo?: string | null;
 
-  // ✅ NOVO: se o cidadão informou se foi resolvido (pesquisa de satisfação)
+  // se o cidadão informou se foi resolvido (pesquisa de satisfação)
   @Column({
     name: "foi_resolvido",
     type: "boolean",
-    nullable: true
+    nullable: true,
   })
   foiResolvido?: boolean | null;
 
-  // ✅ NOVO: nota de satisfação (1 a 5)
+  // nota de satisfação (1 a 5)
   @Column({
     name: "nota_satisfacao",
     type: "int",
-    nullable: true
+    nullable: true,
   })
   notaSatisfacao?: number | null;
 
