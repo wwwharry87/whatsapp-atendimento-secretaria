@@ -1,0 +1,31 @@
+# deps & builds
+**/node_modules/
+**/dist/
+**/build/
+**/.next/
+**/.turbo/
+**/.vercel/
+**/coverage/
+**/.cache/
+**/.pnpm-store/
+**/.zip
+
+# env & logs
+*.log
+*.log.*
+**/.env
+**/.env.local
+**/.env.*.local
+
+# sistema
+.DS_Store
+Thumbs.db
+
+# uploads temporários
+**/uploads/
+**/tmp/
+node_modules/
+dist/
+build/
+.env
+.env.*
