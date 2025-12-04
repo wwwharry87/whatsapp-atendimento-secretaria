@@ -10,6 +10,7 @@ import {
   sendImageMessageById,
   sendDocumentMessageById,
   sendVideoMessageById,
+  sendNovoAtendimentoTemplateToAgent, // 👈 novo
 } from "./whatsappService";
 
 import { AppDataSource } from "../database/data-source";
@@ -97,7 +98,6 @@ async function criarNovoAtendimento(
 
   const atendimento = repo.create({
     cidadaoNumero: numero,
-    // só envia cidadaoNome se existir (não passa null)
     ...(temNomeAnterior && { cidadaoNome: ultimo!.cidadaoNome }),
     status: (temNomeAnterior ? "ASK_DEPARTMENT" : "ASK_NAME") as AtendimentoStatus,
   });
@@ -119,7 +119,7 @@ async function criarNovoAtendimentoParaOutroSetor(
   const numero = normalizePhone(citizenNumber);
 
   console.log(
-    `[ATENDIMENTO] Criando novo atendimento para outro setor. Cidadão=${numero}, Nome=${citizenName}`
+    `[ATENDIMENTO] Criando novo atendimento (outro setor) para cidadão ${numero}...`
   );
 
   const atendimento = repo.create({
@@ -131,7 +131,7 @@ async function criarNovoAtendimentoParaOutroSetor(
   await repo.save(atendimento);
 
   console.log(
-    `[ATENDIMENTO] Novo atendimento (outro setor) id=${atendimento.id}, status=${atendimento.status}`
+    `[ATENDIMENTO] Novo atendimento (outro setor) criado: id=${atendimento.id}, cidadao=${numero}`
   );
 
   return atendimento;
@@ -162,7 +162,7 @@ async function carregarAtendimentoAberto(
     );
   } else {
     console.log(
-      `[ATENDIMENTO] Atendimento ACTIVE encontrado: id=${atendimento.id}, dep=${atendimento.departamento?.nome}`
+      `[ATENDIMENTO] Atendimento ACTIVE encontrado: id=${atendimento.id}, depId=${atendimento.departamentoId}, agente=${atendimento.agenteNumero}`
     );
   }
 
@@ -181,7 +181,7 @@ async function recoverAgentSession(
   const last8 = agentFull.slice(-8);
 
   console.log(
-    `[RECOVER_AGENT] Tentando recuperar sessão de agente pelo número=${agentFull} (last8=${last8})`
+    `[SESSION] Tentando recuperar sessão de agente a partir do banco. agentFull=${agentFull}, last8=${last8}`
   );
 
   const repo = AppDataSource.getRepository(Atendimento);
@@ -208,16 +208,15 @@ async function recoverAgentSession(
 
   if (!atendimento) {
     console.log(
-      `[RECOVER_AGENT] Nenhum atendimento pendente/ativo associado ao agente=${agentFull}.`
+      `[SESSION] Nenhum atendimento em andamento encontrado para agente last8=${last8}.`
     );
     return;
   }
 
-  // se o número salvo no atendimento estiver diferente do real, corrige
   const savedAgent = normalizePhone(atendimento.agenteNumero ?? "");
   if (savedAgent !== agentFull) {
     console.log(
-      `[RECOVER_AGENT] Corrigindo agente_numero no atendimento id=${atendimento.id} de ${savedAgent} para ${agentFull}`
+      `[SESSION] Corrigindo agente_numero no atendimento id=${atendimento.id} de=${savedAgent} para=${agentFull}`
     );
     await repo.update(atendimento.id, { agenteNumero: agentFull });
     atendimento.agenteNumero = agentFull;
@@ -246,7 +245,7 @@ async function recoverAgentSession(
   }
 
   console.log(
-    `🔄 Sessão do agente recuperada do banco. Agente=${agentFull} Cidadão=${session.citizenNumber}, status=${session.status}, atendimentoId=${session.atendimentoId}`
+    `🔄 Sessão do agente recuperada do banco. Agente=${agentFull} Cidadão=${session.citizenNumber} atendimentoId=${session.atendimentoId}`
   );
 
   return session;
@@ -294,7 +293,7 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
   }
 
   console.log(
-    `[SESSION] Nova sessão criada para cidadão=${citizenKey}. status=${session.status}, atendimentoId=${session.atendimentoId}, dep=${session.departmentName}, agente=${session.agentNumber}`
+    `[SESSION] Nova sessão criada para cidadão=${citizenKey}. status=${session.status}, atendimentoId=${session.atendimentoId}, dep=${session.departmentId}, agente=${session.agentNumber}`
   );
 
   return session;
@@ -302,11 +301,7 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
 
 export function isAgentNumber(whatsappNumber: string): boolean {
   const key = getAgentKey(whatsappNumber);
-  const result = sessionsByAgent.has(key);
-  console.log(
-    `[CHECK_AGENT] isAgentNumber=${whatsappNumber} key=${key} => ${result}`
-  );
-  return result;
+  return sessionsByAgent.has(key);
 }
 
 async function atualizarAtendimento(
@@ -314,10 +309,12 @@ async function atualizarAtendimento(
   parcial: Partial<Atendimento>
 ) {
   const repo = AppDataSource.getRepository(Atendimento);
+
   console.log(
     `[ATENDIMENTO] Atualizando atendimento id=${session.atendimentoId} com:`,
     parcial
   );
+
   await repo.update(session.atendimentoId, parcial);
 }
 
@@ -364,7 +361,7 @@ async function fecharAtendimentoComProtocolo(
  * Verifica se o agente já está ocupado (tem atendimento ACTIVE ou WAITING_AGENT_CONFIRMATION)
  * e quantas pessoas já estão na fila (IN_QUEUE).
  *
- * Agora usando TTL de tempo: só considera "ocupado" se o atendimento for recente.
+ * Usa TTL de tempo para não "congelar" ocupado para sempre.
  */
 async function getAgentBusyAndQueueCount(
   agentNumber: string
@@ -374,7 +371,6 @@ async function getAgentBusyAndQueueCount(
   const last8 = normalized.slice(-8);
 
   const agora = new Date();
-
   const BUSY_TTL_MINUTOS = 10;
   const FILA_TTL_MINUTOS = 60;
 
@@ -386,11 +382,9 @@ async function getAgentBusyAndQueueCount(
   );
 
   console.log(
-    `[QUEUE] Verificando ocupação/fila para agente=${agentNumber} (last8=${last8}) ` +
-      `limiteBusy=${limiteBusy.toISOString()} limiteFila=${limiteFila.toISOString()}`
+    `[QUEUE] Verificando ocupação/fila para agente=${agentNumber} (last8=${last8}) limiteBusy=${limiteBusy.toISOString()} limiteFila=${limiteFila.toISOString()}`
   );
 
-  // Agente ocupado? (apenas atendimentos recentes)
   const busyCount = await repo
     .createQueryBuilder("a")
     .leftJoin("a.departamento", "d")
@@ -407,7 +401,6 @@ async function getAgentBusyAndQueueCount(
     )
     .getCount();
 
-  // Quantos já estão na fila (IN_QUEUE) pra esse mesmo agente (fila "viva")
   const queueCount = await repo
     .createQueryBuilder("a")
     .leftJoin("a.departamento", "d")
@@ -444,13 +437,12 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
   const departmentId = sessionEncerrada.departmentId ?? null;
 
   console.log(
-    `[QUEUE_NEXT] Procurando próximo da fila após encerrar atendimento=${sessionEncerrada.atendimentoId} ` +
-      `agent=${agentNumber} depId=${departmentId}`
+    `[QUEUE_NEXT] Procurando próximo da fila após encerrar atendimento=${sessionEncerrada.atendimentoId} agent=${agentNumber} depId=${departmentId}`
   );
 
   if (!agentNumber && !departmentId) {
     console.log(
-      `[QUEUE_NEXT] Não há agentNumber nem departmentId para buscar próximo da fila.`
+      "[QUEUE_NEXT] Não há agentNumber nem departmentId para buscar próximo."
     );
     return;
   }
@@ -476,21 +468,20 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
   const proximo = await qb.orderBy("a.criado_em", "ASC").getOne();
   if (!proximo) {
     console.log(
-      `[QUEUE_NEXT] Nenhum atendimento IN_QUEUE encontrado para este agente/setor.`
+      "[QUEUE_NEXT] Nenhum atendimento IN_QUEUE encontrado para este agente/setor."
     );
     return;
   }
+
+  console.log(
+    `[QUEUE_NEXT] Próximo atendimento encontrado na fila: id=${proximo.id}, cidadao=${proximo.cidadaoNumero}`
+  );
 
   const citizenNumber = normalizePhone(proximo.cidadaoNumero);
   const agentFull =
     proximo.agenteNumero && proximo.agenteNumero.trim()
       ? normalizePhone(proximo.agenteNumero)
       : agentNumber;
-
-  console.log(
-    `[QUEUE_NEXT] Próximo atendimento encontrado: id=${proximo.id}, cidadao=${citizenNumber}, ` +
-      `dep=${proximo.departamento?.nome}, agent=${agentFull}`
-  );
 
   const novaSession: Session = {
     citizenNumber,
@@ -519,11 +510,6 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     agenteNome: novaSession.agentName ?? proximo.agenteNome,
   });
 
-  console.log(
-    `[QUEUE_NEXT] Sessão criada para próximo da fila. cidadao=${citizenNumber}, agent=${agentFull}, ` +
-      `status=WAITING_AGENT_CONFIRMATION`
-  );
-
   await sendTextMessage(
     novaSession.citizenNumber,
     `📢 Chegou a sua vez! Estamos chamando o responsável de *${novaSession.departmentName}* para iniciar seu atendimento.`
@@ -531,9 +517,6 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
 
   if (novaSession.agentNumber) {
     const agenteEnvio = normalizePhone(novaSession.agentNumber);
-    console.log(
-      `[QUEUE_NEXT] Notificando agente=${agenteEnvio} sobre novo atendimento da fila.`
-    );
     await sendTextMessage(
       agenteEnvio,
       `📲 *Nova solicitação (fila) - ${novaSession.departmentName}*\n\n` +
@@ -555,19 +538,11 @@ function scheduleLeaveMessageAutoClose(session: Session) {
   const atendimentoId = session.atendimentoId;
   const MINUTOS = 10;
 
-  console.log(
-    `[TIMER] scheduleLeaveMessageAutoClose agendado para atendimento=${atendimentoId} em ${MINUTOS} min.`
-  );
-
   setTimeout(async () => {
     const current = sessionsByCitizen.get(citizenKey);
     if (!current) return;
     if (current.atendimentoId !== atendimentoId) return;
     if (current.status !== "LEAVE_MESSAGE") return;
-
-    console.log(
-      `[TIMER] Auto-fechando atendimento (LEAVE_MESSAGE) id=${atendimentoId}`
-    );
 
     const protocolo = await fecharAtendimentoComProtocolo(current);
 
@@ -598,21 +573,12 @@ function scheduleActiveAutoClose(session: Session) {
   const scheduledAt = Date.now();
   session.lastActiveAt = scheduledAt;
 
-  console.log(
-    `[TIMER] scheduleActiveAutoClose agendado para atendimento=${atendimentoId} em ${TIMEOUT_MINUTOS} min. ` +
-      `cidadao=${citizenKey}, agent=${agentFullNumber}`
-  );
-
   setTimeout(async () => {
     const current = sessionsByCitizen.get(citizenKey);
     if (!current) return;
     if (current.atendimentoId !== atendimentoId) return;
     if (current.status !== "ACTIVE") return;
     if (current.lastActiveAt !== scheduledAt) return;
-
-    console.log(
-      `[TIMER] Auto-fechando atendimento (ACTIVE inativo) id=${atendimentoId}`
-    );
 
     const protocolo = await fecharAtendimentoComProtocolo(current);
 
@@ -721,10 +687,6 @@ async function iniciarPesquisaSatisfacao(session: Session, protocolo: string) {
   session.protocolo = protocolo;
   session.status = "ASK_SATISFACTION_RESOLUTION";
 
-  console.log(
-    `[PESQUISA] Iniciando pesquisa de satisfação para atendimento=${session.atendimentoId}, protocolo=${protocolo}`
-  );
-
   await sendTextMessage(
     session.citizenNumber,
     `✅ Atendimento finalizado.\nProtocolo: *${protocolo}*.\n\n` +
@@ -754,7 +716,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   const onlyDigits = trimmed.replace(/\D/g, "");
 
   console.log(
-    `\n[CITIZEN_MSG] De=${citizenKey} tipo=${tipo} texto="${text}" mediaId=${mediaId}`
+    `[CITIZEN_MSG] De=${citizenKey} tipo=${tipo} texto="${text}" mediaId=${mediaId}`
   );
 
   const session = await getOrCreateSession(citizenKey);
@@ -782,7 +744,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   if (session.status === "LEAVE_MESSAGE_DECISION") {
     console.log(
-      `[FLOW] LEAVE_MESSAGE_DECISION atendimento=${session.atendimentoId} resposta="${onlyDigits}"`
+      `[FLOW] LEAVE_MESSAGE_DECISION atendimento=${session.atendimentoId} resposta="${trimmed}"`
     );
 
     if (onlyDigits === "1") {
@@ -814,10 +776,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   }
 
   if (session.status === "LEAVE_MESSAGE") {
-    console.log(
-      `[FLOW] LEAVE_MESSAGE atendimento=${session.atendimentoId} - cidadão enviou mais conteúdo.`
-    );
-
     await sendTextMessage(
       session.citizenNumber,
       "Recebido ✅. Se tiver mais informações, pode enviar. Encerraremos automaticamente em breve."
@@ -829,10 +787,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   // ---------- Fluxo: Fila (IN_QUEUE) ----------
 
   if (session.status === "IN_QUEUE") {
-    console.log(
-      `[FLOW] IN_QUEUE atendimento=${session.atendimentoId} - cidadão enviou mensagem enquanto aguarda.`
-    );
-
     const repo = AppDataSource.getRepository(Atendimento);
     if (session.agentNumber) {
       const normalized = normalizePhone(session.agentNumber);
@@ -872,10 +826,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   // ---------- Fluxo: Pesquisa de satisfação - resolvido? ----------
 
   if (session.status === "ASK_SATISFACTION_RESOLUTION") {
-    console.log(
-      `[PESQUISA] ASK_SATISFACTION_RESOLUTION atendimento=${session.atendimentoId} resp=${onlyDigits}`
-    );
-
     if (onlyDigits === "1" || onlyDigits === "2") {
       const foiResolvido = onlyDigits === "1";
 
@@ -910,10 +860,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   if (session.status === "ASK_SATISFACTION_RATING") {
     const nota = parseInt(onlyDigits, 10);
 
-    console.log(
-      `[PESQUISA] ASK_SATISFACTION_RATING atendimento=${session.atendimentoId} nota=${nota}`
-    );
-
     if (isNaN(nota) || nota < 1 || nota > 5) {
       await sendTextMessage(
         session.citizenNumber,
@@ -941,10 +887,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   // ---------- Fluxo: Cidadão decidir falar com outro setor após encerramento ----------
 
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
-    console.log(
-      `[FLOW] ASK_ANOTHER_DEPARTMENT atendimento=${session.atendimentoId} resp=${onlyDigits}`
-    );
-
     if (onlyDigits === "1") {
       const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
         session.citizenNumber,
@@ -989,10 +931,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   // ---------- Fluxo: Nome do cidadão (ASK_NAME) ----------
 
   if (session.status === "ASK_NAME") {
-    console.log(
-      `[FLOW] ASK_NAME atendimento=${session.atendimentoId} texto="${trimmed}"`
-    );
-
     if (!session.citizenName) {
       const ignoreWords = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite"];
       const isGreeting =
@@ -1042,10 +980,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     }
 
     const departamento = await getDepartamentoPorIndice(numero);
-    console.log(
-      `[DEPARTAMENTO] Opção menu=${numero} resultou em departamento=${departamento?.nome} id=${departamento?.id}`
-    );
-
     if (!departamento) {
       const menu = await montarMenuDepartamentos();
       await sendTextMessage(
@@ -1054,6 +988,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
       return;
     }
+
+    console.log(
+      `[DEPARTAMENTO] Opção menu=${numero} resultou em departamento=${departamento.nome} id=${departamento.id}`
+    );
 
     session.departmentId = departamento.id;
     session.departmentName = departamento.nome;
@@ -1066,7 +1004,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     );
 
     if (!session.agentNumber) {
-      // sem agente configurado
       await atualizarAtendimento(session, {
         departamentoId: departamento.id,
         status: "ASK_DEPARTMENT",
@@ -1079,7 +1016,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
-    // Verifica se o agente está ocupado e se há fila (considerando TTL)
+    // Verifica se o agente está ocupado e se há fila
     const { busy, queueCount } = await getAgentBusyAndQueueCount(
       session.agentNumber
     );
@@ -1089,7 +1026,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     );
 
     if (busy) {
-      // coloca na fila
       session.status = "IN_QUEUE";
 
       await atualizarAtendimento(session, {
@@ -1101,10 +1037,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
       const pos = queueCount + 1;
 
-      console.log(
-        `[QUEUE] Cidadão=${session.citizenNumber} entrou na fila para dep=${departamento.nome}, pos=${pos}`
-      );
-
       await sendTextMessage(
         session.citizenNumber,
         `📥 Todos os atendentes de *${departamento.nome}* estão ocupados no momento.\n` +
@@ -1112,7 +1044,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
           `Quando chegar sua vez, vamos te avisar aqui.`
       );
 
-      // Não avisa o agente ainda, só quando sair da fila
       return;
     }
 
@@ -1130,36 +1061,38 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     if (key) sessionsByAgent.set(key, session);
     const agenteEnvio = normalizePhone(session.agentNumber);
 
-    console.log(
-      `[ROTEAMENTO] Enviando nova solicitação para agente=${agenteEnvio} dep=${departamento.nome} ` +
-        `cidadao=${session.citizenNumber} atendimento=${session.atendimentoId}`
-    );
-
     await sendTextMessage(
       session.citizenNumber,
       `Aguarde um instante, estou contatando o setor *${departamento.nome}*. ⏳\n` +
         `Pode ir descrevendo sua situação aqui.`
     );
 
-    await sendTextMessage(
-      agenteEnvio,
-      `📲 *Nova solicitação - ${departamento.nome}*\n\n` +
-        `Munícipe: *${session.citizenName}*\n` +
-        `Telefone: ${session.citizenNumber}\n\n` +
-        `Digite:\n` +
-        `1 - Atender agora\n` +
-        `2 - Informar que está ocupado`
+    console.log(
+      `[ROTEAMENTO] Enviando nova solicitação para agente=${agenteEnvio} dep=${departamento.nome} cidadao=${session.citizenNumber} atendimento=${session.atendimentoId}`
     );
+
+    console.log(
+      "[TEMPLATE] Chamando novo_atendimento_agente para agente=",
+      agenteEnvio,
+      "dep=",
+      departamento.nome,
+      "cidadao=",
+      session.citizenNumber
+    );
+
+    await sendNovoAtendimentoTemplateToAgent({
+      to: agenteEnvio,
+      departamentoNome: departamento.nome,
+      cidadaoNome: session.citizenName ?? "Cidadão",
+      telefoneCidadao: session.citizenNumber,
+      resumo: "-", // depois podemos colocar um resumo do problema
+    });
 
     scheduleBusyReminder(session);
     return;
   }
 
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
-    console.log(
-      `[FLOW] WAITING_AGENT_CONFIRMATION atendimento=${session.atendimentoId} - cidadão mandou msg.`
-    );
-
     await sendTextMessage(
       session.citizenNumber,
       "O responsável ainda não confirmou, mas sua mensagem já foi salva. Aguarde mais um pouco ou deixe tudo registrado aqui."
@@ -1170,19 +1103,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   // ---------- Fluxo: Atendimento ativo (CIDADÃO → AGENTE) ----------
 
   if (session.status === "ACTIVE") {
-    console.log(
-      `[FLOW] ACTIVE (CITIZEN->AGENT) atendimento=${session.atendimentoId} texto="${text}" tipo=${tipo}`
-    );
-
-    // comandos de encerramento pelo cidadão
     if (
       ["encerrar", "finalizar", "sair"].includes(trimmedLower) ||
       onlyDigits === "3"
     ) {
-      console.log(
-        `[FLOW] Cidadão solicitou encerramento manual atendimento=${session.atendimentoId}`
-      );
-
       const protocolo = await fecharAtendimentoComProtocolo(session);
 
       if (session.agentNumber) {
@@ -1201,25 +1125,17 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
-    // encaminha mensagem do cidadão para o agente
     if (session.agentNumber) {
       const agenteEnvio = normalizePhone(session.agentNumber);
 
       if (tipo === "TEXT") {
         const body = `👤 *${session.citizenName}*: ${text}`;
-        console.log(
-          `[ROTEAMENTO] Encaminhando TEXTO do cidadão=${session.citizenNumber} para agente=${agenteEnvio}. body="${body}"`
-        );
         await sendTextMessage(agenteEnvio, body);
       } else {
         const body =
           `👤 *${session.citizenName}* enviou um ${lowerTipo(
             tipo
           )}.\n` + (text ? `Mensagem: ${text}` : "");
-        console.log(
-          `[ROTEAMENTO] Encaminhando MIDIA do cidadão=${session.citizenNumber} para agente=${agenteEnvio}. ` +
-            `tipo=${tipo}, mediaId=${mediaId}`
-        );
         await sendTextMessage(agenteEnvio, body);
 
         if (mediaId) {
@@ -1236,9 +1152,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
       scheduleActiveAutoClose(session);
     } else {
-      console.log(
-        `[ERRO] Sessão ACTIVE mas sem agentNumber definido. atendimento=${session.atendimentoId}`
-      );
       await sendTextMessage(
         session.citizenNumber,
         "Erro: Não consegui contatar o agente."
@@ -1248,10 +1161,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   }
 
   if (session.status === "FINISHED") {
-    console.log(
-      `[FLOW] Cidadão enviou mensagem para atendimento já FINISHED. atendimento=${session.atendimentoId}`
-    );
-
     await sendTextMessage(
       session.citizenNumber,
       "Este atendimento já foi encerrado. Mande um *oi* para iniciar outro."
@@ -1259,10 +1168,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     sessionsByCitizen.delete(citizenKey);
     return;
   }
-
-  console.log(
-    `[FLOW] Estado não mapeado ou sessão inconsistente. status=${session.status} atendimento=${session.atendimentoId}`
-  );
 
   await sendTextMessage(
     session.citizenNumber,
@@ -1291,15 +1196,12 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   const onlyDigits = trimmed.replace(/\D/g, "");
 
   console.log(
-    `\n[AGENT_MSG] De=${agentFullNumber} key=${key} tipo=${tipo} texto="${text}" mediaId=${mediaId}`
+    `[AGENT_MSG] De=${agentFullNumber} tipo=${tipo} texto="${text}" mediaId=${mediaId}`
   );
 
   let session = sessionsByAgent.get(key);
 
   if (!session) {
-    console.log(
-      `[AGENT_MSG] Sessão não encontrada em memória para key=${key}. Tentando recoverAgentSession...`
-    );
     session = await recoverAgentSession(agentFullNumber);
   }
 
@@ -1313,11 +1215,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     );
     return;
   }
-
-  console.log(
-    `[AGENT_MSG] Sessão atual: atendimentoId=${session.atendimentoId}, status=${session.status}, ` +
-      `cidadao=${session.citizenNumber}, dep=${session.departmentName}`
-  );
 
   session.lastActiveAt = Date.now();
 
@@ -1356,10 +1253,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       trimmedLower === "encerrar" ||
       trimmedLower === "finalizar")
   ) {
-    console.log(
-      `[FLOW_AGENT] Agente pediu encerramento ACTIVE. atendimento=${session.atendimentoId}`
-    );
-
     const protocolo = await fecharAtendimentoComProtocolo(session);
     if (session.agentNumber) {
       const oldKey = getAgentKey(session.agentNumber);
@@ -1380,10 +1273,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   // ---------- Agente decide confirmar ou ficar ocupado ----------
 
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
-    console.log(
-      `[FLOW_AGENT] WAITING_AGENT_CONFIRMATION atendimento=${session.atendimentoId} resp=${onlyDigits}`
-    );
-
     if (onlyDigits === "1") {
       session.status = "ACTIVE";
 
@@ -1427,12 +1316,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   if (session.status === "ACTIVE") {
     const words = trimmedLower.split(/\s+/);
-
     if (words[0] === "transferir" || words[0] === "setor") {
-      console.log(
-        `[FLOW_AGENT] Transferência solicitada atendimento=${session.atendimentoId} comando="${trimmedLower}"`
-      );
-
       const idx = parseInt(words[1], 10);
 
       if (isNaN(idx)) {
@@ -1444,10 +1328,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       }
 
       const novoDep = await getDepartamentoPorIndice(idx);
-      console.log(
-        `[FLOW_AGENT] Transferir para indice=${idx} => dep=${novoDep?.nome} id=${novoDep?.id}`
-      );
-
       if (!novoDep) {
         await sendTextMessage(
           agentFullNumber,
@@ -1491,10 +1371,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
         if (novoKey) sessionsByAgent.set(novoKey, session);
         const novoAgenteZap = normalizePhone(session.agentNumber);
 
-        console.log(
-          `[ROTEAMENTO] Enviando notificação de transferência para novo agente=${novoAgenteZap} dep=${novoDep.nome}`
-        );
-
         await sendTextMessage(
           novoAgenteZap,
           `📲 *Transferência de setor*\n` +
@@ -1513,24 +1389,14 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   // ---------- Fluxo: Atendimento ativo (AGENTE → CIDADÃO) ----------
 
   if (session.status === "ACTIVE") {
-    console.log(
-      `[FLOW_AGENT] ACTIVE (AGENT->CITIZEN) atendimento=${session.atendimentoId} texto="${text}" tipo=${tipo}`
-    );
-
     if (tipo === "TEXT") {
       const body = `👨‍💼 *${session.agentName || "Atendente"}*: ${text}`;
-      console.log(
-        `[ROTEAMENTO] Agente enviando TEXTO para cidadão=${session.citizenNumber}. body="${body}"`
-      );
       await sendTextMessage(session.citizenNumber, body);
     } else {
       const body =
         `👨‍💼 *${session.agentName || "Atendente"}* enviou um ${lowerTipo(
           tipo
         )}.\n` + (text ? `Mensagem: ${text}` : "");
-      console.log(
-        `[ROTEAMENTO] Agente enviando MIDIA para cidadão=${session.citizenNumber}. tipo=${tipo}, mediaId=${mediaId}`
-      );
       await sendTextMessage(session.citizenNumber, body);
 
       if (mediaId) {
@@ -1549,10 +1415,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     scheduleActiveAutoClose(session);
     return;
   }
-
-  console.log(
-    `[FLOW_AGENT] Comando não reconhecido ou atendimento já encerrado. status=${session.status} atendimento=${session.atendimentoId}`
-  );
 
   await sendTextMessage(
     agentFullNumber,
