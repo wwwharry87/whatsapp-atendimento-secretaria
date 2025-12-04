@@ -182,56 +182,72 @@ export async function sendVideoMessageById(to: string, mediaId: string) {
 
 type NovoAtendimentoTemplateParams = {
   to: string;
-  departamentoNome: string;
-  cidadaoNome: string;
-  telefoneCidadao: string;
-  resumo?: string;
+  departamentoNome: string; // cabeçalho {{1}}
+  cidadaoNome: string;      // body {{1}}
+  telefoneCidadao: string;  // body {{2}}
+  resumo: string;           // body {{3}}
 };
 
 /**
- * Template "novo_atendimento_agente" (precisa existir/aprovado na Meta)
+ * Template "novo_atendimento_agente"
  *
- * Corpo sugerido:
+ * Cabeçalho:
+ *   Nova solicitação - {{1}}     -> nome do setor
  *
- * 📲 *Nova solicitação - {{1}}*
+ * Corpo:
+ *   Munícipe: *{{1}}*            -> nome do cidadão
+ *   Telefone: {{2}}              -> número do cidadão
+ *   Resumo: {{3}}                -> primeira mensagem / resumo
  *
- * Munícipe: *{{2}}*
- * Telefone: {{3}}
- *
- * Resumo: {{4}}
- *
- * Digite:
- * 1 - Atender agora
- * 2 - Informar que está ocupado
+ *   Digite:
+ *   1 - ...
+ *   2 - ...
  */
 export async function sendNovoAtendimentoTemplateToAgent(
   params: NovoAtendimentoTemplateParams
 ) {
   if (!isWhatsConfigured()) return;
 
-  const {
-    to,
-    departamentoNome,
-    cidadaoNome,
-    telefoneCidadao,
-    resumo = "-",
-  } = params;
+  const { to, departamentoNome, cidadaoNome, telefoneCidadao, resumo } =
+    params;
 
   const payload = {
     messaging_product: "whatsapp",
     to,
     type: "template",
     template: {
-      name: "novo_atendimento_agente", // 👈 nome EXATO do template na Meta
+      name: "novo_atendimento_agente", // nome EXATO do template na Meta
       language: { code: "pt_BR" },
       components: [
+        // Cabeçalho: "Nova solicitação - {{1}}"
+        {
+          type: "header",
+          parameters: [
+            {
+              type: "text",
+              text: departamentoNome || "-", // {{1}} do header
+            },
+          ],
+        },
+        // Corpo:
+        // Munícipe: *{{1}}*
+        // Telefone: {{2}}
+        // Resumo: {{3}}
         {
           type: "body",
           parameters: [
-            { type: "text", text: departamentoNome || "-" }, // {{1}}
-            { type: "text", text: cidadaoNome || "Cidadão" }, // {{2}}
-            { type: "text", text: telefoneCidadao || "-" }, // {{3}}
-            { type: "text", text: resumo || "-" }, // {{4}}
+            {
+              type: "text",
+              text: cidadaoNome || "Cidadão", // {{1}} do body
+            },
+            {
+              type: "text",
+              text: telefoneCidadao || "-", // {{2}} do body
+            },
+            {
+              type: "text",
+              text: resumo || "-", // {{3}} do body
+            },
           ],
         },
       ],
@@ -266,7 +282,8 @@ export async function sendNovoAtendimentoTemplateToAgent(
         to,
         `📲 *Nova solicitação - ${departamentoNome}*\n\n` +
           `Munícipe: *${cidadaoNome || "Cidadão"}*\n` +
-          `Telefone: ${telefoneCidadao}\n\n` +
+          `Telefone: ${telefoneCidadao}\n` +
+          `Resumo: ${resumo || "-"}\n\n` +
           `Digite:\n` +
           `1 - Atender agora\n` +
           `2 - Informar que está ocupado`
