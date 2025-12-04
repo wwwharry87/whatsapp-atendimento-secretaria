@@ -296,6 +296,8 @@ async function fecharAtendimentoComProtocolo(
 /**
  * Verifica se o agente já está ocupado (tem atendimento ACTIVE ou WAITING_AGENT_CONFIRMATION)
  * e quantas pessoas já estão na fila (IN_QUEUE).
+ *
+ * Agora usando TTL de tempo: só considera "ocupado" se o atendimento for recente.
  */
 async function getAgentBusyAndQueueCount(
   agentNumber: string
@@ -304,13 +306,27 @@ async function getAgentBusyAndQueueCount(
   const normalized = normalizePhone(agentNumber);
   const last8 = normalized.slice(-8);
 
-  // Agente ocupado? (existe atendimento ativo/aguardando)
+  const agora = new Date();
+
+  // depois de X minutos sem atualizar, não consideramos mais "ocupado"
+  const BUSY_TTL_MINUTOS = 10;
+  const FILA_TTL_MINUTOS = 60;
+
+  const limiteBusy = new Date(
+    agora.getTime() - BUSY_TTL_MINUTOS * 60 * 1000
+  );
+  const limiteFila = new Date(
+    agora.getTime() - FILA_TTL_MINUTOS * 60 * 1000
+  );
+
+  // Agente ocupado? (apenas atendimentos recentes)
   const busyCount = await repo
     .createQueryBuilder("a")
     .leftJoin("a.departamento", "d")
     .where("a.status IN (:...statuses)", {
       statuses: ["WAITING_AGENT_CONFIRMATION", "ACTIVE"] as AtendimentoStatus[],
     })
+    .andWhere("a.atualizado_em > :limiteBusy", { limiteBusy })
     .andWhere(
       "(" +
         "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
@@ -320,11 +336,12 @@ async function getAgentBusyAndQueueCount(
     )
     .getCount();
 
-  // Quantos já estão na fila (IN_QUEUE) pra esse mesmo agente
+  // Quantos já estão na fila (IN_QUEUE) pra esse mesmo agente (fila "viva")
   const queueCount = await repo
     .createQueryBuilder("a")
     .leftJoin("a.departamento", "d")
     .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus })
+    .andWhere("a.atualizado_em > :limiteFila", { limiteFila })
     .andWhere(
       "(" +
         "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
@@ -882,7 +899,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
-    // Verifica se o agente está ocupado e se há fila
+    // Verifica se o agente está ocupado e se há fila (considerando TTL)
     const { busy, queueCount } = await getAgentBusyAndQueueCount(
       session.agentNumber
     );
