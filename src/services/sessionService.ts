@@ -78,17 +78,49 @@ function lowerTipo(tipo: MensagemTipo): string {
   return String(tipo || "").toLowerCase();
 }
 
+/**
+ * Saudação baseada no horário (fuso: America/Sao_Paulo)
+ *
+ * - 04:00 até 11:59 → Bom dia
+ * - 12:00 até 17:59 → Boa tarde
+ * - 18:00 até 03:59 → Boa noite
+ */
 function getSaudacaoPorHorario(): string {
-  const hora = new Date().getHours();
-  if (hora < 12) return "Bom dia";
-  if (hora < 18) return "Boa tarde";
-  return "Boa noite";
+  try {
+    const agoraBR = new Date(
+      new Date().toLocaleString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+      })
+    );
+    const hora = agoraBR.getHours();
+
+    if (hora >= 4 && hora < 12) return "Bom dia";
+    if (hora >= 12 && hora < 18) return "Boa tarde";
+    return "Boa noite";
+  } catch {
+    // fallback caso dê algum erro com timeZone
+    const hora = new Date().getHours();
+    if (hora >= 4 && hora < 12) return "Bom dia";
+    if (hora >= 12 && hora < 18) return "Boa tarde";
+    return "Boa noite";
+  }
 }
 
 function isGreeting(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return false;
-  const ignoreWords = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite"];
+
+  // incluí "menu" aqui também pra disparar o template bonitão
+  const ignoreWords = [
+    "oi",
+    "ola",
+    "olá",
+    "bom dia",
+    "boa tarde",
+    "boa noite",
+    "menu",
+  ];
+
   return (
     ignoreWords.some((w) => trimmed.startsWith(w)) &&
     trimmed.split(" ").length <= 3
@@ -952,14 +984,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.busyReminderCount = 0;
       session.protocolo = undefined;
 
-      const menu = await montarMenuDepartamentos();
+      // aqui usamos menu SEM rodapé, pois o template já tem o texto final
+      const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
 
       await sendMenuComNomeTemplate({
         to: session.citizenNumber,
         saudacao,
         citizenName: session.citizenName ?? "Cidadão",
-        menuTexto: menu,
+        menuTexto: menuSemRodape,
       });
       return;
     }
@@ -1011,14 +1044,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         status: "ASK_DEPARTMENT",
       });
 
-      const menu = await montarMenuDepartamentos();
+      // menu SEM rodapé para não ficar duplicando texto com o template
+      const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
 
       await sendMenuComNomeTemplate({
         to: session.citizenNumber,
         saudacao,
         citizenName: session.citizenName,
-        menuTexto: menu,
+        menuTexto: menuSemRodape,
       });
       return;
     }
@@ -1036,21 +1070,24 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     const numero = parseInt(trimmed, 10);
     if (isNaN(numero)) {
-      const menu = await montarMenuDepartamentos();
+      // menu padrão COM rodapé
+      const menuComRodape = await montarMenuDepartamentos();
 
       if (session.citizenName && greetingMessage) {
+        // aqui usamos o template com menu SEM rodapé pra não repetir texto
         const saudacao = getSaudacaoPorHorario();
+        const menuSemRodape = await montarMenuDepartamentos(true);
 
         await sendMenuComNomeTemplate({
           to: session.citizenNumber,
           saudacao,
           citizenName: session.citizenName,
-          menuTexto: menu,
+          menuTexto: menuSemRodape,
         });
       } else {
         await sendTextMessage(
           session.citizenNumber,
-          "Digite apenas o número da opção desejada.\n\n" + menu
+          "Digite apenas o número da opção desejada.\n\n" + menuComRodape
         );
       }
       return;
