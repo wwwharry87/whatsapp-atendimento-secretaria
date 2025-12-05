@@ -4,14 +4,14 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
-import { JWT_SECRET, JWT_EXPIRES_IN } from "../config/auth";
-import { authMiddleware } from "../middlewares/authMiddleware";
 
 const router = Router();
 const usuarioRepo = AppDataSource.getRepository(Usuario);
 
-// POST /api/auth/primeiro-usuario
-// Cria o primeiro usuário ADMIN, somente se ainda não existir nenhum usuário
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-trocar-depois";
+const JWT_EXPIRES_IN = "8h";
+
+// 👉 CRIAR PRIMEIRO USUÁRIO ADMIN (só se ainda não existir usuário)
 router.post("/primeiro-usuario", async (req, res) => {
   try {
     const total = await usuarioRepo.count();
@@ -65,7 +65,7 @@ router.post("/primeiro-usuario", async (req, res) => {
   }
 });
 
-// POST /api/auth/login
+// 👉 LOGIN (pra usar depois no frontend)
 router.post("/login", async (req, res) => {
   try {
     const { login, senha } = req.body;
@@ -76,9 +76,7 @@ router.post("/login", async (req, res) => {
         .json({ error: "login e senha são obrigatórios" });
     }
 
-    const usuario = await usuarioRepo.findOne({
-      where: { login },
-    });
+    const usuario = await usuarioRepo.findOne({ where: { login } });
 
     if (!usuario || !usuario.ativo) {
       return res.status(401).json({ error: "Usuário ou senha inválidos" });
@@ -113,32 +111,6 @@ router.post("/login", async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Erro ao efetuar login" });
-  }
-});
-
-// GET /api/auth/me
-router.get("/me", authMiddleware, async (req, res) => {
-  try {
-    const userId = (req as any).userId as string;
-
-    const usuario = await usuarioRepo.findOne({
-      where: { id: userId },
-    });
-
-    if (!usuario) {
-      return res.status(404).json({ error: "Usuário não encontrado" });
-    }
-
-    return res.json({
-      id: usuario.id,
-      nome: usuario.nome,
-      login: usuario.login,
-      tipo: usuario.tipo,
-      ativo: usuario.ativo,
-    });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Erro ao buscar usuário atual" });
   }
 });
 
