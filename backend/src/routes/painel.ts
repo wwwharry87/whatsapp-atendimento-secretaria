@@ -120,46 +120,75 @@ router.get("/atendimentos/:id", async (req: Request, res: Response) => {
  * Detalhamento do atendimento: todas as mensagens.
  */
 router.get(
-  "/atendimentos/:id/mensagens",
-  async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-
-      const repo = AppDataSource.getRepository(Mensagem);
-
-      const mensagens = await repo.find({
-        where: { atendimento: { id } as any },
-        order: { criadoEm: "ASC" },
-      });
-
-      const data = mensagens.map((m) => {
-        const anyM = m as any;
-        return {
-          id: m.id,
-          tipo: anyM.tipo ?? "TEXT", // TEXT, AUDIO, IMAGE, VIDEO, DOCUMENT
-          texto: anyM.conteudoTexto ?? anyM.texto ?? null,
-          autor: anyM.autorTipo ?? anyM.origem ?? null, // CIDADÃO / AGENTE / SISTEMA
-          direction: anyM.direction ?? null, // IN / OUT (se existir)
-          media_id:
-            anyM.mediaWhatsappId ??
+    "/atendimentos/:id/mensagens",
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+  
+        const repo = AppDataSource.getRepository(Mensagem);
+  
+        // Se na entidade a relação for diferente (ex: atendimentoId), ajuste aqui:
+        const mensagens = await repo.find({
+          where: { atendimento: { id } as any },
+          order: { criadoEm: "ASC" },
+        });
+  
+        const data = mensagens.map((m) => {
+          const anyM = m as any;
+  
+          // Campo real da tabela: direcao = CITIZEN | AGENT
+          const direcao: string | null =
+            anyM.direcao ?? anyM.direction ?? null;
+  
+          // Monta um rótulo amigável pra gestão
+          let autor: string | null = null;
+          if (direcao === "CITIZEN") autor = "CIDADÃO";
+          else if (direcao === "AGENT") autor = "AGENTE";
+          else if (direcao) autor = direcao;
+          // se no futuro tiver mensagens de SISTEMA, dá pra tratar aqui também
+  
+          // Texto da mensagem: vem de conteudo_texto
+          const texto: string | null =
+            anyM.conteudoTexto ?? anyM.conteudo_texto ?? anyM.texto ?? null;
+  
+          // Tipo de mídia
+          const tipo: string = (anyM.tipo || "TEXT").toUpperCase();
+  
+          // IDs de mídia e MIME type
+          const mediaId: string | null =
             anyM.whatsappMediaId ??
+            anyM.whatsapp_media_id ??
             anyM.mediaId ??
-            null,
-          media_mime: anyM.mediaMimeType ?? null,
-          criado_em: m.criadoEm
-            ? m.criadoEm.toISOString()
-            : new Date().toISOString(),
-        };
-      });
-
-      res.json(data);
-    } catch (err) {
-      console.error("Erro ao listar mensagens do atendimento:", err);
-      res
-        .status(500)
-        .json({ error: "Erro ao listar mensagens do atendimento" });
+            null;
+  
+          const mediaMime: string | null =
+            anyM.mimeType ?? anyM.mime_type ?? null;
+  
+          const criadoEm: string = (
+            m.criadoEm ?? anyM.criado_em ?? new Date()
+          ).toISOString();
+  
+          return {
+            id: m.id,
+            tipo,            // TEXT, AUDIO, IMAGE, VIDEO, DOCUMENT
+            texto,
+            autor,           // "CIDADÃO" ou "AGENTE"
+            direction: direcao, // "CITIZEN" ou "AGENT"
+            media_id: mediaId,
+            media_mime: mediaMime,
+            criado_em: criadoEm,
+          };
+        });
+  
+        res.json(data);
+      } catch (err) {
+        console.error("Erro ao listar mensagens do atendimento:", err);
+        res
+          .status(500)
+          .json({ error: "Erro ao listar mensagens do atendimento" });
+      }
     }
-  }
-);
+  );
+  
 
 export default router;
