@@ -1,168 +1,144 @@
+// src/pages/AtendimentosPage.tsx
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { AtendimentoResumo } from "../types";
-import { badgeStatus, formatDateTime, formatDurationSeconds, formatPhone } from "../lib/format";
+import dayjs from "dayjs";
+import "dayjs/locale/pt-br";
+
+dayjs.locale("pt-br");
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  return dayjs(value).format("DD/MM/YYYY HH:mm");
+}
 
 export default function AtendimentosPage() {
-  const [items, setItems] = useState<AtendimentoResumo[]>([]);
+  const navigate = useNavigate();
+  const [itens, setItens] = useState<AtendimentoResumo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [erro, setErro] = useState<string | null>(null);
-  const [filtroStatus, setFiltroStatus] = useState<string>("TODOS");
 
   useEffect(() => {
-    (async () => {
+    async function carregar() {
       try {
-        const { data } = await api.get<AtendimentoResumo[]>("/atendimentos");
-        setItems(data);
-      } catch (err: any) {
-        console.error(err);
-        setErro("Erro ao carregar atendimentos.");
+        setLoading(true);
+        const resp = await api.get<AtendimentoResumo[]>("/atendimentos");
+        setItens(resp.data);
+      } catch (err) {
+        console.error("Erro ao carregar atendimentos:", err);
       } finally {
         setLoading(false);
       }
-    })();
+    }
+    carregar();
   }, []);
-
-  const filtrados =
-    filtroStatus === "TODOS"
-      ? items
-      : items.filter((i) => i.status === filtroStatus);
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-3">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">
+          <h1 className="text-xl font-semibold text-slate-800">
             Atendimentos
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Histório das conversas, fila e status em tempo real.
+          <p className="text-xs text-slate-500">
+            Clique em um atendimento para ver o histórico detalhado de
+            mensagens, áudios, fotos e vídeos.
           </p>
-        </div>
-
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-slate-400">Filtrar status:</span>
-          <select
-            value={filtroStatus}
-            onChange={(e) => setFiltroStatus(e.target.value)}
-            className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1"
-          >
-            <option value="TODOS">Todos</option>
-            <option value="ACTIVE">Em atendimento</option>
-            <option value="WAITING_AGENT_CONFIRMATION">
-              Aguardando agente
-            </option>
-            <option value="IN_QUEUE">Fila</option>
-            <option value="FINISHED">Finalizado</option>
-          </select>
         </div>
       </div>
 
-      {erro && (
-        <div className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-700/60 rounded-xl px-3 py-2">
-          {erro}
-        </div>
-      )}
-
-      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden text-xs">
-        <div className="max-h-[480px] overflow-auto">
-          <table className="min-w-full border-collapse">
-            <thead className="bg-slate-900/80 sticky top-0 z-10">
-              <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-left [&>th]:text-[11px] [&>th]:font-medium [&>th]:text-slate-400">
-                <th>Protocolo</th>
-                <th>Munícipe</th>
-                <th>Departamento</th>
-                <th>Agente</th>
-                <th>Status</th>
-                <th>Abertura</th>
-                <th>Encerramento</th>
-                <th>1ª resposta</th>
-                <th>Resolvido</th>
-                <th>Nota</th>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500">
+                Cidadão
+              </th>
+              <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500">
+                Departamento
+              </th>
+              <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500">
+                Agente
+              </th>
+              <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500">
+                Início
+              </th>
+              <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500">
+                Status
+              </th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td
+                  colSpan={6}
+                  className="px-3 py-4 text-xs text-slate-500 text-center"
+                >
+                  Carregando atendimentos...
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading && (
-                <tr>
-                  <td
-                    colSpan={10}
-                    className="px-3 py-6 text-center text-slate-400"
-                  >
-                    Carregando...
+            )}
+
+            {!loading && itens.length === 0 && (
+              <tr>
+                <td
+                  colSpan={6}
+                  className="px-3 py-4 text-xs text-slate-500 text-center"
+                >
+                  Nenhum atendimento encontrado.
+                </td>
+              </tr>
+            )}
+
+            {!loading &&
+              itens.map((a) => (
+                <tr
+                  key={a.id}
+                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => navigate(`/atendimentos/${a.id}`)}
+                >
+                  <td className="px-3 py-2 text-xs">
+                    <div className="font-semibold text-slate-800">
+                      {a.cidadao_nome || a.cidadao_numero}
+                    </div>
+                    {a.protocolo && (
+                      <div className="text-[11px] text-slate-500">
+                        Protocolo {a.protocolo}
+                      </div>
+                    )}
                   </td>
-                </tr>
-              )}
-              {!loading && filtrados.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={10}
-                    className="px-3 py-6 text-center text-slate-500"
-                  >
-                    Nenhum atendimento encontrado com esse filtro.
+                  <td className="px-3 py-2 text-xs text-slate-600">
+                    {a.departamento_nome || "-"}
                   </td>
-                </tr>
-              )}
-              {!loading &&
-                filtrados.map((a) => {
-                  const badge = badgeStatus(a.status);
-                  return (
-                    <tr
-                      key={a.id}
-                      className="border-t border-slate-800/80 hover:bg-slate-900/60 transition-colors"
+                  <td className="px-3 py-2 text-xs text-slate-600">
+                    {a.agente_nome || "-"}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-600">
+                    {formatDateTime(a.criado_em)}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full border border-slate-200 text-[11px] uppercase tracking-wide text-slate-600 bg-slate-50">
+                      {a.status}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-right">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/atendimentos/${a.id}`);
+                      }}
+                      className="text-emerald-600 hover:text-emerald-800 text-xs font-semibold"
                     >
-                      <td className="px-3 py-2 align-top">
-                        <div className="font-mono text-[11px] text-primary-200">
-                          {a.protocolo ?? "-"}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <div className="text-[11px] font-medium">
-                          {a.cidadao_nome ?? "Cidadão"}
-                        </div>
-                        <div className="text-[11px] text-slate-400">
-                          {formatPhone(a.cidadao_numero)}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {a.departamento_nome ?? "-"}
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {a.agente_nome ?? "-"}
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${badge.color}`}
-                        >
-                          {badge.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {formatDateTime(a.criado_em)}
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {formatDateTime(a.encerrado_em)}
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {formatDurationSeconds(
-                          a.tempo_primeira_resposta_segundos ?? null
-                        )}
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {a.foi_resolvido == null
-                          ? "-"
-                          : a.foi_resolvido
-                          ? "Sim"
-                          : "Não"}
-                      </td>
-                      <td className="px-3 py-2 align-top text-[11px]">
-                        {a.nota_satisfacao ?? "-"}
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </div>
+                      Ver detalhes
+                    </button>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

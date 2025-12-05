@@ -56,3 +56,14 @@ export type AtendimentoResumo = {
   nota_satisfacao: number | null;
   tempo_primeira_resposta_segundos?: number | null;
 };
+
+export type MensagemAtendimento = {
+  id: string;
+  tipo: "TEXT" | "AUDIO" | "IMAGE" | "VIDEO" | "DOCUMENT" | string;
+  texto: string | null;
+  autor: string | null; // CIDADÃO / AGENTE / SISTEMA
+  direction?: string | null; // IN / OUT (se usar)
+  media_id: string | null;
+  media_mime: string | null;
+  criado_em: string;
+};
