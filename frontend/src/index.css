@@ -2,26 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Tema global em modo claro */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
-  @apply bg-slate-950 text-slate-50 antialiased;
+  @apply bg-slate-100 text-slate-900 antialiased;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Helvetica Neue", Arial, sans-serif;
 }
 
+/* Scrollbar discreto em modo claro */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
+
 ::-webkit-scrollbar-track {
-  @apply bg-slate-900;
+  @apply bg-slate-200;
 }
+
 ::-webkit-scrollbar-thumb {
-  @apply bg-slate-700 rounded-full;
+  @apply bg-slate-400 rounded-full;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-slate-500;
 }

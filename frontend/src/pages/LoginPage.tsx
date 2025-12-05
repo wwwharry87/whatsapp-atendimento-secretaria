@@ -69,14 +69,14 @@ export default function LoginPage() {
       {/* Container central */}
       <div className="w-full max-w-5xl px-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
-          {/* Lado esquerdo - texto institucional bem suave */}
+          {/* Lado esquerdo - texto institucional */}
           <div className="hidden md:flex flex-col space-y-3 text-slate-700">
             <h1 className="text-2xl font-semibold tracking-tight">
               Atende Cidadão
             </h1>
             <p className="text-sm text-slate-500 leading-relaxed">
-              Plataforma de atendimento da Secretaria via WhatsApp. 
-              Acompanhe as demandas dos cidadãos, organize os departamentos 
+              Plataforma de atendimento da Secretaria via WhatsApp.
+              Acompanhe as demandas dos cidadãos, organize os departamentos
               e tome decisões com base em dados reais do dia a dia.
             </p>
             <div className="mt-2 text-xs text-slate-400">
@@ -101,7 +101,9 @@ export default function LoginPage() {
                 </label>
                 <input
                   type="email"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-500 bg-slate-50"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm 
+                             outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-500 
+                             bg-slate-50 text-slate-900 placeholder-slate-400"
                   placeholder="seuemail@prefeitura.gov.br"
                   autoComplete="email"
                   value={email}
@@ -115,7 +117,9 @@ export default function LoginPage() {
                 </label>
                 <input
                   type="password"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-500 bg-slate-50"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm 
+                             outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-500 
+                             bg-slate-50 text-slate-900 placeholder-slate-400"
                   placeholder="Digite sua senha"
                   autoComplete="current-password"
                   value={senha}
@@ -133,8 +137,8 @@ export default function LoginPage() {
             </form>
 
             <p className="mt-4 text-[11px] text-slate-500 text-center leading-relaxed">
-              Seu acesso é pessoal e intransferível. 
-              Em caso de dúvida ou necessidade de alteração de senha, 
+              Seu acesso é pessoal e intransferível.
+              Em caso de dúvida ou necessidade de alteração de senha,
               procure o responsável pelo sistema na Secretaria.
             </p>
           </div>
