@@ -18,7 +18,6 @@ export default function Layout() {
     const usuarioStr = localStorage.getItem("atende_usuario");
 
     if (!token || !usuarioStr) {
-      // se não tiver login, manda pra tela de login
       navigate("/login");
       return;
     }
@@ -32,21 +31,17 @@ export default function Layout() {
   }, [navigate]);
 
   function handleLogout() {
-    // limpa tudo que é sensível
     localStorage.removeItem("atende_token");
     localStorage.removeItem("atende_usuario");
-
-    // se tiver outros itens (ex: filtros), pode limpar aqui também
-
     navigate("/login");
   }
 
   return (
-    <div className="min-h-screen flex bg-slate-100">
+    <div className="min-h-screen flex bg-slate-50">
       {/* Sidebar */}
-      <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col">
+      <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col shadow-lg">
         <div className="px-4 py-4 border-b border-slate-800">
-          <h1 className="text-lg font-bold">Atende Cidadão</h1>
+          <h1 className="text-lg font-bold tracking-tight">Atende Cidadão</h1>
           <p className="text-xs text-slate-400">
             Atendimento público via WhatsApp
           </p>
@@ -56,9 +51,9 @@ export default function Layout() {
           <NavLink
             to="/dashboard"
             className={({ isActive }) =>
-              `block rounded-md px-3 py-2 text-sm font-medium ${
+              `block rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive
-                  ? "bg-emerald-500 text-white"
+                  ? "bg-emerald-500 text-white shadow-sm"
                   : "text-slate-200 hover:bg-slate-800"
               }`
             }
@@ -69,9 +64,9 @@ export default function Layout() {
           <NavLink
             to="/atendimentos"
             className={({ isActive }) =>
-              `block rounded-md px-3 py-2 text-sm font-medium ${
+              `block rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive
-                  ? "bg-emerald-500 text-white"
+                  ? "bg-emerald-500 text-white shadow-sm"
                   : "text-slate-200 hover:bg-slate-800"
               }`
             }
@@ -82,9 +77,9 @@ export default function Layout() {
           <NavLink
             to="/departamentos"
             className={({ isActive }) =>
-              `block rounded-md px-3 py-2 text-sm font-medium ${
+              `block rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive
-                  ? "bg-emerald-500 text-white"
+                  ? "bg-emerald-500 text-white shadow-sm"
                   : "text-slate-200 hover:bg-slate-800"
               }`
             }
@@ -95,9 +90,9 @@ export default function Layout() {
           <NavLink
             to="/horarios"
             className={({ isActive }) =>
-              `block rounded-md px-3 py-2 text-sm font-medium ${
+              `block rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive
-                  ? "bg-emerald-500 text-white"
+                  ? "bg-emerald-500 text-white shadow-sm"
                   : "text-slate-200 hover:bg-slate-800"
               }`
             }
@@ -108,9 +103,9 @@ export default function Layout() {
           <NavLink
             to="/usuarios"
             className={({ isActive }) =>
-              `block rounded-md px-3 py-2 text-sm font-medium ${
+              `block rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive
-                  ? "bg-emerald-500 text-white"
+                  ? "bg-emerald-500 text-white shadow-sm"
                   : "text-slate-200 hover:bg-slate-800"
               }`
             }
@@ -122,10 +117,10 @@ export default function Layout() {
         <div className="px-4 py-3 border-t border-slate-800 text-xs text-slate-400">
           {usuario ? (
             <>
-              <p className="font-semibold text-slate-200">
+              <p className="font-semibold text-slate-100 truncate">
                 {usuario.nome || "Usuário"}
               </p>
-              <p>{usuario.email}</p>
+              <p className="truncate">{usuario.email}</p>
               <p className="uppercase mt-1 text-[10px] tracking-wide">
                 {usuario.tipo}
               </p>
@@ -139,7 +134,7 @@ export default function Layout() {
       {/* Conteúdo principal */}
       <div className="flex-1 flex flex-col">
         {/* Topbar */}
-        <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6">
+        <header className="h-14 bg-white/90 backdrop-blur border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-10">
           <div className="text-sm text-slate-500">
             {usuario ? (
               <span>
@@ -155,7 +150,7 @@ export default function Layout() {
 
           <button
             onClick={handleLogout}
-            className="text-sm font-semibold text-red-600 border border-red-500 px-3 py-1 rounded-lg hover:bg-red-50 transition"
+            className="text-sm font-semibold text-red-600 border border-red-500 px-3 py-1.5 rounded-full hover:bg-red-50 transition"
           >
             Sair
           </button>
