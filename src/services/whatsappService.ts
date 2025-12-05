@@ -219,34 +219,29 @@ export async function sendNovoAtendimentoTemplateToAgent(
       name: "novo_atendimento_agente", // nome EXATO do template na Meta
       language: { code: "pt_BR" },
       components: [
-        // Cabeçalho: "Nova solicitação - {{1}}"
         {
           type: "header",
           parameters: [
             {
               type: "text",
-              text: departamentoNome || "-", // {{1}} do header
+              text: departamentoNome || "-",
             },
           ],
         },
-        // Corpo:
-        // Munícipe: *{{1}}*
-        // Telefone: {{2}}
-        // Resumo: {{3}}
         {
           type: "body",
           parameters: [
             {
               type: "text",
-              text: cidadaoNome || "Cidadão", // {{1}} do body
+              text: cidadaoNome || "Cidadão",
             },
             {
               type: "text",
-              text: telefoneCidadao || "-", // {{2}} do body
+              text: telefoneCidadao || "-",
             },
             {
               type: "text",
-              text: resumo || "-", // {{3}} do body
+              text: resumo || "-",
             },
           ],
         },
@@ -294,6 +289,197 @@ export async function sendNovoAtendimentoTemplateToAgent(
     } catch (fallbackErr: any) {
       console.error(
         "[WHATSAPP_TEMPLATE novo_atendimento_agente] Falha também no fallback de texto:",
+        fallbackErr?.response?.data || fallbackErr.message
+      );
+    }
+  }
+}
+
+// ====================== TEMPLATE: saudacao_pedir_nome ======================
+
+type SaudacaoPedirNomeTemplateParams = {
+  to: string;
+  saudacao: string; // "Bom dia", "Boa tarde", "Boa noite"
+};
+
+/**
+ * Template "saudacao_pedir_nome"
+ *
+ * Corpo:
+ * {{1}}! 👋
+ * Sou o assistente virtual da Secretaria de Educação.
+ *
+ * Para começarmos, por favor, digite seu *nome completo*.
+ *
+ * {{1}} = saudacao ("Bom dia", "Boa tarde", "Boa noite")
+ */
+export async function sendSaudacaoPedirNomeTemplate(
+  params: SaudacaoPedirNomeTemplateParams
+) {
+  if (!isWhatsConfigured()) return;
+
+  const { to, saudacao } = params;
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: "saudacao_pedir_nome",
+      language: { code: "pt_BR" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            {
+              type: "text",
+              text: saudacao || "Olá",
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  try {
+    console.log(
+      "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Enviando template para",
+      to,
+      "payload=",
+      JSON.stringify(payload)
+    );
+
+    const res = await axios.post(baseURL, payload, {
+      headers: getAuthHeaders(),
+    });
+
+    console.log(
+      "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Enviado com sucesso:",
+      res.data
+    );
+  } catch (err: any) {
+    console.error(
+      "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Erro ao enviar template:",
+      err?.response?.data || err.message
+    );
+
+    // Fallback: texto simples
+    try {
+      await sendTextMessage(
+        to,
+        `${saudacao || "Olá"}! 👋\n` +
+          "Sou o assistente virtual da Secretaria de Educação.\n\n" +
+          "Para começarmos, por favor, digite seu *nome completo*."
+      );
+      console.log(
+        "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Fallback de texto enviado com sucesso."
+      );
+    } catch (fallbackErr: any) {
+      console.error(
+        "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Falha também no fallback de texto:",
+        fallbackErr?.response?.data || fallbackErr.message
+      );
+    }
+  }
+}
+
+// ====================== TEMPLATE: menu_com_nome ======================
+
+type MenuComNomeTemplateParams = {
+  to: string;
+  saudacao: string;
+  citizenName: string;
+  menuTexto: string;
+};
+
+/**
+ * Template "menu_com_nome"
+ *
+ * Corpo:
+ * Olá *{{2}}*! {{1}} 👋
+ * Já encontrei seu cadastro aqui.
+ *
+ * {{3}}
+ *
+ * Responda apenas com o número do setor desejado.
+ *
+ * {{1}} = saudação ("Bom dia", "Boa tarde", "Boa noite")
+ * {{2}} = nome do cidadão
+ * {{3}} = texto do menu de departamentos
+ */
+export async function sendMenuComNomeTemplate(
+  params: MenuComNomeTemplateParams
+) {
+  if (!isWhatsConfigured()) return;
+
+  const { to, saudacao, citizenName, menuTexto } = params;
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: "menu_com_nome",
+      language: { code: "pt_BR" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            {
+              type: "text",
+              text: saudacao || "Olá",
+            },
+            {
+              type: "text",
+              text: citizenName || "Cidadão",
+            },
+            {
+              type: "text",
+              text: menuTexto || "",
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  try {
+    console.log(
+      "[WHATSAPP_TEMPLATE menu_com_nome] Enviando template para",
+      to,
+      "payload=",
+      JSON.stringify(payload)
+    );
+
+    const res = await axios.post(baseURL, payload, {
+      headers: getAuthHeaders(),
+    });
+
+    console.log(
+      "[WHATSAPP_TEMPLATE menu_com_nome] Enviado com sucesso:",
+      res.data
+    );
+  } catch (err: any) {
+    console.error(
+      "[WHATSAPP_TEMPLATE menu_com_nome] Erro ao enviar template:",
+      err?.response?.data || err.message
+    );
+
+    // Fallback: texto simples
+    try {
+      await sendTextMessage(
+        to,
+        `${saudacao || "Olá"}, *${citizenName || "Cidadão"}*! 👋\n` +
+          "Já encontrei seu cadastro aqui.\n\n" +
+          `${menuTexto}\n\n` +
+          "Responda apenas com o número do setor desejado."
+      );
+      console.log(
+        "[WHATSAPP_TEMPLATE menu_com_nome] Fallback de texto enviado com sucesso."
+      );
+    } catch (fallbackErr: any) {
+      console.error(
+        "[WHATSAPP_TEMPLATE menu_com_nome] Falha também no fallback de texto:",
         fallbackErr?.response?.data || fallbackErr.message
       );
     }
