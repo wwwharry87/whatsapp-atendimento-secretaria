@@ -2,27 +2,30 @@
 import "reflect-metadata";
 import express from "express";
 import cors from "cors";
+import { env } from "./config/env";
 import { AppDataSource } from "./database/data-source";
 
 import webhookRoutes from "./routes/webhook";
-import atendimentosRoutes from "./routes/atendimentos";
 import mediaRoutes from "./routes/media";
+import atendimentosRoutes from "./routes/atendimentos";
 import authRoutes from "./routes/auth";
+
+import painelRoutes from "./routes/painel";
+import departamentosRoutes from "./routes/departamentos";
+import usuariosRoutes from "./routes/usuarios";
+import horariosRoutes from "./routes/horarios";
 
 const app = express();
 
-// Middlewares básicos
 app.use(
   cors({
-    origin: "*", // se quiser travar depois, a gente ajusta
-    methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    allowedHeaders: "Content-Type,Authorization",
+    origin: "*", // se quiser, depois podemos restringir para o domínio do frontend
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
-
 app.use(express.json());
 
-// Rota raiz (healthcheck)
 app.get("/", (req, res) => {
   res.send("API de Atendimento WhatsApp - Secretaria");
 });
@@ -30,30 +33,38 @@ app.get("/", (req, res) => {
 // Webhook do WhatsApp (sem auth)
 app.use("/webhook", webhookRoutes);
 
-// Rotas de autenticação
-app.use("/api/auth", authRoutes);
-
-// Alias para compatibilidade com frontend que chama /auth/login
+// Auth (login)
 app.use("/auth", authRoutes);
+app.use("/api/auth", authRoutes); // alias se precisar
 
-// Rotas de mídia (se estiver usando)
+// Mídias (se estiver usando)
 app.use("/api/media", mediaRoutes);
 
-// Rotas de atendimentos (depois podemos proteger com authMiddleware)
+// Rotas antigas de atendimentos (se houver algo legado)
 app.use("/api/atendimentos", atendimentosRoutes);
 
-const PORT = process.env.PORT || 3000;
+// 🔹 Rotas do painel (frontend)
+// - /atendimentos
+// - /dashboard/resumo-atendimentos
+// - /departamentos
+// - /usuarios
+// - /horarios
+app.use("/", painelRoutes);
+app.use("/departamentos", departamentosRoutes);
+app.use("/usuarios", usuariosRoutes);
+app.use("/horarios", horariosRoutes);
 
-// Inicializa o banco e sobe o servidor
-AppDataSource.initialize()
-  .then(() => {
-    console.log("📦 Banco de dados conectado com sucesso");
-    app.listen(PORT, () => {
-      console.log(`🚀 Servidor rodando na porta ${PORT}`);
+async function start() {
+  try {
+    await AppDataSource.initialize();
+    console.log("📦 Banco de dados conectado.");
+
+    app.listen(env.port, () => {
+      console.log(`🚀 Servidor rodando na porta ${env.port}`);
     });
-  })
-  .catch((error) => {
-    console.error("❌ Erro ao conectar no banco de dados:", error);
-  });
+  } catch (err) {
+    console.error("Erro ao iniciar a aplicação:", err);
+  }
+}
 
-export default app;
+start();

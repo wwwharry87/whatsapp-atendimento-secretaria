@@ -7,6 +7,8 @@ import { Mensagem } from "../entities/Mensagem";
 import { Usuario } from "../entities/Usuario";
 import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
 import { AtendimentoEvento } from "../entities/AtendimentoEvento";
+import { HorarioAtendimento } from "../entities/HorarioAtendimento";
+
 
 export const AppDataSource = new DataSource({
   type: "postgres",
@@ -23,7 +25,8 @@ export const AppDataSource = new DataSource({
     Mensagem,
     Usuario,
     UsuarioDepartamento,
-    AtendimentoEvento
+    AtendimentoEvento,
+    HorarioAtendimento
   ],
   ssl: {
     rejectUnauthorized: false
