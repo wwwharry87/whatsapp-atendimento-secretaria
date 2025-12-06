@@ -16,6 +16,7 @@ export default function Layout() {
 
   useEffect(() => {
     const token = localStorage.getItem("atende_token");
+    
     const usuarioStr = localStorage.getItem("atende_usuario");
 
     if (!token || !usuarioStr) {
