@@ -54,6 +54,7 @@ function getStatusChipClasses(status?: string | null) {
   }
 }
 
+
 export default function AtendimentoDetalhePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();

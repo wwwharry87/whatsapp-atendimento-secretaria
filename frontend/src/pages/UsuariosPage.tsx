@@ -341,6 +341,7 @@ export default function UsuariosPage() {
                   </td>
                 </tr>
               )}
+              
             </tbody>
           </table>
         </div>

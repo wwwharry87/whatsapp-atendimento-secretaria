@@ -168,6 +168,7 @@ export default function HorariosPage() {
             Use para definir exceções, por exemplo um setor que só atende pela
             manhã.
           </p>
+          
 
           <div className="space-y-3">
             {loading && (
