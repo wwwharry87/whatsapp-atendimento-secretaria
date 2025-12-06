@@ -1,7 +1,7 @@
 // src/components/Layout.tsx
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { APP_BUILD_DATETIME } from "../lib/version";
+import { APP_VERSION } from "../lib/version";
 
 type UsuarioLogado = {
   id: string;
@@ -162,7 +162,7 @@ export default function Layout() {
           <div className="flex items-center gap-3">
             {/* Badge de versão / atualização – único lugar onde aparece */}
             <span className="hidden sm:inline-flex max-w-xs px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] text-slate-500 truncate">
-              {APP_BUILD_DATETIME}
+              {APP_VERSION}
             </span>
 
             <button
