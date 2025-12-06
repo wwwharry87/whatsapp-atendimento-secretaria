@@ -24,6 +24,8 @@ function getStatusLabel(status?: string | null) {
     ASK_ANOTHER_DEPARTMENT: "Definindo outro setor ou encerrando",
     LEAVE_MESSAGE_DECISION: "Decidindo se quer deixar recado",
     LEAVE_MESSAGE: "Modo recado (mensagens registradas)",
+    ASK_SATISFACTION_RESOLUTION: "Pesquisa: foi resolvido?",
+    ASK_SATISFACTION_RATING: "Pesquisa: nota de satisfação",
     FINISHED: "Atendimento encerrado",
   };
   return map[status] || status;
@@ -42,12 +44,60 @@ function getStatusChipClasses(status?: string | null) {
       return "bg-sky-50 text-sky-700 border-sky-200";
     case "LEAVE_MESSAGE_DECISION":
     case "LEAVE_MESSAGE":
+    case "ASK_SATISFACTION_RESOLUTION":
+    case "ASK_SATISFACTION_RATING":
       return "bg-violet-50 text-violet-700 border-violet-200";
     case "FINISHED":
       return "bg-slate-100 text-slate-700 border-slate-200";
     default:
       return "bg-slate-50 text-slate-700 border-slate-200";
   }
+}
+
+function normalizarAutor(autor?: string | null) {
+  if (!autor) return "";
+  return autor.toUpperCase();
+}
+
+function isCidadao(msg: MensagemAtendimento) {
+  const a = normalizarAutor(msg.autor);
+  return a.includes("CIDAD");
+}
+
+function isSistema(msg: MensagemAtendimento) {
+  const a = normalizarAutor(msg.autor);
+  return a.includes("SIST");
+}
+
+function isAgente(msg: MensagemAtendimento) {
+  const a = normalizarAutor(msg.autor);
+  return !!a && !isCidadao(msg) && !isSistema(msg);
+}
+
+function getMediaUrl(msg: MensagemAtendimento) {
+  if (!msg.media_id) return null;
+  return `${import.meta.env.VITE_API_BASE_URL || ""}/api/media/${msg.media_id}`;
+}
+
+// pega metadados de comando (código + descrição) vindos do backend
+function getCommandMeta(msg: MensagemAtendimento) {
+  const codigoRaw =
+    msg.comando_codigo ?? msg.comandoCodigo ?? undefined;
+  const descricaoRaw =
+    msg.comando_descricao ?? msg.comandoDescricao ?? undefined;
+
+  const codigo = codigoRaw && String(codigoRaw).trim().length > 0
+    ? String(codigoRaw).trim()
+    : null;
+
+  const descricao =
+    descricaoRaw && String(descricaoRaw).trim().length > 0
+      ? String(descricaoRaw).trim()
+      : null;
+
+  const isCodigoNumerico = !!codigo && /^[0-9]+$/.test(codigo);
+
+  return { codigo, descricao, isCodigoNumerico };
 }
 
 export default function AtendimentoDetalhePage() {
@@ -93,33 +143,6 @@ export default function AtendimentoDetalhePage() {
     return `${nome}${protocolo}`;
   }, [atendimento]);
 
-  function normalizarAutor(autor?: string | null) {
-    if (!autor) return "";
-    return autor.toUpperCase();
-  }
-
-  function isCidadao(msg: MensagemAtendimento) {
-    const a = normalizarAutor(msg.autor);
-    return a.includes("CIDAD");
-  }
-
-  function isSistema(msg: MensagemAtendimento) {
-    const a = normalizarAutor(msg.autor);
-    return a.includes("SIST");
-  }
-
-  function isAgente(msg: MensagemAtendimento) {
-    const a = normalizarAutor(msg.autor);
-    return !isCidadao(msg) && !isSistema(msg);
-  }
-
-  function getMediaUrl(msg: MensagemAtendimento) {
-    if (!msg.media_id) return null;
-    return `${import.meta.env.VITE_API_BASE_URL || ""}/api/media/${
-      msg.media_id
-    }`;
-  }
-
   function getRotuloAutor(msg: MensagemAtendimento) {
     if (!atendimento) return "Autor não identificado";
 
@@ -133,19 +156,8 @@ export default function AtendimentoDetalhePage() {
       return "SISTEMA";
     }
 
-    // agente / secretaria
     const agente = atendimento.agente_nome || "Agente / Secretaria";
     return `AGENTE – ${agente}`;
-  }
-
-  function getDescricaoComando(msg: MensagemAtendimento) {
-    // campos vindos do backend: comando_codigo / comando_descricao
-    const codigo = (msg as any).comando_codigo as string | undefined;
-    const descricao = (msg as any).comando_descricao as string | undefined;
-
-    if (descricao) return descricao;
-    if (codigo) return `Comando interpretado pelo sistema: ${codigo}`;
-    return null;
   }
 
   return (
@@ -189,7 +201,7 @@ export default function AtendimentoDetalhePage() {
 
       {/* Corpo */}
       <div className="flex-1 rounded-2xl bg-white border border-slate-200 flex overflow-hidden">
-        {/* Coluna de mensagens (chat) */}
+        {/* Coluna de mensagens */}
         <div className="flex-1 flex flex-col bg-slate-50">
           <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-500 flex justify-between bg-white">
             <span>Histórico de mensagens do WhatsApp</span>
@@ -222,24 +234,24 @@ export default function AtendimentoDetalhePage() {
                 const cidadao = isCidadao(msg);
                 const sistema = isSistema(msg);
                 const agente = isAgente(msg);
-                const descricaoComando = getDescricaoComando(msg);
 
-                const rawText = (msg.texto || "").trim();
-                const onlyDigits =
-                  rawText !== "" && /^[0-9]+$/.test(rawText);
+                const { codigo, descricao, isCodigoNumerico } =
+                  getCommandMeta(msg);
 
-                // se for só número + comando mapeado, vamos concatenar na bolha
-                const exibirDescricaoDentroBolha =
-                  !sistema && onlyDigits && !!descricaoComando;
+                const textoTrim = (msg.texto || "").trim();
+                const textoEhSoNumero =
+                  !!textoTrim && /^[0-9]+$/.test(textoTrim);
 
-                const textoParaExibir =
-                  msg.tipo === "TEXT" && rawText
-                    ? exibirDescricaoDentroBolha
-                      ? `Resposta: ${rawText} — ${descricaoComando}`
-                      : rawText
-                    : rawText;
+                // se for comando (ex: "1") e tivermos descrição,
+                // mostramos "1 – descrição..."
+                const tratarComoComandoNoTexto =
+                  !sistema &&
+                  msg.tipo === "TEXT" &&
+                  textoEhSoNumero &&
+                  !!descricao &&
+                  isCodigoNumerico;
 
-                // alinhamento e cores suaves
+                // alinhamento e cores
                 let wrapperAlign = "items-end";
                 let rowJustify = "justify-end";
                 let bubbleClasses =
@@ -292,9 +304,11 @@ export default function AtendimentoDetalhePage() {
 
                         {!sistema &&
                           msg.tipo === "TEXT" &&
-                          textoParaExibir && (
+                          msg.texto && (
                             <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
-                              {textoParaExibir}
+                              {tratarComoComandoNoTexto && descricao
+                                ? `${textoTrim} – ${descricao}`
+                                : msg.texto}
                             </p>
                           )}
 
@@ -351,16 +365,17 @@ export default function AtendimentoDetalhePage() {
                             </p>
                           )}
 
-                        {/* Interpretação do comando (nota, encerrar, etc.) 
-                            Aqui só mostramos o 💡 se NÃO tiver sido embutido junto da resposta numérica */}
+                        {/* Interpretação do comando, se existir e não estiver já concatenada */}
                         {!sistema &&
-                          descricaoComando &&
-                          !exibirDescricaoDentroBolha && (
+                          descricao &&
+                          !tratarComoComandoNoTexto && (
                             <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
                               <div className="flex items-start gap-1">
                                 <span>💡</span>
                                 <span className="whitespace-pre-wrap">
-                                  {descricaoComando}
+                                  {codigo && isCodigoNumerico
+                                    ? `${codigo} – ${descricao}`
+                                    : descricao}
                                 </span>
                               </div>
                             </div>

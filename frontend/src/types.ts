@@ -1,6 +1,4 @@
-// frontend/src/types.ts
-
-// ================== DEPARTAMENTOS ==================
+// src/types.ts
 
 export type Departamento = {
   id: number;
@@ -10,8 +8,6 @@ export type Departamento = {
   criado_em: string;
   atualizado_em: string;
 };
-
-// ================== USUÁRIOS ==================
 
 export type UsuarioPerfil = "ADMIN" | "GESTOR" | "ATENDENTE";
 
@@ -26,8 +22,6 @@ export type Usuario = {
   atualizado_em?: string;
 };
 
-// ================== HORÁRIOS ==================
-
 export type HorarioAtendimento = {
   id: number;
   departamento_id: number | null;
@@ -36,8 +30,6 @@ export type HorarioAtendimento = {
   fim: string; // "HH:mm"
   ativo: boolean;
 };
-
-// ================== ATENDIMENTOS ==================
 
 export type AtendimentoStatus =
   | "ASK_NAME"
@@ -48,6 +40,8 @@ export type AtendimentoStatus =
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
+  | "ASK_SATISFACTION_RESOLUTION"
+  | "ASK_SATISFACTION_RATING"
   | "FINISHED";
 
 export type AtendimentoResumo = {
@@ -65,32 +59,24 @@ export type AtendimentoResumo = {
   tempo_primeira_resposta_segundos?: number | null;
 };
 
-// ================== MENSAGENS ==================
-
-export type MensagemDirecao = "CITIZEN" | "AGENT" | null;
-
 export type MensagemAtendimento = {
   id: string;
-
   tipo: "TEXT" | "AUDIO" | "IMAGE" | "VIDEO" | "DOCUMENT" | string;
-
   texto: string | null;
 
-  // Quem "fala" do ponto de vista do painel
-  autor: string | null; // CIDADÃO / AGENTE / SISTEMA (calculado no backend)
+  // quem é o autor (backend já manda algo como "CIDADÃO", "SISTEMA", "AGENTE")
+  autor: string | null;
 
-  // Direção bruta vinda do backend ("CITIZEN" / "AGENT")
-  direcao?: MensagemDirecao;
-
-  // Mantido para compatibilidade, caso o backend use "direction"
+  // direção crua se algum dia precisar
   direction?: string | null;
 
   media_id: string | null;
   media_mime: string | null;
-
   criado_em: string;
 
-  // 🔹 novos campos: interpretação dos comandos (1,2,3, etc.)
+  // 🔹 metadata dos comandos – aceitando snake_case e camelCase
   comando_codigo?: string | null;
   comando_descricao?: string | null;
+  comandoCodigo?: string | null;
+  comandoDescricao?: string | null;
 };
