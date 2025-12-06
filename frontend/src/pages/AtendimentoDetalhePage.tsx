@@ -1,4 +1,4 @@
-// src/pages/AtendimentoDetalhePage.tsx
+// frontend/src/pages/AtendimentoDetalhePage.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
@@ -24,7 +24,7 @@ function getStatusLabel(status?: string | null) {
     ASK_ANOTHER_DEPARTMENT: "Definindo outro setor ou encerrando",
     LEAVE_MESSAGE_DECISION: "Decidindo se quer deixar recado",
     LEAVE_MESSAGE: "Modo recado (mensagens registradas)",
-    ASK_SATISFACTION_RESOLUTION: "Pesquisa: foi resolvido?",
+    ASK_SATISFACTION_RESOLUTION: "Pesquisa: se foi resolvido",
     ASK_SATISFACTION_RATING: "Pesquisa: nota de satisfação",
     FINISHED: "Atendimento encerrado",
   };
@@ -52,52 +52,6 @@ function getStatusChipClasses(status?: string | null) {
     default:
       return "bg-slate-50 text-slate-700 border-slate-200";
   }
-}
-
-function normalizarAutor(autor?: string | null) {
-  if (!autor) return "";
-  return autor.toUpperCase();
-}
-
-function isCidadao(msg: MensagemAtendimento) {
-  const a = normalizarAutor(msg.autor);
-  return a.includes("CIDAD");
-}
-
-function isSistema(msg: MensagemAtendimento) {
-  const a = normalizarAutor(msg.autor);
-  return a.includes("SIST");
-}
-
-function isAgente(msg: MensagemAtendimento) {
-  const a = normalizarAutor(msg.autor);
-  return !!a && !isCidadao(msg) && !isSistema(msg);
-}
-
-function getMediaUrl(msg: MensagemAtendimento) {
-  if (!msg.media_id) return null;
-  return `${import.meta.env.VITE_API_BASE_URL || ""}/api/media/${msg.media_id}`;
-}
-
-// pega metadados de comando (código + descrição) vindos do backend
-function getCommandMeta(msg: MensagemAtendimento) {
-  const codigoRaw =
-    msg.comando_codigo ?? msg.comandoCodigo ?? undefined;
-  const descricaoRaw =
-    msg.comando_descricao ?? msg.comandoDescricao ?? undefined;
-
-  const codigo = codigoRaw && String(codigoRaw).trim().length > 0
-    ? String(codigoRaw).trim()
-    : null;
-
-  const descricao =
-    descricaoRaw && String(descricaoRaw).trim().length > 0
-      ? String(descricaoRaw).trim()
-      : null;
-
-  const isCodigoNumerico = !!codigo && /^[0-9]+$/.test(codigo);
-
-  return { codigo, descricao, isCodigoNumerico };
 }
 
 export default function AtendimentoDetalhePage() {
@@ -143,6 +97,33 @@ export default function AtendimentoDetalhePage() {
     return `${nome}${protocolo}`;
   }, [atendimento]);
 
+  function normalizarAutor(autor?: string | null) {
+    if (!autor) return "";
+    return autor.toUpperCase();
+  }
+
+  function isCidadao(msg: MensagemAtendimento) {
+    const a = normalizarAutor(msg.autor);
+    return a.includes("CIDAD");
+  }
+
+  function isSistema(msg: MensagemAtendimento) {
+    const a = normalizarAutor(msg.autor);
+    return a.includes("SIST");
+  }
+
+  function isAgente(msg: MensagemAtendimento) {
+    const a = normalizarAutor(msg.autor);
+    return !isCidadao(msg) && !isSistema(msg);
+  }
+
+  function getMediaUrl(msg: MensagemAtendimento) {
+    if (!msg.media_id) return null;
+    return `${
+      import.meta.env.VITE_API_BASE_URL || ""
+    }/api/media/${msg.media_id}`;
+  }
+
   function getRotuloAutor(msg: MensagemAtendimento) {
     if (!atendimento) return "Autor não identificado";
 
@@ -158,6 +139,21 @@ export default function AtendimentoDetalhePage() {
 
     const agente = atendimento.agente_nome || "Agente / Secretaria";
     return `AGENTE – ${agente}`;
+  }
+
+  function getDescricaoComando(msg: MensagemAtendimento): string | null {
+    const codigo = msg.comando_codigo || undefined;
+    const descricao = msg.comando_descricao || undefined;
+
+    if (descricao && codigo) {
+      // ex.: "Opção 4 – cidadão escolheu o setor X"
+      return `${descricao}`;
+    }
+
+    if (descricao) return descricao;
+    if (codigo) return `Comando interpretado pelo sistema: ${codigo}`;
+
+    return null;
   }
 
   return (
@@ -233,25 +229,9 @@ export default function AtendimentoDetalhePage() {
                 const mediaUrl = getMediaUrl(msg);
                 const cidadao = isCidadao(msg);
                 const sistema = isSistema(msg);
-                const agente = isAgente(msg);
+                const descricaoComando = getDescricaoComando(msg);
 
-                const { codigo, descricao, isCodigoNumerico } =
-                  getCommandMeta(msg);
-
-                const textoTrim = (msg.texto || "").trim();
-                const textoEhSoNumero =
-                  !!textoTrim && /^[0-9]+$/.test(textoTrim);
-
-                // se for comando (ex: "1") e tivermos descrição,
-                // mostramos "1 – descrição..."
-                const tratarComoComandoNoTexto =
-                  !sistema &&
-                  msg.tipo === "TEXT" &&
-                  textoEhSoNumero &&
-                  !!descricao &&
-                  isCodigoNumerico;
-
-                // alinhamento e cores
+                // alinhamento/cores
                 let wrapperAlign = "items-end";
                 let rowJustify = "justify-end";
                 let bubbleClasses =
@@ -302,15 +282,11 @@ export default function AtendimentoDetalhePage() {
                           </span>
                         )}
 
-                        {!sistema &&
-                          msg.tipo === "TEXT" &&
-                          msg.texto && (
-                            <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
-                              {tratarComoComandoNoTexto && descricao
-                                ? `${textoTrim} – ${descricao}`
-                                : msg.texto}
-                            </p>
-                          )}
+                        {!sistema && msg.tipo === "TEXT" && msg.texto && (
+                          <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
+                            {msg.texto}
+                          </p>
+                        )}
 
                         {!sistema && msg.tipo === "AUDIO" && mediaUrl && (
                           <audio
@@ -356,32 +332,32 @@ export default function AtendimentoDetalhePage() {
 
                         {/* Fallback para tipos desconhecidos com texto */}
                         {!sistema &&
-                          !["TEXT", "AUDIO", "IMAGE", "VIDEO", "DOCUMENT"].includes(
-                            (msg.tipo || "").toUpperCase()
-                          ) &&
+                          ![
+                            "TEXT",
+                            "AUDIO",
+                            "IMAGE",
+                            "VIDEO",
+                            "DOCUMENT",
+                          ].includes((msg.tipo || "").toUpperCase()) &&
                           msg.texto && (
                             <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
                               {msg.texto}
                             </p>
                           )}
 
-                        {/* Interpretação do comando, se existir e não estiver já concatenada */}
-                        {!sistema &&
-                          descricao &&
-                          !tratarComoComandoNoTexto && (
-                            <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
-                              <div className="flex items-start gap-1">
-                                <span>💡</span>
-                                <span className="whitespace-pre-wrap">
-                                  {codigo && isCodigoNumerico
-                                    ? `${codigo} – ${descricao}`
-                                    : descricao}
-                                </span>
-                              </div>
+                        {/* Interpretação do comando (nota, encerramento, etc.) */}
+                        {!sistema && descricaoComando && (
+                          <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
+                            <div className="flex items-start gap-1">
+                              <span>💡</span>
+                              <span className="whitespace-pre-wrap">
+                                {descricaoComando}
+                              </span>
                             </div>
-                          )}
+                          </div>
+                        )}
 
-                        {/* Horário dentro da bolha */}
+                        {/* Horário */}
                         <div
                           className={`mt-1 text-[10px] opacity-70 ${metaAlign}`}
                         >

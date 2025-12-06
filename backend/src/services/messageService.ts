@@ -1,4 +1,4 @@
-// src/services/messageService.ts
+// backend/src/services/messageService.ts
 import { AppDataSource } from "../database/data-source";
 import { Mensagem, MensagemDirecao, MensagemTipo } from "../entities/Mensagem";
 
@@ -15,8 +15,7 @@ export type SaveMensagemParams = {
   fileSize?: string | null;
   remetenteNumero: string;
 
-  // 🔹 novos campos (opcionais) para registrar comandos digitados
-  //   ex: "AGENT_ACCEPT", "CITIZEN_END", "SAT_RATING_4", etc.
+  // novos campos opcionais
   comandoCodigo?: string | null;
   comandoDescricao?: string | null;
 };
@@ -26,20 +25,16 @@ export async function salvarMensagem(
 ): Promise<Mensagem> {
   const repo = AppDataSource.getRepository(Mensagem);
 
-  // Se não foi passado mediaUrl mas temos um ID de mídia do WhatsApp,
-  // geramos uma URL padrão apontando para a rota /media/:mediaId
   const mediaUrl =
     params.mediaUrl ??
     (params.whatsappMediaId ? `/media/${params.whatsappMediaId}` : undefined);
 
   const msg = repo.create({
-    // relacionamento com Atendimento pela FK
     atendimento: { id: params.atendimentoId } as any,
-
+    atendimentoId: params.atendimentoId,
     direcao: params.direcao,
     tipo: params.tipo,
     conteudoTexto: params.conteudoTexto ?? null,
-
     whatsappMessageId: params.whatsappMessageId,
     whatsappMediaId: params.whatsappMediaId,
     mediaUrl,
@@ -47,8 +42,6 @@ export async function salvarMensagem(
     fileName: params.fileName,
     fileSize: params.fileSize ?? null,
     remetenteNumero: params.remetenteNumero,
-
-    // 🔹 novos campos mapeados para as colunas comando_codigo / comando_descricao
     comandoCodigo: params.comandoCodigo ?? null,
     comandoDescricao: params.comandoDescricao ?? null,
   });

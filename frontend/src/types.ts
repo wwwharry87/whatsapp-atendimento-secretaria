@@ -1,4 +1,4 @@
-// src/types.ts
+// frontend/src/types.ts
 
 export type Departamento = {
   id: number;
@@ -15,7 +15,7 @@ export type Usuario = {
   id: string;
   nome: string;
   email: string | null;
-  telefone: string | null; // telefone/WhatsApp exibido no painel
+  telefone: string | null;
   perfil: UsuarioPerfil;
   ativo: boolean;
   criado_em?: string;
@@ -64,19 +64,13 @@ export type MensagemAtendimento = {
   tipo: "TEXT" | "AUDIO" | "IMAGE" | "VIDEO" | "DOCUMENT" | string;
   texto: string | null;
 
-  // quem é o autor (backend já manda algo como "CIDADÃO", "SISTEMA", "AGENTE")
-  autor: string | null;
-
-  // direção crua se algum dia precisar
+  autor: string | null; // CIDADÃO / SISTEMA / nome do agente
   direction?: string | null;
-
   media_id: string | null;
   media_mime: string | null;
   criado_em: string;
 
-  // 🔹 metadata dos comandos – aceitando snake_case e camelCase
+  // novos campos vindos do backend
   comando_codigo?: string | null;
   comando_descricao?: string | null;
-  comandoCodigo?: string | null;
-  comandoDescricao?: string | null;
 };

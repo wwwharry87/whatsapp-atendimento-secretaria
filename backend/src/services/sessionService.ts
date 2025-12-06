@@ -60,7 +60,7 @@ export type IncomingMessage = {
   fileName?: string;
 };
 
-// ====================== FUNÇÕES AUXILIARES ======================
+// ====================== HELPERS GERAIS ======================
 
 function normalizePhone(num?: string | null): string {
   if (!num) return "";
@@ -98,7 +98,6 @@ function getSaudacaoPorHorario(): string {
     if (hora >= 12 && hora < 18) return "Boa tarde";
     return "Boa noite";
   } catch {
-    // fallback caso dê algum erro com timeZone
     const hora = new Date().getHours();
     if (hora >= 4 && hora < 12) return "Bom dia";
     if (hora >= 12 && hora < 18) return "Boa tarde";
@@ -110,7 +109,6 @@ function isGreeting(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return false;
 
-  // incluí "menu" aqui também pra disparar o template bonitão
   const ignoreWords = [
     "oi",
     "ola",
@@ -125,6 +123,161 @@ function isGreeting(text: string): boolean {
     ignoreWords.some((w) => trimmed.startsWith(w)) &&
     trimmed.split(" ").length <= 3
   );
+}
+
+// ====================== METADADOS DE COMANDO ======================
+
+type CommandMeta = {
+  comandoCodigo: string;
+  comandoDescricao: string;
+};
+
+function buildMeta(codigo: string, descricao: string): CommandMeta {
+  return { comandoCodigo: codigo, comandoDescricao: descricao };
+}
+
+/**
+ * Interpreta comandos enviados pelo CIDADÃO
+ * e gera um texto amigável para aparecer no frontend.
+ */
+function mapCitizenCommandMetadata(
+  session: Session,
+  trimmed: string,
+  trimmedLower: string,
+  onlyDigits: string
+): CommandMeta | null {
+  switch (session.status) {
+    case "ASK_DEPARTMENT":
+      if (!onlyDigits) return null;
+      return buildMeta(
+        onlyDigits,
+        `Cidadão escolheu a opção ${onlyDigits} do menu de departamentos.`
+      );
+
+    case "LEAVE_MESSAGE_DECISION":
+      if (onlyDigits === "1") {
+        return buildMeta(
+          "1",
+          "Cidadão decidiu deixar um recado detalhado para o setor."
+        );
+      }
+      if (onlyDigits === "2") {
+        return buildMeta(
+          "2",
+          "Cidadão preferiu não deixar recado e encerrar o atendimento."
+        );
+      }
+      return null;
+
+    case "ASK_SATISFACTION_RESOLUTION":
+      if (onlyDigits === "1") {
+        return buildMeta("1", "Respondeu que a demanda foi resolvida.");
+      }
+      if (onlyDigits === "2") {
+        return buildMeta("2", "Respondeu que a demanda NÃO foi resolvida.");
+      }
+      return null;
+
+    case "ASK_SATISFACTION_RATING": {
+      if (!onlyDigits) return null;
+      const nota = parseInt(onlyDigits, 10);
+      if (isNaN(nota) || nota < 1 || nota > 5) return null;
+
+      const legendas: Record<number, string> = {
+        1: "Péssimo",
+        2: "Ruim",
+        3: "Regular",
+        4: "Bom",
+        5: "Ótimo",
+      };
+
+      return buildMeta(
+        onlyDigits,
+        `Avaliação de satisfação: nota ${nota} – ${legendas[nota]}.`
+      );
+    }
+
+    case "ASK_ANOTHER_DEPARTMENT":
+      if (onlyDigits === "1") {
+        return buildMeta(
+          "1",
+          "Após a pesquisa, o cidadão pediu para falar com outro setor."
+        );
+      }
+      if (onlyDigits === "2") {
+        return buildMeta(
+          "2",
+          "Após a pesquisa, o cidadão optou por encerrar definitivamente."
+        );
+      }
+      return null;
+
+    case "ACTIVE":
+      if (
+        ["encerrar", "finalizar", "sair"].includes(trimmedLower) ||
+        onlyDigits === "3"
+      ) {
+        return buildMeta(
+          onlyDigits || trimmedLower,
+          "Cidadão enviou comando para encerrar o atendimento."
+        );
+      }
+      return null;
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Interpreta comandos enviados pelo AGENTE
+ * e gera um texto amigável para aparecer no frontend.
+ */
+function mapAgentCommandMetadata(
+  session: Session,
+  trimmed: string,
+  trimmedLower: string,
+  onlyDigits: string
+): CommandMeta | null {
+  switch (session.status) {
+    case "WAITING_AGENT_CONFIRMATION":
+      if (onlyDigits === "1") {
+        return buildMeta("1", "Agente aceitou o atendimento (comando 1).");
+      }
+      if (onlyDigits === "2") {
+        return buildMeta(
+          "2",
+          "Agente informou que está ocupado (comando 2)."
+        );
+      }
+      return null;
+
+    case "ACTIVE":
+      if (
+        onlyDigits === "3" ||
+        trimmedLower === "encerrar" ||
+        trimmedLower === "finalizar"
+      ) {
+        return buildMeta(
+          onlyDigits || trimmedLower,
+          "Agente encerrou o atendimento por comando."
+        );
+      }
+
+      if (trimmedLower.startsWith("transferir") || trimmedLower.startsWith("setor")) {
+        const parts = trimmedLower.split(/\s+/);
+        const destino = parts[1] || "?";
+        return buildMeta(
+          `transferir ${destino}`.trim(),
+          `Agente solicitou transferência do atendimento para o setor nº ${destino}.`
+        );
+      }
+
+      return null;
+
+    default:
+      return null;
+  }
 }
 
 // ====================== BANCO / ATENDIMENTOS ======================
@@ -805,83 +958,13 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.agentNumber ? session.agentNumber : "undefined"
   );
 
-  // --------- mapear comandos do cidadão (para legenda no painel) ---------
-  let comandoCodigo: string | null = null;
-  let comandoDescricao: string | null = null;
+  const citizenMeta = mapCitizenCommandMetadata(
+    session,
+    trimmed,
+    trimmedLower,
+    onlyDigits
+  );
 
-  if (onlyDigits) {
-    switch (session.status) {
-      case "ASK_DEPARTMENT":
-        comandoCodigo = `MENU_DEPARTAMENTO_${onlyDigits}`;
-        comandoDescricao = `Cidadão escolheu a opção ${onlyDigits} do menu de setores.`;
-        break;
-
-      case "LEAVE_MESSAGE_DECISION":
-        if (onlyDigits === "1") {
-          comandoCodigo = "LEAVE_MESSAGE_DECISION_1";
-          comandoDescricao = "Cidadão optou por deixar um recado detalhado.";
-        } else if (onlyDigits === "2") {
-          comandoCodigo = "LEAVE_MESSAGE_DECISION_2";
-          comandoDescricao =
-            "Cidadão optou por não deixar recado e encerrar o atendimento.";
-        }
-        break;
-
-      case "ASK_SATISFACTION_RESOLUTION":
-        if (onlyDigits === "1") {
-          comandoCodigo = "SAT_RESOLVED_YES";
-          comandoDescricao =
-            "Pesquisa de satisfação: informou que o atendimento FOI resolvido.";
-        } else if (onlyDigits === "2") {
-          comandoCodigo = "SAT_RESOLVED_NO";
-          comandoDescricao =
-            "Pesquisa de satisfação: informou que o atendimento NÃO foi resolvido.";
-        }
-        break;
-
-      case "ASK_SATISFACTION_RATING": {
-        const nota = parseInt(onlyDigits, 10);
-        if (!Number.isNaN(nota) && nota >= 1 && nota <= 5) {
-          const labels: Record<number, string> = {
-            1: "Péssimo",
-            2: "Ruim",
-            3: "Regular",
-            4: "Bom",
-            5: "Ótimo",
-          };
-          comandoCodigo = `SAT_RATING_${nota}`;
-          comandoDescricao = `Pesquisa de satisfação: cidadão deu nota ${nota} (${labels[nota]}).`;
-        }
-        break;
-      }
-
-      case "ASK_ANOTHER_DEPARTMENT":
-        if (onlyDigits === "1") {
-          comandoCodigo = "ANOTHER_DEPARTMENT_YES";
-          comandoDescricao =
-            "Cidadão deseja abrir atendimento em outro setor após este.";
-        } else if (onlyDigits === "2") {
-          comandoCodigo = "ANOTHER_DEPARTMENT_NO";
-          comandoDescricao =
-            "Cidadão NÃO deseja falar com outro setor (encerramento definitivo).";
-        }
-        break;
-
-      default:
-        break;
-    }
-  }
-
-  if (
-    session.status === "ACTIVE" &&
-    (["encerrar", "finalizar", "sair"].includes(trimmedLower) ||
-      onlyDigits === "3")
-  ) {
-    comandoCodigo = "CITIZEN_REQUEST_END";
-    comandoDescricao = "Cidadão solicitou encerrar o atendimento.";
-  }
-
-  // salva a mensagem do cidadão com o significado interpretado
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "CITIZEN",
@@ -894,8 +977,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     fileName,
     fileSize: null,
     remetenteNumero: citizenKey,
-    comandoCodigo: comandoCodigo ?? null,
-    comandoDescricao: comandoDescricao ?? null,
+    comandoCodigo: citizenMeta?.comandoCodigo ?? null,
+    comandoDescricao: citizenMeta?.comandoDescricao ?? null,
   });
 
   // ---------- Fluxo: cidadão decide se deixa recado ou encerra ----------
@@ -1063,7 +1146,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.busyReminderCount = 0;
       session.protocolo = undefined;
 
-      // aqui usamos menu SEM rodapé, pois o template já tem o texto final
       const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
 
@@ -1123,7 +1205,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         status: "ASK_DEPARTMENT",
       });
 
-      // menu SEM rodapé para não ficar duplicando texto com o template
       const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
 
@@ -1149,11 +1230,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     const numero = parseInt(trimmed, 10);
     if (isNaN(numero)) {
-      // menu padrão COM rodapé
       const menuComRodape = await montarMenuDepartamentos();
 
       if (session.citizenName && greetingMessage) {
-        // aqui usamos o template com menu SEM rodapé pra não repetir texto
         const saudacao = getSaudacaoPorHorario();
         const menuSemRodape = await montarMenuDepartamentos(true);
 
@@ -1282,7 +1361,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.atendimentoId
     );
 
-    // Template + fallback interno
     console.log(
       "[TEMPLATE] Chamando novo_atendimento_agente para agente=",
       agenteEnvio,
@@ -1297,7 +1375,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       departamentoNome: departamento.nome,
       cidadaoNome: session.citizenName ?? "Cidadão",
       telefoneCidadao: session.citizenNumber,
-      resumo: "-", // aqui depois podemos passar a primeira mensagem do cidadão, se quiser
+      resumo: "-",
     });
 
     scheduleBusyReminder(session);
@@ -1426,48 +1504,13 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   session.lastActiveAt = Date.now();
 
-  // --------- mapear comandos do agente (para legenda no painel) ---------
-  let comandoCodigo: string | null = null;
-  let comandoDescricao: string | null = null;
+  const agentMeta = mapAgentCommandMetadata(
+    session,
+    trimmed,
+    trimmedLower,
+    onlyDigits
+  );
 
-  if (trimmedLower === "ajuda" || trimmedLower === "menu") {
-    comandoCodigo = "AGENT_HELP_MENU";
-    comandoDescricao = "Agente solicitou ajuda/lista de comandos.";
-  }
-
-  if (session.status === "WAITING_AGENT_CONFIRMATION") {
-    if (onlyDigits === "1") {
-      comandoCodigo = "AGENT_ACCEPT";
-      comandoDescricao = "Agente aceitou iniciar o atendimento.";
-    } else if (onlyDigits === "2") {
-      comandoCodigo = "AGENT_BUSY";
-      comandoDescricao =
-        "Agente informou que está ocupado e não pode assumir agora.";
-    }
-  }
-
-  if (
-    session.status === "ACTIVE" &&
-    (onlyDigits === "3" ||
-      trimmedLower === "encerrar" ||
-      trimmedLower === "finalizar")
-  ) {
-    comandoCodigo = "AGENT_REQUEST_END";
-    comandoDescricao = "Agente solicitou encerrar o atendimento.";
-  }
-
-  if (session.status === "ACTIVE") {
-    const words = trimmedLower.split(/\s+/);
-    if (words[0] === "transferir" || words[0] === "setor") {
-      const idx = words[1];
-      if (idx) {
-        comandoCodigo = "AGENT_TRANSFER";
-        comandoDescricao = `Agente solicitou transferência do atendimento para a opção ${idx} do menu de setores.`;
-      }
-    }
-  }
-
-  // salva a mensagem do agente com os campos de comando
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "AGENT",
@@ -1480,8 +1523,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     fileName,
     fileSize: null,
     remetenteNumero: agentFullNumber,
-    comandoCodigo: comandoCodigo ?? null,
-    comandoDescricao: comandoDescricao ?? null,
+    comandoCodigo: agentMeta?.comandoCodigo ?? null,
+    comandoDescricao: agentMeta?.comandoDescricao ?? null,
   });
 
   if (trimmedLower === "ajuda" || trimmedLower === "menu") {
