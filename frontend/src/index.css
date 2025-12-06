@@ -30,3 +30,9 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-slate-500;
 }
+
+html,
+body,
+#root {
+  height: 100%;
+}

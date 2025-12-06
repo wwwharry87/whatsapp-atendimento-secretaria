@@ -1,7 +1,7 @@
 // src/components/Layout.tsx
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { APP_VERSION, APP_BUILD_DATETIME } from "../lib/version";
+import { APP_BUILD_DATETIME } from "../lib/version";
 
 type UsuarioLogado = {
   id: string;
@@ -38,8 +38,8 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen flex bg-slate-100">
-      {/* Sidebar */}
+    <div className="h-screen flex bg-slate-100 overflow-hidden">
+      {/* Sidebar fixa */}
       <aside className="w-64 bg-white border-r border-slate-200 flex flex-col">
         <div className="px-4 py-4 border-b border-slate-200">
           <h1 className="text-lg font-semibold tracking-tight text-slate-800">
@@ -50,7 +50,7 @@ export default function Layout() {
           </p>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1 text-sm">
+        <nav className="flex-1 px-3 py-4 space-y-1 text-sm overflow-y-auto">
           <NavLink
             to="/dashboard"
             className={({ isActive }) =>
@@ -122,7 +122,7 @@ export default function Layout() {
           </NavLink>
         </nav>
 
-        {/* Rodapé da sidebar: usuário + versão */}
+        {/* Rodapé da sidebar: só info de usuário agora */}
         <div className="px-4 py-3 border-t border-slate-200 text-xs text-slate-500 bg-slate-50">
           {usuario ? (
             <>
@@ -139,16 +139,10 @@ export default function Layout() {
           ) : (
             <p>Usuário não identificado</p>
           )}
-
-          {/* Linha separadora para info de versão */}
-          <div className="mt-2 pt-2 border-t border-slate-200 text-[10px] leading-relaxed text-slate-400">
-            <p className="truncate">{APP_BUILD_DATETIME}</p>
-            <p className="mt-0.5">Versão interna: {APP_VERSION}</p>
-          </div>
         </div>
       </aside>
 
-      {/* Conteúdo principal */}
+      {/* Conteúdo principal: topbar fixa + conteúdo com scroll */}
       <div className="flex-1 flex flex-col">
         {/* Topbar */}
         <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6">
@@ -165,16 +159,23 @@ export default function Layout() {
             )}
           </div>
 
-          <button
-            onClick={handleLogout}
-            className="text-xs font-semibold text-red-600 border border-red-400 px-3 py-1.5 rounded-full hover:bg-red-50 transition"
-          >
-            Sair
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Badge de versão / atualização – único lugar onde aparece */}
+            <span className="hidden sm:inline-flex max-w-xs px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] text-slate-500 truncate">
+              {APP_BUILD_DATETIME}
+            </span>
+
+            <button
+              onClick={handleLogout}
+              className="text-xs font-semibold text-red-600 border border-red-400 px-3 py-1.5 rounded-full hover:bg-red-50 transition"
+            >
+              Sair
+            </button>
+          </div>
         </header>
 
-        {/* Área de páginas */}
-        <main className="flex-1 p-6">
+        {/* Área de páginas com scroll próprio */}
+        <main className="flex-1 p-6 overflow-y-auto bg-slate-50">
           <Outlet />
         </main>
       </div>
