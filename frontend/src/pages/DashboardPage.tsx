@@ -3,7 +3,13 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { AtendimentoResumo } from "../types";
 import { formatDateTime, formatDurationSeconds } from "../lib/format";
-import { FiActivity, FiClock, FiMessageCircle, FiSmile } from "react-icons/fi";
+import {
+  FiActivity,
+  FiClock,
+  FiMessageCircle,
+  FiSmile,
+  FiCheckCircle,
+} from "react-icons/fi";
 
 type StatusInfo = {
   label: string;
@@ -14,8 +20,7 @@ type StatusInfo = {
 function getStatusInfo(status: AtendimentoResumo["status"]): StatusInfo {
   const base: StatusInfo = {
     label: status || "-",
-    classes:
-      "bg-slate-50 text-slate-700 border border-slate-200",
+    classes: "bg-slate-50 text-slate-700 border border-slate-200",
     isPendencia: false,
   };
 
@@ -112,6 +117,7 @@ export default function DashboardPage() {
     (r) => r.status === "WAITING_AGENT_CONFIRMATION"
   ).length;
   const concluidos = resumos.filter((r) => r.status === "FINISHED").length;
+  const resolvidos = resumos.filter((r) => r.foi_resolvido === true).length;
 
   const notas = resumos
     .map((r) => r.nota_satisfacao)
@@ -151,7 +157,7 @@ export default function DashboardPage() {
       )}
 
       {/* Cards de estatísticas */}
-      <div className="grid md:grid-cols-4 gap-4">
+      <div className="grid md:grid-cols-5 gap-4">
         <StatCard
           icon={<FiMessageCircle size={18} />}
           label="Atendimentos hoje"
@@ -169,6 +175,12 @@ export default function DashboardPage() {
           label="Pendentes de agente/fila"
           value={pendenciasTotais}
           subtitle="Fila + aguardando agente"
+        />
+        <StatCard
+          icon={<FiCheckCircle size={18} />}
+          label="Atendimentos resolvidos"
+          value={resolvidos}
+          subtitle="Encerrados com solução informada"
         />
         <StatCard
           icon={<FiSmile size={18} />}
