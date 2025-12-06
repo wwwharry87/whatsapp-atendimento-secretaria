@@ -1,5 +1,7 @@
 // frontend/src/types.ts
 
+// ================== DEPARTAMENTOS ==================
+
 export type Departamento = {
   id: number;
   nome: string;
@@ -8,6 +10,8 @@ export type Departamento = {
   criado_em: string;
   atualizado_em: string;
 };
+
+// ================== USUÁRIOS ==================
 
 export type UsuarioPerfil = "ADMIN" | "GESTOR" | "ATENDENTE";
 
@@ -22,6 +26,8 @@ export type Usuario = {
   atualizado_em?: string;
 };
 
+// ================== HORÁRIOS ==================
+
 export type HorarioAtendimento = {
   id: number;
   departamento_id: number | null;
@@ -30,6 +36,8 @@ export type HorarioAtendimento = {
   fim: string; // "HH:mm"
   ativo: boolean;
 };
+
+// ================== ATENDIMENTOS ==================
 
 export type AtendimentoStatus =
   | "ASK_NAME"
@@ -57,13 +65,32 @@ export type AtendimentoResumo = {
   tempo_primeira_resposta_segundos?: number | null;
 };
 
+// ================== MENSAGENS ==================
+
+export type MensagemDirecao = "CITIZEN" | "AGENT" | null;
+
 export type MensagemAtendimento = {
   id: string;
+
   tipo: "TEXT" | "AUDIO" | "IMAGE" | "VIDEO" | "DOCUMENT" | string;
+
   texto: string | null;
-  autor: string | null; // CIDADÃO / AGENTE / SISTEMA
-  direction?: string | null; // IN / OUT (se usar)
+
+  // Quem "fala" do ponto de vista do painel
+  autor: string | null; // CIDADÃO / AGENTE / SISTEMA (calculado no backend)
+
+  // Direção bruta vinda do backend ("CITIZEN" / "AGENT")
+  direcao?: MensagemDirecao;
+
+  // Mantido para compatibilidade, caso o backend use "direction"
+  direction?: string | null;
+
   media_id: string | null;
   media_mime: string | null;
+
   criado_em: string;
+
+  // 🔹 novos campos: interpretação dos comandos (1,2,3, etc.)
+  comando_codigo?: string | null;
+  comando_descricao?: string | null;
 };

@@ -1,7 +1,7 @@
 // src/components/Layout.tsx
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { APP_VERSION } from "../lib/version";
+import { getFormattedVersionInfo } from "../lib/version";
 
 type UsuarioLogado = {
   id: string;
@@ -36,6 +36,8 @@ export default function Layout() {
     localStorage.removeItem("atende_usuario");
     navigate("/login");
   }
+
+  const versionInfo = getFormattedVersionInfo();
 
   return (
     <div className="h-screen flex bg-slate-100 overflow-hidden">
@@ -160,9 +162,9 @@ export default function Layout() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Badge de versão / atualização – único lugar onde aparece */}
+            {/* Info de atualização e versão */}
             <span className="hidden sm:inline-flex max-w-xs px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] text-slate-500 truncate">
-              {APP_VERSION}
+              {versionInfo}
             </span>
 
             <button
