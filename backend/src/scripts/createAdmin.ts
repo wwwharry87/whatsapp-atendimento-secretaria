@@ -37,7 +37,7 @@ async function main() {
       return;
     }
 
-    // 🔒 força o tipo para Usuario (não Usuario[])
+    // 🔒 cast via unknown para não dar conflito com Usuario[]
     const usuario = repo.create({
       idcliente,
       nome: adminNome,
@@ -46,7 +46,7 @@ async function main() {
       perfil: "ADMIN",
       senhaHash: hashPassword(adminSenha),
       ativo: true,
-    } as any) as Usuario;
+    } as any) as unknown as Usuario;
 
     await repo.save(usuario);
 

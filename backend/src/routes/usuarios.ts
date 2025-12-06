@@ -101,7 +101,7 @@ router.post("/", async (req: Request, res: Response) => {
         .json({ error: "Já existe um usuário com este e-mail." });
     }
 
-    // 🔒 força o tipo para Usuario (e não Usuario[])
+    // 🔒 força via unknown pra evitar o erro TS2352
     const usuario = repo.create({
       idcliente,
       nome,
@@ -110,7 +110,7 @@ router.post("/", async (req: Request, res: Response) => {
       perfil: (perfil as any) || "ATENDENTE",
       senhaHash: senha ? hashPassword(senha) : null,
       ativo: true,
-    } as any) as Usuario;
+    } as any) as unknown as Usuario;
 
     await repo.save(usuario);
 
@@ -150,7 +150,6 @@ router.put("/:id", async (req: Request, res: Response) => {
 
     const repo = AppDataSource.getRepository(Usuario);
 
-    // 🔒 deixa explícito que aqui é Usuario | null
     const encontrado = (await repo.findOne({
       where: { id, idcliente },
     })) as Usuario | null;
@@ -159,7 +158,6 @@ router.put("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Usuário não encontrado." });
     }
 
-    // 🔒 a partir daqui tratamos como Usuario
     const usuario: Usuario = encontrado;
 
     if (nome) usuario.nome = nome;
