@@ -139,7 +139,7 @@ export default function AtendimentoDetalhePage() {
   }
 
   function getDescricaoComando(msg: MensagemAtendimento) {
-    // campos esperados do backend: comando_codigo / comando_descricao
+    // campos vindos do backend: comando_codigo / comando_descricao
     const codigo = (msg as any).comando_codigo as string | undefined;
     const descricao = (msg as any).comando_descricao as string | undefined;
 
@@ -224,6 +224,21 @@ export default function AtendimentoDetalhePage() {
                 const agente = isAgente(msg);
                 const descricaoComando = getDescricaoComando(msg);
 
+                const rawText = (msg.texto || "").trim();
+                const onlyDigits =
+                  rawText !== "" && /^[0-9]+$/.test(rawText);
+
+                // se for só número + comando mapeado, vamos concatenar na bolha
+                const exibirDescricaoDentroBolha =
+                  !sistema && onlyDigits && !!descricaoComando;
+
+                const textoParaExibir =
+                  msg.tipo === "TEXT" && rawText
+                    ? exibirDescricaoDentroBolha
+                      ? `Resposta: ${rawText} — ${descricaoComando}`
+                      : rawText
+                    : rawText;
+
                 // alinhamento e cores suaves
                 let wrapperAlign = "items-end";
                 let rowJustify = "justify-end";
@@ -275,11 +290,13 @@ export default function AtendimentoDetalhePage() {
                           </span>
                         )}
 
-                        {!sistema && msg.tipo === "TEXT" && msg.texto && (
-                          <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
-                            {msg.texto}
-                          </p>
-                        )}
+                        {!sistema &&
+                          msg.tipo === "TEXT" &&
+                          textoParaExibir && (
+                            <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
+                              {textoParaExibir}
+                            </p>
+                          )}
 
                         {!sistema && msg.tipo === "AUDIO" && mediaUrl && (
                           <audio
@@ -334,17 +351,20 @@ export default function AtendimentoDetalhePage() {
                             </p>
                           )}
 
-                        {/* Interpretação do comando (nota, encerrar, aceitar, etc.) */}
-                        {!sistema && descricaoComando && (
-                          <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
-                            <div className="flex items-start gap-1">
-                              <span>💡</span>
-                              <span className="whitespace-pre-wrap">
-                                {descricaoComando}
-                              </span>
+                        {/* Interpretação do comando (nota, encerrar, etc.) 
+                            Aqui só mostramos o 💡 se NÃO tiver sido embutido junto da resposta numérica */}
+                        {!sistema &&
+                          descricaoComando &&
+                          !exibirDescricaoDentroBolha && (
+                            <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
+                              <div className="flex items-start gap-1">
+                                <span>💡</span>
+                                <span className="whitespace-pre-wrap">
+                                  {descricaoComando}
+                                </span>
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
 
                         {/* Horário dentro da bolha */}
                         <div
