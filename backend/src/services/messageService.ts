@@ -6,7 +6,7 @@ export type SaveMensagemParams = {
   atendimentoId: string;
   direcao: MensagemDirecao;
   tipo: MensagemTipo;
-  conteudoTexto?: string | null;
+  conteudoTexto: string | null;
   whatsappMessageId?: string;
   whatsappMediaId?: string;
   mediaUrl?: string;
@@ -14,6 +14,11 @@ export type SaveMensagemParams = {
   fileName?: string;
   fileSize?: string | null;
   remetenteNumero: string;
+
+  // 🔹 novos campos (opcionais) para registrar comandos digitados
+  //   ex: "AGENT_ACCEPT", "CITIZEN_END", "SAT_RATING_4", etc.
+  comandoCodigo?: string | null;
+  comandoDescricao?: string | null;
 };
 
 export async function salvarMensagem(
@@ -28,17 +33,24 @@ export async function salvarMensagem(
     (params.whatsappMediaId ? `/media/${params.whatsappMediaId}` : undefined);
 
   const msg = repo.create({
+    // relacionamento com Atendimento pela FK
     atendimento: { id: params.atendimentoId } as any,
+
     direcao: params.direcao,
     tipo: params.tipo,
     conteudoTexto: params.conteudoTexto ?? null,
+
     whatsappMessageId: params.whatsappMessageId,
     whatsappMediaId: params.whatsappMediaId,
     mediaUrl,
     mimeType: params.mimeType,
     fileName: params.fileName,
     fileSize: params.fileSize ?? null,
-    remetenteNumero: params.remetenteNumero
+    remetenteNumero: params.remetenteNumero,
+
+    // 🔹 novos campos mapeados para as colunas comando_codigo / comando_descricao
+    comandoCodigo: params.comandoCodigo ?? null,
+    comandoDescricao: params.comandoDescricao ?? null,
   });
 
   return await repo.save(msg);

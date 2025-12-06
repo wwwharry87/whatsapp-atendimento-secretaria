@@ -1,10 +1,11 @@
+// src/entities/Mensagem.ts
 import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
   ManyToOne,
-  JoinColumn
+  JoinColumn,
 } from "typeorm";
 import { Atendimento } from "./Atendimento";
 
@@ -38,26 +39,42 @@ export class Mensagem {
   @Column({ name: "conteudo_texto", type: "text", nullable: true })
   conteudoTexto?: string | null;
 
-  @Column({ name: "whatsapp_message_id", nullable: true })
-  whatsappMessageId?: string;
+  @Column({ name: "whatsapp_message_id", type: "varchar", nullable: true })
+  whatsappMessageId?: string | null;
 
-  @Column({ name: "whatsapp_media_id", nullable: true })
-  whatsappMediaId?: string;
+  @Column({ name: "whatsapp_media_id", type: "varchar", nullable: true })
+  whatsappMediaId?: string | null;
 
-  @Column({ name: "media_url", nullable: true })
-  mediaUrl?: string;
+  @Column({ name: "media_url", type: "varchar", nullable: true })
+  mediaUrl?: string | null;
 
-  @Column({ name: "mime_type", nullable: true })
-  mimeType?: string;
+  @Column({ name: "mime_type", type: "varchar", nullable: true })
+  mimeType?: string | null;
 
-  @Column({ name: "file_name", nullable: true })
-  fileName?: string;
+  @Column({ name: "file_name", type: "varchar", nullable: true })
+  fileName?: string | null;
 
   @Column({ name: "file_size", type: "bigint", nullable: true })
   fileSize?: string | null;
 
-  @Column({ name: "remetente_numero" })
+  @Column({ name: "remetente_numero", type: "varchar" })
   remetenteNumero!: string;
+
+  // 👇 novos campos pros comandos (1 = falar com agente, 2 = encerrar, nota etc.)
+  @Column({
+    name: "comando_codigo",
+    type: "varchar",
+    length: 50,
+    nullable: true,
+  })
+  comandoCodigo?: string | null;
+
+  @Column({
+    name: "comando_descricao",
+    type: "text",
+    nullable: true,
+  })
+  comandoDescricao?: string | null;
 
   @CreateDateColumn({ name: "criado_em" })
   criadoEm!: Date;

@@ -138,6 +138,16 @@ export default function AtendimentoDetalhePage() {
     return `AGENTE – ${agente}`;
   }
 
+  function getDescricaoComando(msg: MensagemAtendimento) {
+    // campos esperados do backend: comando_codigo / comando_descricao
+    const codigo = (msg as any).comando_codigo as string | undefined;
+    const descricao = (msg as any).comando_descricao as string | undefined;
+
+    if (descricao) return descricao;
+    if (codigo) return `Comando interpretado pelo sistema: ${codigo}`;
+    return null;
+  }
+
   return (
     <div className="flex flex-col h-full gap-4">
       {/* Cabeçalho */}
@@ -212,8 +222,9 @@ export default function AtendimentoDetalhePage() {
                 const cidadao = isCidadao(msg);
                 const sistema = isSistema(msg);
                 const agente = isAgente(msg);
+                const descricaoComando = getDescricaoComando(msg);
 
-                // alinhamento e cores bem suaves
+                // alinhamento e cores suaves
                 let wrapperAlign = "items-end";
                 let rowJustify = "justify-end";
                 let bubbleClasses =
@@ -257,7 +268,7 @@ export default function AtendimentoDetalhePage() {
                       <div
                         className={`max-w-[80%] px-3 py-2 shadow-sm ${bubbleClasses}`}
                       >
-                        {/* Conteúdo */}
+                        {/* Conteúdo principal */}
                         {sistema && (
                           <span className="whitespace-pre-wrap">
                             {msg.texto}
@@ -322,6 +333,18 @@ export default function AtendimentoDetalhePage() {
                               {msg.texto}
                             </p>
                           )}
+
+                        {/* Interpretação do comando (nota, encerrar, aceitar, etc.) */}
+                        {!sistema && descricaoComando && (
+                          <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
+                            <div className="flex items-start gap-1">
+                              <span>💡</span>
+                              <span className="whitespace-pre-wrap">
+                                {descricaoComando}
+                              </span>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Horário dentro da bolha */}
                         <div

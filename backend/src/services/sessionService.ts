@@ -127,6 +127,144 @@ function isGreeting(text: string): boolean {
   );
 }
 
+/**
+ * Mapeia comandos do CIDADÃO para comandoCodigo / comandoDescricao,
+ * de acordo com o status atual da sessão.
+ */
+function mapCitizenCommandMetadata(
+  session: Session,
+  trimmed: string,
+  trimmedLower: string,
+  onlyDigits: string
+): { comandoCodigo?: string; comandoDescricao?: string } {
+  let codigo: string | undefined;
+  let descricao: string | undefined;
+
+  switch (session.status) {
+    case "LEAVE_MESSAGE_DECISION":
+      if (onlyDigits === "1") {
+        codigo = "1";
+        descricao = "Cidadão escolheu deixar um recado detalhado.";
+      } else if (onlyDigits === "2") {
+        codigo = "2";
+        descricao = "Cidadão optou por não deixar recado e encerrar o atendimento.";
+      }
+      break;
+
+    case "ASK_SATISFACTION_RESOLUTION":
+      if (onlyDigits === "1") {
+        codigo = "1";
+        descricao = "Cidadão informou que sua demanda foi resolvida.";
+      } else if (onlyDigits === "2") {
+        codigo = "2";
+        descricao = "Cidadão informou que sua demanda não foi resolvida.";
+      }
+      break;
+
+    case "ASK_SATISFACTION_RATING": {
+      const nota = parseInt(onlyDigits, 10);
+      if (!isNaN(nota) && nota >= 1 && nota <= 5) {
+        codigo = String(nota);
+        descricao = `Cidadão avaliou o atendimento com nota ${nota}.`;
+      }
+      break;
+    }
+
+    case "ASK_ANOTHER_DEPARTMENT":
+      if (onlyDigits === "1") {
+        codigo = "1";
+        descricao = "Cidadão deseja abrir atendimento em outro setor.";
+      } else if (onlyDigits === "2") {
+        codigo = "2";
+        descricao = "Cidadão não deseja falar com outro setor e prefere encerrar.";
+      }
+      break;
+
+    case "ASK_DEPARTMENT": {
+      const opt = parseInt(onlyDigits, 10);
+      if (!isNaN(opt)) {
+        codigo = String(opt);
+        descricao = `Cidadão escolheu a opção ${opt} no menu de setores.`;
+      }
+      break;
+    }
+
+    case "ACTIVE":
+      if (
+        ["encerrar", "finalizar", "sair"].includes(trimmedLower) ||
+        onlyDigits === "3"
+      ) {
+        codigo = onlyDigits || undefined;
+        descricao = "Cidadão solicitou encerrar o atendimento.";
+      }
+      break;
+
+    default:
+      break;
+  }
+
+  if (!descricao) {
+    return {};
+  }
+
+  return {
+    comandoCodigo: codigo ?? (onlyDigits || undefined),
+    comandoDescricao: descricao,
+  };
+}
+
+/**
+ * Mapeia comandos do AGENTE para comandoCodigo / comandoDescricao,
+ * de acordo com o status atual da sessão.
+ */
+function mapAgentCommandMetadata(
+  session: Session,
+  trimmed: string,
+  trimmedLower: string,
+  onlyDigits: string
+): { comandoCodigo?: string; comandoDescricao?: string } {
+  let codigo: string | undefined;
+  let descricao: string | undefined;
+
+  if (session.status === "WAITING_AGENT_CONFIRMATION") {
+    if (onlyDigits === "1") {
+      codigo = "1";
+      descricao = "Agente confirmou que vai atender o cidadão agora.";
+    } else if (onlyDigits === "2") {
+      codigo = "2";
+      descricao = "Agente indicou que está ocupado no momento.";
+    }
+  } else if (session.status === "ACTIVE") {
+    if (
+      onlyDigits === "3" ||
+      trimmedLower === "encerrar" ||
+      trimmedLower === "finalizar"
+    ) {
+      codigo = onlyDigits || undefined;
+      descricao = "Agente encerrou o atendimento.";
+    } else {
+      const words = trimmedLower.split(/\s+/);
+      if (words[0] === "transferir" || words[0] === "setor") {
+        const idx = parseInt(words[1], 10);
+        if (!isNaN(idx)) {
+          descricao = `Agente solicitou transferência do atendimento para o setor de índice ${idx}.`;
+        } else {
+          descricao = "Agente tentou transferir o atendimento para outro setor.";
+        }
+      }
+    }
+  }
+
+  if (!descricao) {
+    return {};
+  }
+
+  return {
+    comandoCodigo: codigo ?? (onlyDigits || undefined),
+    comandoDescricao: descricao,
+  };
+}
+
 // ====================== BANCO / ATENDIMENTOS ======================
 
 async function criarNovoAtendimento(
@@ -805,6 +943,14 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.agentNumber ? session.agentNumber : "undefined"
   );
 
+  // Mapeia, se for comando conhecido, para comandoCodigo / comandoDescricao
+  const citizenCommandMeta = mapCitizenCommandMetadata(
+    session,
+    trimmed,
+    trimmedLower,
+    onlyDigits
+  );
+
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "CITIZEN",
@@ -817,6 +963,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     fileName,
     fileSize: null,
     remetenteNumero: citizenKey,
+    comandoCodigo: citizenCommandMeta.comandoCodigo,
+    comandoDescricao: citizenCommandMeta.comandoDescricao,
   });
 
   // ---------- Fluxo: cidadão decide se deixa recado ou encerra ----------
@@ -1347,6 +1495,13 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   session.lastActiveAt = Date.now();
 
+  const agentCommandMeta = mapAgentCommandMetadata(
+    session,
+    trimmed,
+    trimmedLower,
+    onlyDigits
+  );
+
   await salvarMensagem({
     atendimentoId: session.atendimentoId,
     direcao: "AGENT",
@@ -1359,6 +1514,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     fileName,
     fileSize: null,
     remetenteNumero: agentFullNumber,
+    comandoCodigo: agentCommandMeta.comandoCodigo,
+    comandoDescricao: agentCommandMeta.comandoDescricao,
   });
 
   if (trimmedLower === "ajuda" || trimmedLower === "menu") {

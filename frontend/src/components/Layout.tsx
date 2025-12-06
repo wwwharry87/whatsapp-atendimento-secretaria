@@ -1,6 +1,7 @@
-// src/Layout.tsx
+// src/components/Layout.tsx
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
+import { APP_VERSION, APP_BUILD_DATETIME } from "../lib/version";
 
 type UsuarioLogado = {
   id: string;
@@ -121,6 +122,7 @@ export default function Layout() {
           </NavLink>
         </nav>
 
+        {/* Rodapé da sidebar: usuário + versão */}
         <div className="px-4 py-3 border-t border-slate-200 text-xs text-slate-500 bg-slate-50">
           {usuario ? (
             <>
@@ -137,6 +139,12 @@ export default function Layout() {
           ) : (
             <p>Usuário não identificado</p>
           )}
+
+          {/* Linha separadora para info de versão */}
+          <div className="mt-2 pt-2 border-t border-slate-200 text-[10px] leading-relaxed text-slate-400">
+            <p className="truncate">{APP_BUILD_DATETIME}</p>
+            <p className="mt-0.5">Versão interna: {APP_VERSION}</p>
+          </div>
         </div>
       </aside>
 
