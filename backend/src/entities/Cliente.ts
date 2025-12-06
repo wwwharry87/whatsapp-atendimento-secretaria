@@ -12,48 +12,46 @@ export class Cliente {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ type: "varchar", length: 150 })
-  nome!: string; // Nome do município / órgão / secretaria
+  // nome  | NO | character varying | 255
+  @Column({ type: "varchar", length: 255 })
+  nome!: string;
 
+  // documento | YES | character varying | 20
   @Column({ type: "varchar", length: 20, nullable: true })
-  documento?: string | null; // CNPJ ou similar
+  documento?: string | null;
 
+  // ativo | NO | boolean
   @Column({ type: "boolean", default: true })
   ativo!: boolean;
 
-  // ==============================
-  // ⚙️ Configuração de WhatsApp
-  // ==============================
-
-  // Número do WhatsApp exibido ao cidadão (formato E.164: +5594...)
+  // whatsapp_phone_number | YES | character varying | 20
   @Column({
     name: "whatsapp_phone_number",
     type: "varchar",
-    length: 30,
+    length: 20,
     nullable: true,
   })
   whatsappPhoneNumber?: string | null;
 
-  // ID do número no Cloud API (vem em metadata.phone_number_id)
+  // whatsapp_phone_number_id | YES | character varying | 50
   @Column({
     name: "whatsapp_phone_number_id",
     type: "varchar",
-    length: 80,
+    length: 50,
     nullable: true,
   })
   whatsappPhoneNumberId?: string | null;
 
-  // Opcional: ID da WhatsApp Business Account
+  // whatsapp_waba_id | YES | character varying | 50
   @Column({
     name: "whatsapp_waba_id",
     type: "varchar",
-    length: 80,
+    length: 50,
     nullable: true,
   })
   whatsappWabaId?: string | null;
 
-  // Token de acesso específico desse cliente (se quiser separar)
-  // Se for null, você pode usar o token padrão do .env
+  // whatsapp_access_token | YES | text
   @Column({
     name: "whatsapp_access_token",
     type: "text",
@@ -61,27 +59,33 @@ export class Cliente {
   })
   whatsappAccessToken?: string | null;
 
-  // Opcional: verify token do webhook (se quiser um por cliente)
+  // whatsapp_verify_token | YES | character varying | 255
   @Column({
     name: "whatsapp_verify_token",
     type: "varchar",
-    length: 120,
+    length: 255,
     nullable: true,
   })
   whatsappVerifyToken?: string | null;
 
-  // Opcional: segredo para validar assinatura (X-Hub-Signature-256)
+  // whatsapp_webhook_secret | YES | character varying | 255
   @Column({
     name: "whatsapp_webhook_secret",
     type: "varchar",
-    length: 200,
+    length: 255,
     nullable: true,
   })
   whatsappWebhookSecret?: string | null;
 
-  @CreateDateColumn({ name: "criado_em" })
+  // criado_em | YES | timestamptz
+  @CreateDateColumn({ name: "criado_em", type: "timestamptz", nullable: true })
   criadoEm!: Date;
 
-  @UpdateDateColumn({ name: "atualizado_em" })
+  // atualizado_em | YES | timestamptz
+  @UpdateDateColumn({
+    name: "atualizado_em",
+    type: "timestamptz",
+    nullable: true,
+  })
   atualizadoEm!: Date;
 }
