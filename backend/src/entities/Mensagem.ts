@@ -8,6 +8,7 @@ import {
   JoinColumn,
 } from "typeorm";
 import { Atendimento } from "./Atendimento";
+import { Cliente } from "./Cliente";
 
 export type MensagemDirecao = "CITIZEN" | "AGENT";
 export type MensagemTipo =
@@ -23,11 +24,19 @@ export class Mensagem {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
+  // 🔹 Cliente (multi-tenant)
+  @ManyToOne(() => Cliente, { nullable: false })
+  @JoinColumn({ name: "idcliente" })
+  cliente!: Cliente;
+
+  @Column({ name: "idcliente", type: "int" })
+  idcliente!: number;
+
   @ManyToOne(() => Atendimento, { nullable: false })
   @JoinColumn({ name: "atendimento_id" })
   atendimento!: Atendimento;
 
-  @Column({ name: "atendimento_id" })
+  @Column({ name: "atendimento_id", type: "uuid" })
   atendimentoId!: string;
 
   @Column({ type: "varchar", length: 20 })
@@ -57,10 +66,10 @@ export class Mensagem {
   @Column({ name: "file_size", type: "bigint", nullable: true })
   fileSize?: string | null;
 
-  @Column({ name: "remetente_numero", type: "varchar" })
+  @Column({ name: "remetente_numero", type: "varchar", length: 30 })
   remetenteNumero!: string;
 
-  // 👇 novos campos pros comandos (1 = falar com agente, 2 = encerrar, nota etc.)
+  // Campos de metadados do comando (menu numérico, nota, etc.)
   @Column({
     name: "comando_codigo",
     type: "varchar",

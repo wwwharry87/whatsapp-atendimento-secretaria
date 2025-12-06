@@ -8,6 +8,7 @@ import { Usuario } from "../entities/Usuario";
 import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
 import { AtendimentoEvento } from "../entities/AtendimentoEvento";
 import { HorarioAtendimento } from "../entities/HorarioAtendimento";
+import { Cliente } from "../entities/Cliente";
 
 
 export const AppDataSource = new DataSource({
@@ -26,7 +27,8 @@ export const AppDataSource = new DataSource({
     Usuario,
     UsuarioDepartamento,
     AtendimentoEvento,
-    HorarioAtendimento
+    HorarioAtendimento,
+    Cliente
   ],
   ssl: {
     rejectUnauthorized: false

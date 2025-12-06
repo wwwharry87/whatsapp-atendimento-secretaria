@@ -1,63 +1,65 @@
-// backend/src/entities/Usuario.ts
+// src/entities/Usuario.ts
 import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
+  ManyToOne,
+  JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
 } from "typeorm";
+import { Departamento } from "./Departamento";
+import { Atendimento } from "./Atendimento";
 import { UsuarioDepartamento } from "./UsuarioDepartamento";
+import { Cliente } from "./Cliente";
 
-export type UsuarioTipo = "ADMIN" | "GESTOR" | "ATENDENTE";
+export type UsuarioPerfil = "ADMIN" | "GESTOR" | "ATENDENTE";
 
 @Entity("usuarios")
 export class Usuario {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  @Column({ length: 150 })
+  // 🔹 Cliente (multi-tenant)
+  @ManyToOne(() => Cliente, { nullable: false })
+  @JoinColumn({ name: "idcliente" })
+  cliente!: Cliente;
+
+  @Column({ name: "idcliente", type: "int" })
+  idcliente!: number;
+
+  @Column({ type: "varchar", length: 200 })
   nome!: string;
 
-  @Column({
-    name: "telefone_whatsapp",
-    type: "varchar",
-    length: 30,
-    nullable: true,
-  })
-  telefoneWhatsapp?: string | null;
+  @Column({ type: "varchar", length: 200, unique: true })
+  email!: string;
 
-  @Column({
-    type: "varchar",
-    length: 150,
-    nullable: true,
-  })
-  email?: string | null;
+  @Column({ type: "varchar", length: 30, nullable: true })
+  telefone?: string | null;
 
-  @Column({
-    name: "login",
-    type: "varchar",
-    length: 50,
-    unique: true,
-  })
-  login!: string;
-
-  @Column({
-    name: "senha_hash",
-    type: "varchar",
-    length: 255,
-  })
+  @Column({ name: "senha_hash", type: "varchar", length: 255 })
   senhaHash!: string;
 
-  @Column({
-    type: "varchar",
-    length: 20,
-    default: "ATENDENTE",
-  })
-  tipo!: UsuarioTipo;
+  @Column({ type: "varchar", length: 20 })
+  perfil!: UsuarioPerfil;
 
   @Column({ type: "boolean", default: true })
   ativo!: boolean;
+
+  @ManyToOne(() => Departamento, { nullable: true })
+  @JoinColumn({ name: "departamento_principal_id" })
+  departamentoPrincipal?: Departamento | null;
+
+  @Column({
+    name: "departamento_principal_id",
+    type: "int",
+    nullable: true,
+  })
+  departamentoPrincipalId?: number | null;
+
+  @OneToMany(() => Atendimento, (a) => a.agenteNumero)
+  atendimentosAgente!: Atendimento[];
 
   @OneToMany(() => UsuarioDepartamento, (ud) => ud.usuario)
   departamentos!: UsuarioDepartamento[];
