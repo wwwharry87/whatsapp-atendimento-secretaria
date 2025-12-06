@@ -4,44 +4,79 @@ import { AppDataSource } from "../database/data-source";
 import { Atendimento } from "../entities/Atendimento";
 import { Mensagem } from "../entities/Mensagem";
 
-
 const router = Router();
 
 /**
- * Monta a lista de resumos para o painel.
+ * Converte um objeto Date ou string para ISO string.
+ */
+function toIsoString(value: any): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  try {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toISOString();
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * Carrega a lista de atendimentos em formato de resumo,
+ * usada tanto na listagem quanto no dashboard.
  */
 async function carregarResumos() {
   const repo = AppDataSource.getRepository(Atendimento);
 
-  const atendimentos = await repo.find({
-    relations: ["departamento"],
-    order: { criadoEm: "DESC" },
-    take: 200,
-  });
+  const atendimentos = await repo
+    .createQueryBuilder("a")
+    .leftJoinAndSelect("a.departamento", "d")
+    .orderBy("a.criado_em", "DESC")
+    .getMany();
 
-  return atendimentos.map((a) => {
-    const anyA = a as any;
+  return atendimentos.map((a: any) => {
+    const criadoEm = a.criadoEm ?? a.criado_em;
+    const encerradoEm = a.encerradoEm ?? a.encerrado_em ?? null;
+
+    const foiResolvido =
+      typeof a.foiResolvido === "boolean"
+        ? a.foiResolvido
+        : typeof a.foi_resolvido === "boolean"
+        ? a.foi_resolvido
+        : null;
+
+    const notaSatisfacao =
+      typeof a.notaSatisfacao === "number"
+        ? a.notaSatisfacao
+        : typeof a.nota_satisfacao === "number"
+        ? a.nota_satisfacao
+        : null;
+
+    const tempoPrimeiraResposta =
+      a.tempoPrimeiraRespostaSegundos ??
+      a.tempo_primeira_resposta_segundos ??
+      null;
+
     return {
       id: a.id,
-      protocolo: anyA.protocolo ?? null,
-      cidadao_nome: anyA.cidadaoNome ?? null,
-      cidadao_numero: anyA.cidadaoNumero ?? "",
-      departamento_nome: a.departamento ? a.departamento.nome : null,
-      agente_nome: anyA.agenteNome ?? null,
-      status: anyA.status,
-      criado_em: a.criadoEm.toISOString(),
-      encerrado_em: a.encerradoEm ? a.encerradoEm.toISOString() : null,
-      foi_resolvido: anyA.foiResolvido ?? null,
-      nota_satisfacao: anyA.notaSatisfacao ?? null,
-      tempo_primeira_resposta_segundos:
-        anyA.tempoPrimeiraRespostaSegundos ?? null,
+      protocolo: a.protocolo ?? null,
+      cidadao_nome: a.cidadaoNome ?? a.cidadao_nome ?? null,
+      cidadao_numero: a.cidadaoNumero ?? a.cidadao_numero ?? "",
+      departamento_nome: a.departamento?.nome ?? null,
+      agente_nome: a.agenteNome ?? a.agente_nome ?? null,
+      status: a.status,
+      criado_em: toIsoString(criadoEm)!,
+      encerrado_em: encerradoEm ? toIsoString(encerradoEm) : null,
+      foi_resolvido: foiResolvido,
+      nota_satisfacao: notaSatisfacao,
+      tempo_primeira_resposta_segundos: tempoPrimeiraResposta,
     };
   });
 }
 
 /**
  * GET /atendimentos
- * Lista resumida para a tela "Atendimentos"
+ * Lista de atendimentos em formato de resumo.
  */
 router.get("/atendimentos", async (req: Request, res: Response) => {
   try {
@@ -55,7 +90,7 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
 
 /**
  * GET /dashboard/resumo-atendimentos
- * Usa a mesma lista da tela de atendimentos.
+ * Mesmo formato de /atendimentos, para o DashboardPage.tsx.
  */
 router.get(
   "/dashboard/resumo-atendimentos",
@@ -76,9 +111,9 @@ router.get(
  * GET /atendimentos/:id
  * Cabeçalho do atendimento (dados gerais).
  */
-router.get("/atendimentos/:id", async (req: Request, res: Response) => {
+router.get('/atendimentos/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const repo = AppDataSource.getRepository(Atendimento);
 
     const atendimento = await repo.findOne({
@@ -90,105 +125,118 @@ router.get("/atendimentos/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Atendimento não encontrado" });
     }
 
-    const anyA = atendimento as any;
+    const anyA: any = atendimento;
+    const criadoEm = anyA.criadoEm ?? anyA.criado_em;
+    const encerradoEm = anyA.encerradoEm ?? anyA.encerrado_em ?? null;
+
+    const foiResolvido =
+      typeof anyA.foiResolvido === "boolean"
+        ? anyA.foiResolvido
+        : typeof anyA.foi_resolvido === "boolean"
+        ? anyA.foi_resolvido
+        : null;
+
+    const notaSatisfacao =
+      typeof anyA.notaSatisfacao === "number"
+        ? anyA.notaSatisfacao
+        : typeof anyA.nota_satisfacao === "number"
+        ? anyA.nota_satisfacao
+        : null;
 
     res.json({
-      id: atendimento.id,
+      id: anyA.id,
       protocolo: anyA.protocolo ?? null,
-      cidadao_nome: anyA.cidadaoNome ?? null,
-      cidadao_numero: anyA.cidadaoNumero ?? "",
+      cidadao_nome: anyA.cidadaoNome ?? anyA.cidadao_nome ?? null,
+      cidadao_numero: anyA.cidadaoNumero ?? anyA.cidadao_numero ?? "",
       departamento_nome: atendimento.departamento
         ? atendimento.departamento.nome
         : null,
-      agente_nome: anyA.agenteNome ?? null,
+      agente_nome: anyA.agenteNome ?? anyA.agente_nome ?? null,
       status: anyA.status,
-      criado_em: atendimento.criadoEm.toISOString(),
-      encerrado_em: atendimento.encerradoEm
-        ? atendimento.encerradoEm.toISOString()
-        : null,
-      foi_resolvido: anyA.foiResolvido ?? null,
-      nota_satisfacao: anyA.notaSatisfacao ?? null,
+      criado_em: toIsoString(criadoEm)!,
+      encerrado_em: encerradoEm ? toIsoString(encerradoEm) : null,
+      foi_resolvido: foiResolvido,
+      nota_satisfacao: notaSatisfacao,
     });
   } catch (err) {
-    console.error("Erro ao buscar atendimento:", err);
+    console.error("Erro ao buscar cabeçalho do atendimento:", err);
     res.status(500).json({ error: "Erro ao buscar atendimento" });
   }
 });
 
 /**
  * GET /atendimentos/:id/mensagens
- * Detalhamento do atendimento: todas as mensagens.
+ * Histórico de mensagens do atendimento (usado no AtendimentoDetalhePage.tsx).
+ * Agora já devolvendo comando_codigo e comando_descricao.
  */
 router.get(
-    "/atendimentos/:id/mensagens",
-    async (req: Request, res: Response) => {
-      try {
-        const { id } = req.params;
-  
-        const repo = AppDataSource.getRepository(Mensagem);
-  
-        // Se na entidade a relação for diferente (ex: atendimentoId), ajuste aqui:
-        const mensagens = await repo.find({
-          where: { atendimento: { id } as any },
-          order: { criadoEm: "ASC" },
-        });
-  
-        const data = mensagens.map((m) => {
-          const anyM = m as any;
-  
-          // Campo real da tabela: direcao = CITIZEN | AGENT
-          const direcao: string | null =
-            anyM.direcao ?? anyM.direction ?? null;
-  
-          // Monta um rótulo amigável pra gestão
-          let autor: string | null = null;
-          if (direcao === "CITIZEN") autor = "CIDADÃO";
-          else if (direcao === "AGENT") autor = "AGENTE";
-          else if (direcao) autor = direcao;
-          // se no futuro tiver mensagens de SISTEMA, dá pra tratar aqui também
-  
-          // Texto da mensagem: vem de conteudo_texto
-          const texto: string | null =
-            anyM.conteudoTexto ?? anyM.conteudo_texto ?? anyM.texto ?? null;
-  
-          // Tipo de mídia
-          const tipo: string = (anyM.tipo || "TEXT").toUpperCase();
-  
-          // IDs de mídia e MIME type
-          const mediaId: string | null =
-            anyM.whatsappMediaId ??
-            anyM.whatsapp_media_id ??
-            anyM.mediaId ??
-            null;
-  
-          const mediaMime: string | null =
-            anyM.mimeType ?? anyM.mime_type ?? null;
-  
-          const criadoEm: string = (
-            m.criadoEm ?? anyM.criado_em ?? new Date()
-          ).toISOString();
-  
-          return {
-            id: m.id,
-            tipo,            // TEXT, AUDIO, IMAGE, VIDEO, DOCUMENT
-            texto,
-            autor,           // "CIDADÃO" ou "AGENTE"
-            direction: direcao, // "CITIZEN" ou "AGENT"
-            media_id: mediaId,
-            media_mime: mediaMime,
-            criado_em: criadoEm,
-          };
-        });
-  
-        res.json(data);
-      } catch (err) {
-        console.error("Erro ao listar mensagens do atendimento:", err);
-        res
-          .status(500)
-          .json({ error: "Erro ao listar mensagens do atendimento" });
-      }
+  "/atendimentos/:id/mensagens",
+  async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const repo = AppDataSource.getRepository(Mensagem);
+
+      const mensagens = await repo.find({
+        where: { atendimentoId: id },
+        order: { criadoEm: "ASC" },
+      });
+
+      const data = mensagens.map((m: any) => {
+        const tipo = m.tipo || "TEXT";
+        const texto = m.conteudoTexto ?? null;
+        const mediaId = m.whatsappMediaId ?? null;
+        const mediaMime = m.mimeType ?? null;
+
+        // Direção e autor (CIDADÃO / AGENTE / SISTEMA)
+        const direcao = String(m.direcao || "").toUpperCase();
+        let autor = "CIDADÃO";
+
+        if (direcao === "AGENT") {
+          autor = "AGENTE";
+        }
+
+        if (
+          m.remetenteNumero &&
+          String(m.remetenteNumero).toUpperCase().includes("SIST")
+        ) {
+          autor = "SISTEMA";
+        }
+
+        // Metadados de comando
+        const comandoCodigo =
+          m.comandoCodigo ??
+          m.comando_codigo ??
+          null;
+
+        const comandoDescricao =
+          m.comandoDescricao ??
+          m.comando_descricao ??
+          null;
+
+        const criadoEm = m.criadoEm ?? m.criado_em;
+
+        return {
+          id: m.id,
+          tipo,
+          texto,
+          autor,
+          direction: direcao || null,
+          media_id: mediaId,
+          media_mime: mediaMime,
+          comando_codigo: comandoCodigo,
+          comando_descricao: comandoDescricao,
+          criado_em: toIsoString(criadoEm)!,
+        };
+      });
+
+      res.json(data);
+    } catch (err) {
+      console.error("Erro ao buscar mensagens do atendimento:", err);
+      res
+        .status(500)
+        .json({ error: "Erro ao buscar mensagens do atendimento" });
     }
-  );
-  
+  }
+);
 
 export default router;

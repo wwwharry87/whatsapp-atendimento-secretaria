@@ -137,22 +137,63 @@ router.get(
 );
 
 /**
- * GET /atendimentos/:id/mensagens
  * Lista mensagens de um atendimento em ordem cronológica
+ * no formato esperado pelo painel (texto, autor, media, comando, etc.)
  */
 router.get(
   "/atendimentos/:id/mensagens",
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+
+      const repoAt = AppDataSource.getRepository(Atendimento);
       const repoMsg = AppDataSource.getRepository(Mensagem);
+
+      const atendimento = await repoAt.findOne({
+        where: { id },
+        relations: ["departamento"]
+      });
+
+      if (!atendimento) {
+        return res
+          .status(404)
+          .json({ error: "Atendimento não encontrado" });
+      }
 
       const mensagens = await repoMsg.find({
         where: { atendimentoId: id },
         order: { criadoEm: "ASC" }
       });
 
-      res.json(mensagens);
+      const resposta = mensagens.map((m) => {
+        // quem é o "autor" base (para o painel descobrir se é cidadão / agente / sistema)
+        let autorBase: string | null = null;
+
+        if (m.direcao === "CITIZEN") {
+          autorBase = "CIDADÃO";
+        } else if (m.direcao === "AGENT") {
+          autorBase = "AGENTE";
+        } else {
+          autorBase = "SISTEMA";
+        }
+
+        return {
+          id: m.id,
+          tipo: m.tipo,
+          texto: m.conteudoTexto ?? null,
+          autor: autorBase,
+          direction: m.direcao,
+          media_id: m.whatsappMediaId ?? null,
+          media_mime: m.mimeType ?? null,
+          criado_em: m.criadoEm,
+
+          // 🔹 novos campos – IMPORTANTES PRO PAINEL
+          comando_codigo: (m as any).comandoCodigo ?? null,
+          comando_descricao: (m as any).comandoDescricao ?? null
+        };
+      });
+
+      res.json(resposta);
     } catch (err: any) {
       console.error("Erro ao listar mensagens do atendimento:", err);
       res
@@ -161,6 +202,7 @@ router.get(
     }
   }
 );
+
 
 /**
  * GET /atendimentos/:id/eventos
