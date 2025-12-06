@@ -1,136 +1,224 @@
 // src/routes/usuarios.ts
 import { Router, Request, Response } from "express";
-import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
 
 const router = Router();
-const repo = AppDataSource.getRepository(Usuario);
 
-function mapUsuario(u: Usuario) {
-  return {
-    id: u.id,
-    nome: u.nome,
-    email: u.email ?? "",
-    telefone: (u as any).telefoneWhatsapp ?? "",
-    perfil: u.tipo, // "ADMIN" | "GESTOR" | "ATENDENTE"
-    ativo: u.ativo,
-    criado_em: u.criadoEm.toISOString(),
-    atualizado_em: u.atualizadoEm.toISOString()
-  };
+/**
+ * Hash simples de senha com SHA-256
+ */
+function hashPassword(raw: string): string {
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * Helper pra pegar idcliente:
+ * - tenta pegar do header X-Id-Cliente
+ * - se não tiver, usa DEFAULT_CLIENTE_ID ou 1
+ */
+function getIdClienteFromRequest(req: Request): number {
+  const headerVal = (req.headers["x-id-cliente"] || "").toString();
+  if (headerVal && !Number.isNaN(Number(headerVal))) {
+    return Number(headerVal);
+  }
+  const envVal = process.env.DEFAULT_CLIENTE_ID;
+  if (envVal && !Number.isNaN(Number(envVal))) {
+    return Number(envVal);
+  }
+  return 1; // fallback
 }
 
 /**
  * GET /usuarios
+ * Lista usuários do cliente.
  */
 router.get("/", async (req: Request, res: Response) => {
   try {
+    const idcliente = getIdClienteFromRequest(req);
+
+    const repo = AppDataSource.getRepository(Usuario);
     const usuarios = await repo.find({
-      order: { nome: "ASC" }
+      where: { idcliente },
+      order: { nome: "ASC" },
     });
 
-    res.json(usuarios.map(mapUsuario));
+    return res.json(
+      usuarios.map((u) => ({
+        id: u.id,
+        nome: u.nome,
+        email: u.email,
+        telefone: u.telefone,
+        perfil: (u as any).perfil ?? "ATENDENTE",
+        // alias pra não quebrar nada legado que ainda use "tipo"
+        tipo: (u as any).perfil ?? "ATENDENTE",
+        ativo: u.ativo,
+        idcliente: (u as any).idcliente ?? idcliente,
+      }))
+    );
   } catch (err) {
-    console.error("Erro ao listar usuários:", err);
-    res.status(500).json({ error: "Erro ao listar usuários" });
+    console.error("[USUARIOS] Erro ao listar:", err);
+    return res
+      .status(500)
+      .json({ error: "Erro ao listar usuários. Verifique o servidor." });
   }
 });
 
 /**
  * POST /usuarios
- * Cria usuário com senha padrão "123456" (depois podemos trocar isso por envio de link)
+ * Cria um novo usuário para o cliente.
  */
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const { nome, email, telefone, perfil, ativo } = req.body;
+    const idcliente = getIdClienteFromRequest(req);
 
-    if (!nome || !email || !perfil) {
+    const { nome, email, telefone, perfil, senha } = req.body as {
+      nome: string;
+      email: string;
+      telefone?: string;
+      perfil?: string;
+      senha?: string;
+    };
+
+    if (!nome || !email) {
       return res
         .status(400)
-        .json({ error: "nome, email e perfil são obrigatórios." });
+        .json({ error: "Nome e e-mail são obrigatórios." });
     }
 
-    const emailNormalizado = String(email).trim().toLowerCase();
+    const repo = AppDataSource.getRepository(Usuario);
+
+    const emailLower = email.toLowerCase();
 
     const existente = await repo.findOne({
-      where: [{ email: emailNormalizado }, { login: emailNormalizado }]
+      where: { email: emailLower, idcliente },
     });
+
     if (existente) {
       return res
         .status(400)
-        .json({ error: "Já existe usuário com este e-mail." });
+        .json({ error: "Já existe um usuário com este e-mail." });
     }
 
-    const senhaHash = await bcrypt.hash("123456", 10);
-
+    // 🔒 força o tipo para Usuario (e não Usuario[])
     const usuario = repo.create({
+      idcliente,
       nome,
-      email: emailNormalizado,
-      login: emailNormalizado,
-      telefoneWhatsapp: telefone ?? null,
-      tipo: perfil,
-      ativo: ativo !== false,
-      senhaHash
-    });
+      email: emailLower,
+      telefone: telefone || null,
+      perfil: (perfil as any) || "ATENDENTE",
+      senhaHash: senha ? hashPassword(senha) : null,
+      ativo: true,
+    } as any) as Usuario;
 
     await repo.save(usuario);
 
-    res.status(201).json(mapUsuario(usuario));
+    return res.status(201).json({
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email,
+      telefone: usuario.telefone,
+      perfil: (usuario as any).perfil ?? "ATENDENTE",
+      tipo: (usuario as any).perfil ?? "ATENDENTE",
+      ativo: usuario.ativo,
+      idcliente: (usuario as any).idcliente ?? idcliente,
+    });
   } catch (err) {
-    console.error("Erro ao criar usuário:", err);
-    res.status(500).json({ error: "Erro ao criar usuário" });
+    console.error("[USUARIOS] Erro ao criar:", err);
+    return res.status(500).json({ error: "Erro ao criar usuário." });
   }
 });
 
 /**
  * PUT /usuarios/:id
- * Atualiza dados básicos e perfil (não mexe em senha aqui).
+ * Atualiza dados básicos (nome, email, telefone, perfil, senha, ativo).
  */
 router.put("/:id", async (req: Request, res: Response) => {
   try {
+    const idcliente = getIdClienteFromRequest(req);
     const { id } = req.params;
-    const usuario = await repo.findOne({ where: { id } });
 
-    if (!usuario) {
-      return res.status(404).json({ error: "Usuário não encontrado" });
+    const { nome, email, telefone, perfil, senha, ativo } = req.body as {
+      nome?: string;
+      email?: string;
+      telefone?: string;
+      perfil?: string;
+      senha?: string;
+      ativo?: boolean;
+    };
+
+    const repo = AppDataSource.getRepository(Usuario);
+
+    // 🔒 deixa explícito que aqui é Usuario | null
+    const encontrado = (await repo.findOne({
+      where: { id, idcliente },
+    })) as Usuario | null;
+
+    if (!encontrado) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
     }
 
-    const { nome, email, telefone, perfil, ativo } = req.body;
-
-    if (email) {
-      const emailNormalizado = String(email).trim().toLowerCase();
-
-      // verifica se já existe outro usuário com esse email
-      const jaExiste = await repo.findOne({
-        where: [
-          { email: emailNormalizado },
-          { login: emailNormalizado }
-        ]
-      });
-
-      if (jaExiste && jaExiste.id !== usuario.id) {
-        return res
-          .status(400)
-          .json({ error: "Já existe outro usuário com este e-mail." });
-      }
-
-      usuario.email = emailNormalizado;
-      usuario.login = emailNormalizado;
-    }
+    // 🔒 a partir daqui tratamos como Usuario
+    const usuario: Usuario = encontrado;
 
     if (nome) usuario.nome = nome;
-    if (telefone !== undefined) {
-      (usuario as any).telefoneWhatsapp = telefone || null;
+    if (email) usuario.email = email.toLowerCase();
+    if (telefone !== undefined) usuario.telefone = telefone || null;
+    if (perfil) {
+      (usuario as any).perfil = perfil;
     }
-    if (perfil) usuario.tipo = perfil;
-    if (typeof ativo === "boolean") usuario.ativo = ativo;
+    if (typeof ativo === "boolean") {
+      usuario.ativo = ativo;
+    }
+    if (senha) {
+      usuario.senhaHash = hashPassword(senha);
+    }
 
     await repo.save(usuario);
 
-    res.json(mapUsuario(usuario));
+    return res.json({
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email,
+      telefone: usuario.telefone,
+      perfil: (usuario as any).perfil ?? "ATENDENTE",
+      tipo: (usuario as any).perfil ?? "ATENDENTE",
+      ativo: usuario.ativo,
+      idcliente: (usuario as any).idcliente ?? idcliente,
+    });
   } catch (err) {
-    console.error("Erro ao atualizar usuário:", err);
-    res.status(500).json({ error: "Erro ao atualizar usuário" });
+    console.error("[USUARIOS] Erro ao atualizar:", err);
+    return res.status(500).json({ error: "Erro ao atualizar usuário." });
+  }
+});
+
+/**
+ * DELETE /usuarios/:id
+ * Em vez de apagar, marca como inativo.
+ */
+router.delete("/:id", async (req: Request, res: Response) => {
+  try {
+    const idcliente = getIdClienteFromRequest(req);
+    const { id } = req.params;
+
+    const repo = AppDataSource.getRepository(Usuario);
+    const encontrado = (await repo.findOne({
+      where: { id, idcliente },
+    })) as Usuario | null;
+
+    if (!encontrado) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    const usuario: Usuario = encontrado;
+    usuario.ativo = false;
+    await repo.save(usuario);
+
+    return res.status(204).send();
+  } catch (err) {
+    console.error("[USUARIOS] Erro ao inativar:", err);
+    return res.status(500).json({ error: "Erro ao inativar usuário." });
   }
 });
 

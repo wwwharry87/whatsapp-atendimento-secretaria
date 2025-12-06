@@ -1,60 +1,65 @@
 // src/scripts/createAdmin.ts
 import "reflect-metadata";
-import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
 
+function hashPassword(raw: string): string {
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
 async function main() {
   try {
-    // Você pode mudar esses valores se quiser outro login/senha
-    const nome = process.env.ADMIN_NOME || "Administrador";
-    const login = process.env.ADMIN_LOGIN || "admin";
-    const senha = process.env.ADMIN_SENHA || "123456";
-
-    console.log("➡ Inicializando conexão com o banco...");
     await AppDataSource.initialize();
+    console.log("[createAdmin] Conectado ao banco.");
 
-    const usuarioRepo = AppDataSource.getRepository(Usuario);
+    const repo = AppDataSource.getRepository(Usuario);
 
-    const total = await usuarioRepo.count();
-    if (total > 0) {
-      console.log("⚠ Já existe usuário na base. Não vou criar outro ADMIN padrão.");
-      console.log("Se quiser criar manualmente outro, depois fazemos uma rota ou tela pra isso.");
-      process.exit(0);
-    }
+    const idcliente =
+      Number(process.env.DEFAULT_CLIENTE_ID || "1") || 1;
 
-    const existente = await usuarioRepo.findOne({ where: { login } });
-    if (existente) {
-      console.log(`⚠ Já existe usuário com login "${login}".`);
-      process.exit(0);
-    }
+    const adminEmail =
+      process.env.ADMIN_EMAIL || "admin@semed.tucurui.pa.gov.br";
+    const adminNome = process.env.ADMIN_NOME || "Administrador SEMED";
+    const adminSenha = process.env.ADMIN_SENHA || "admin123";
 
-    console.log("➡ Gerando hash da senha...");
-    const senhaHash = await bcrypt.hash(senha, 10);
+    const emailLower = adminEmail.toLowerCase();
 
-    const usuario = usuarioRepo.create({
-      nome,
-      login,
-      senhaHash,
-      tipo: "ADMIN",
-      ativo: true,
-      email: null,
-      telefoneWhatsapp: null,
+    const existente = await repo.findOne({
+      where: { email: emailLower, idcliente },
     });
 
-    await usuarioRepo.save(usuario);
+    if (existente) {
+      console.log(
+        `[createAdmin] Já existe usuário admin (${emailLower}) para idcliente=${idcliente}. Nada a fazer.`
+      );
+      process.exit(0);
+      return;
+    }
 
-    console.log("✅ Usuário ADMIN criado com sucesso!");
-    console.log("====================================");
-    console.log(`ID:    ${usuario.id}`);
-    console.log(`Nome:  ${usuario.nome}`);
-    console.log(`Login: ${login}`);
-    console.log(`Senha: ${senha}`);
-    console.log("====================================");
-    console.log("Guarde esses dados para acessar o sistema.");
+    // 🔒 força o tipo para Usuario (não Usuario[])
+    const usuario = repo.create({
+      idcliente,
+      nome: adminNome,
+      email: emailLower,
+      telefone: null,
+      perfil: "ADMIN",
+      senhaHash: hashPassword(adminSenha),
+      ativo: true,
+    } as any) as Usuario;
+
+    await repo.save(usuario);
+
+    console.log("[createAdmin] Usuário admin criado com sucesso:");
+    console.log("  id:", usuario.id);
+    console.log("  nome:", usuario.nome);
+    console.log("  email:", usuario.email);
+    console.log("  senha:", adminSenha);
+    console.log("  idcliente:", idcliente);
+
     process.exit(0);
   } catch (err) {
-    console.error("❌ Erro ao criar usuário ADMIN:", err);
+    console.error("[createAdmin] Erro ao criar admin:", err);
     process.exit(1);
   }
 }
