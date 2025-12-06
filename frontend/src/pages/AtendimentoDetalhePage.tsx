@@ -13,6 +13,43 @@ function formatDateTime(value?: string | null) {
   return dayjs(value).format("DD/MM/YYYY HH:mm");
 }
 
+function getStatusLabel(status?: string | null) {
+  if (!status) return "-";
+  const map: Record<string, string> = {
+    ASK_NAME: "Perguntando nome do cidadão",
+    ASK_DEPARTMENT: "Cidadão escolhendo setor",
+    WAITING_AGENT_CONFIRMATION: "Aguardando um agente assumir",
+    ACTIVE: "Em atendimento",
+    IN_QUEUE: "Na fila de espera",
+    ASK_ANOTHER_DEPARTMENT: "Definindo outro setor ou encerrando",
+    LEAVE_MESSAGE_DECISION: "Decidindo se quer deixar recado",
+    LEAVE_MESSAGE: "Modo recado (mensagens registradas)",
+    FINISHED: "Atendimento encerrado",
+  };
+  return map[status] || status;
+}
+
+function getStatusChipClasses(status?: string | null) {
+  switch (status) {
+    case "IN_QUEUE":
+    case "WAITING_AGENT_CONFIRMATION":
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    case "ACTIVE":
+      return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "ASK_NAME":
+    case "ASK_DEPARTMENT":
+    case "ASK_ANOTHER_DEPARTMENT":
+      return "bg-sky-50 text-sky-700 border-sky-200";
+    case "LEAVE_MESSAGE_DECISION":
+    case "LEAVE_MESSAGE":
+      return "bg-violet-50 text-violet-700 border-violet-200";
+    case "FINISHED":
+      return "bg-slate-100 text-slate-700 border-slate-200";
+    default:
+      return "bg-slate-50 text-slate-700 border-slate-200";
+  }
+}
+
 export default function AtendimentoDetalhePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -114,14 +151,26 @@ export default function AtendimentoDetalhePage() {
           </button>
           <h1 className="text-xl font-semibold text-slate-800">{titulo}</h1>
           {atendimento && (
-            <p className="text-xs text-slate-500 mt-1">
-              Departamento:{" "}
-              <span className="font-medium">
-                {atendimento.departamento_nome || "Não informado"}
-              </span>{" "}
-              · Início: {formatDateTime(atendimento.criado_em)} · Status:{" "}
-              <span className="uppercase text-[11px] bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                {atendimento.status}
+            <p className="text-xs text-slate-500 mt-1 flex flex-wrap gap-1 items-center">
+              <span>
+                Departamento:{" "}
+                <span className="font-medium">
+                  {atendimento.departamento_nome || "Não informado"}
+                </span>
+              </span>
+              <span>·</span>
+              <span>Início: {formatDateTime(atendimento.criado_em)}</span>
+              <span>·</span>
+              <span className="flex items-center gap-1">
+                Status:
+                <span
+                  className={
+                    "inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] " +
+                    getStatusChipClasses(atendimento.status)
+                  }
+                >
+                  {getStatusLabel(atendimento.status)}
+                </span>
               </span>
             </p>
           )}
@@ -168,7 +217,7 @@ export default function AtendimentoDetalhePage() {
                 let wrapperAlign = "items-end";
                 let rowJustify = "justify-end";
                 let bubbleClasses =
-                  "bg-emerald-100 text-emerald-900 rounded-2xl rounded-br-sm";
+                  "bg-emerald-50 text-emerald-900 rounded-2xl rounded-br-sm border border-emerald-100";
                 let metaAlign = "text-right";
 
                 if (cidadao) {
@@ -221,40 +270,34 @@ export default function AtendimentoDetalhePage() {
                           </p>
                         )}
 
-                        {!sistema &&
-                          msg.tipo === "AUDIO" &&
-                          mediaUrl && (
-                            <audio
-                              controls
-                              className="mt-1 max-w-full"
-                              preload="metadata"
-                            >
-                              <source src={mediaUrl} />
-                              Seu navegador não suporta áudio.
-                            </audio>
-                          )}
+                        {!sistema && msg.tipo === "AUDIO" && mediaUrl && (
+                          <audio
+                            controls
+                            className="mt-1 max-w-full"
+                            preload="metadata"
+                          >
+                            <source src={mediaUrl} />
+                            Seu navegador não suporta áudio.
+                          </audio>
+                        )}
 
-                        {!sistema &&
-                          msg.tipo === "IMAGE" &&
-                          mediaUrl && (
-                            <img
-                              src={mediaUrl}
-                              alt="Imagem do atendimento"
-                              className="mt-1 max-w-xs rounded-lg border border-slate-200"
-                            />
-                          )}
+                        {!sistema && msg.tipo === "IMAGE" && mediaUrl && (
+                          <img
+                            src={mediaUrl}
+                            alt="Imagem do atendimento"
+                            className="mt-1 max-w-xs rounded-lg border border-slate-200"
+                          />
+                        )}
 
-                        {!sistema &&
-                          msg.tipo === "VIDEO" &&
-                          mediaUrl && (
-                            <video
-                              controls
-                              className="mt-1 max-w-xs rounded-lg border border-slate-200"
-                            >
-                              <source src={mediaUrl} />
-                              Seu navegador não suporta vídeo.
-                            </video>
-                          )}
+                        {!sistema && msg.tipo === "VIDEO" && mediaUrl && (
+                          <video
+                            controls
+                            className="mt-1 max-w-xs rounded-lg border border-slate-200"
+                          >
+                            <source src={mediaUrl} />
+                            Seu navegador não suporta vídeo.
+                          </video>
+                        )}
 
                         {!sistema &&
                           msg.tipo === "DOCUMENT" &&
@@ -336,6 +379,10 @@ export default function AtendimentoDetalhePage() {
               <p>
                 <span className="font-semibold">Nota de satisfação:</span>{" "}
                 {atendimento.nota_satisfacao ?? "-"}
+              </p>
+              <p>
+                <span className="font-semibold">Status detalhado:</span>{" "}
+                {getStatusLabel(atendimento.status)}
               </p>
             </>
           ) : (

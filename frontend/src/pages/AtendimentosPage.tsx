@@ -13,6 +13,43 @@ function formatDateTime(value?: string | null) {
   return dayjs(value).format("DD/MM/YYYY HH:mm");
 }
 
+function getStatusLabel(status?: string | null) {
+  if (!status) return "-";
+  const map: Record<string, string> = {
+    ASK_NAME: "Perguntando nome",
+    ASK_DEPARTMENT: "Escolhendo setor",
+    WAITING_AGENT_CONFIRMATION: "Aguardando agente",
+    ACTIVE: "Em atendimento",
+    IN_QUEUE: "Na fila",
+    ASK_ANOTHER_DEPARTMENT: "Definindo outro setor",
+    LEAVE_MESSAGE_DECISION: "Decidindo recado",
+    LEAVE_MESSAGE: "Em modo recado",
+    FINISHED: "Encerrado",
+  };
+  return map[status] || status;
+}
+
+function getStatusChipClasses(status?: string | null) {
+  switch (status) {
+    case "IN_QUEUE":
+    case "WAITING_AGENT_CONFIRMATION":
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    case "ACTIVE":
+      return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "ASK_NAME":
+    case "ASK_DEPARTMENT":
+    case "ASK_ANOTHER_DEPARTMENT":
+      return "bg-sky-50 text-sky-700 border-sky-200";
+    case "LEAVE_MESSAGE_DECISION":
+    case "LEAVE_MESSAGE":
+      return "bg-violet-50 text-violet-700 border-violet-200";
+    case "FINISHED":
+      return "bg-slate-100 text-slate-700 border-slate-200";
+    default:
+      return "bg-slate-50 text-slate-700 border-slate-200";
+  }
+}
+
 export default function AtendimentosPage() {
   const navigate = useNavigate();
   const [itens, setItens] = useState<AtendimentoResumo[]>([]);
@@ -93,50 +130,59 @@ export default function AtendimentosPage() {
             )}
 
             {!loading &&
-              itens.map((a) => (
-                <tr
-                  key={a.id}
-                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
-                  onClick={() => navigate(`/atendimentos/${a.id}`)}
-                >
-                  <td className="px-3 py-2 text-xs">
-                    <div className="font-semibold text-slate-800">
-                      {a.cidadao_nome || a.cidadao_numero}
-                    </div>
-                    {a.protocolo && (
-                      <div className="text-[11px] text-slate-500">
-                        Protocolo {a.protocolo}
+              itens.map((a) => {
+                const statusLabel = getStatusLabel(a.status);
+                const statusClasses = getStatusChipClasses(a.status);
+                return (
+                  <tr
+                    key={a.id}
+                    className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                    onClick={() => navigate(`/atendimentos/${a.id}`)}
+                  >
+                    <td className="px-3 py-2 text-xs">
+                      <div className="font-semibold text-slate-800">
+                        {a.cidadao_nome || a.cidadao_numero}
                       </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-slate-600">
-                    {a.departamento_nome || "-"}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-slate-600">
-                    {a.agente_nome || "-"}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-slate-600">
-                    {formatDateTime(a.criado_em)}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full border border-slate-200 text-[11px] uppercase tracking-wide text-slate-600 bg-slate-50">
-                      {a.status}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-xs text-right">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate(`/atendimentos/${a.id}`);
-                      }}
-                      className="text-emerald-600 hover:text-emerald-800 text-xs font-semibold"
-                    >
-                      Ver detalhes
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                      {a.protocolo && (
+                        <div className="text-[11px] text-slate-500">
+                          Protocolo {a.protocolo}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-600">
+                      {a.departamento_nome || "-"}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-600">
+                      {a.agente_nome || "-"}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-600">
+                      {formatDateTime(a.criado_em)}
+                    </td>
+                    <td className="px-3 py-2 text-xs">
+                      <span
+                        className={
+                          "inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] uppercase tracking-wide " +
+                          statusClasses
+                        }
+                      >
+                        {statusLabel}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-right">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/atendimentos/${a.id}`);
+                        }}
+                        className="text-emerald-600 hover:text-emerald-800 text-xs font-semibold"
+                      >
+                        Ver detalhes
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
       </div>

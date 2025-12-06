@@ -1,10 +1,10 @@
+// src/pages/UsuariosPage.tsx
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { Usuario } from "../types";
 import { FiPlus, FiSave } from "react-icons/fi";
 
 type Draft = Partial<Usuario> & { id?: string | "new" };
-
 
 export default function UsuariosPage() {
   const [items, setItems] = useState<Usuario[]>([]);
@@ -37,7 +37,7 @@ export default function UsuariosPage() {
       email: "",
       telefone: "",
       perfil: "GESTOR",
-      ativo: true
+      ativo: true,
     });
   }
 
@@ -73,16 +73,17 @@ export default function UsuariosPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900">
             Usuários & Perfis
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Controle quem acessa o painel, com perfis de ADMIN, GESTOR e ATENDENTE.
+          <p className="text-xs text-slate-500 mt-1">
+            Controle quem acessa o painel, com perfis de ADMIN, GESTOR e
+            ATENDENTE.
           </p>
         </div>
         <button
           onClick={startNew}
-          className="inline-flex items-center gap-2 rounded-xl bg-primary-500 hover:bg-primary-400 text-slate-950 text-xs font-medium px-3 py-2 transition-colors"
+          className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-medium px-3 py-2 transition-colors"
         >
           <FiPlus size={14} />
           Novo usuário
@@ -90,16 +91,16 @@ export default function UsuariosPage() {
       </div>
 
       {erro && (
-        <div className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-700/60 rounded-xl px-3 py-2">
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
           {erro}
         </div>
       )}
 
-      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden text-xs">
+      <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden text-xs">
         <div className="max-h-[420px] overflow-auto">
           <table className="min-w-full border-collapse">
-            <thead className="bg-slate-900/80 sticky top-0 z-10">
-              <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-left [&>th]:text-[11px] [&>th]:font-medium [&>th]:text-slate-400">
+            <thead className="bg-slate-50 sticky top-0 z-10">
+              <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-left [&>th]:text-[11px] [&>th]:font-medium [&>th]:text-slate-500">
                 <th>#</th>
                 <th>Nome</th>
                 <th>E-mail</th>
@@ -114,7 +115,7 @@ export default function UsuariosPage() {
                 <tr>
                   <td
                     colSpan={7}
-                    className="px-3 py-6 text-center text-slate-400"
+                    className="px-3 py-6 text-center text-slate-500"
                   >
                     Carregando...
                   </td>
@@ -136,7 +137,7 @@ export default function UsuariosPage() {
                   return (
                     <tr
                       key={u.id}
-                      className="border-t border-slate-800/80 hover:bg-slate-900/60 transition-colors"
+                      className="border-t border-slate-100 hover:bg-slate-50 transition-colors"
                     >
                       <td className="px-3 py-2 align-top text-[11px] text-slate-400">
                         {u.id}
@@ -144,14 +145,14 @@ export default function UsuariosPage() {
                       <td className="px-3 py-2 align-top">
                         {isEditing ? (
                           <input
-                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                            className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                             value={draft!.nome || ""}
                             onChange={(e) =>
                               setDraft((d) => ({ ...d!, nome: e.target.value }))
                             }
                           />
                         ) : (
-                          <span className="text-[11px] font-medium">
+                          <span className="text-[11px] font-medium text-slate-900">
                             {u.nome}
                           </span>
                         )}
@@ -159,30 +160,35 @@ export default function UsuariosPage() {
                       <td className="px-3 py-2 align-top">
                         {isEditing ? (
                           <input
-                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                            className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                             value={draft!.email || ""}
                             onChange={(e) =>
-                              setDraft((d) => ({ ...d!, email: e.target.value }))
+                              setDraft((d) => ({
+                                ...d!,
+                                email: e.target.value,
+                              }))
                             }
                           />
                         ) : (
-                          <span className="text-[11px]">{u.email}</span>
+                          <span className="text-[11px] text-slate-800">
+                            {u.email}
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2 align-top">
                         {isEditing ? (
                           <input
-                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                            className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                             value={draft!.telefone || ""}
                             onChange={(e) =>
                               setDraft((d) => ({
                                 ...d!,
-                                telefone: e.target.value
+                                telefone: e.target.value,
                               }))
                             }
                           />
                         ) : (
-                          <span className="text-[11px]">
+                          <span className="text-[11px] text-slate-800">
                             {u.telefone || "-"}
                           </span>
                         )}
@@ -190,12 +196,12 @@ export default function UsuariosPage() {
                       <td className="px-3 py-2 align-top">
                         {isEditing ? (
                           <select
-                            className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                            className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                             value={draft!.perfil || "GESTOR"}
                             onChange={(e) =>
                               setDraft((d) => ({
                                 ...d!,
-                                perfil: e.target.value as Usuario["perfil"]
+                                perfil: e.target.value as Usuario["perfil"],
                               }))
                             }
                           >
@@ -204,18 +210,20 @@ export default function UsuariosPage() {
                             <option value="ATENDENTE">ATENDENTE</option>
                           </select>
                         ) : (
-                          <span className="text-[11px]">{u.perfil}</span>
+                          <span className="text-[11px] text-slate-800">
+                            {u.perfil}
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2 align-top">
                         {isEditing ? (
                           <select
-                            className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                            className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                             value={draft!.ativo ? "1" : "0"}
                             onChange={(e) =>
                               setDraft((d) => ({
                                 ...d!,
-                                ativo: e.target.value === "1"
+                                ativo: e.target.value === "1",
                               }))
                             }
                           >
@@ -227,8 +235,8 @@ export default function UsuariosPage() {
                             className={
                               "inline-flex px-2 py-0.5 rounded-full text-[10px] border " +
                               (u.ativo
-                                ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-200"
-                                : "bg-slate-800/60 border-slate-700 text-slate-300")
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                : "bg-slate-100 border-slate-300 text-slate-600")
                             }
                           >
                             {u.ativo ? "Ativo" : "Inativo"}
@@ -240,7 +248,7 @@ export default function UsuariosPage() {
                           <button
                             disabled={saving}
                             onClick={handleSave}
-                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/90 hover:bg-emerald-400 text-slate-950 px-3 py-1 text-[11px] font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1 text-[11px] font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                           >
                             <FiSave size={12} />
                             Salvar
@@ -248,7 +256,7 @@ export default function UsuariosPage() {
                         ) : (
                           <button
                             onClick={() => startEdit(u)}
-                            className="text-[11px] text-primary-300 hover:text-primary-200"
+                            className="text-[11px] text-emerald-600 hover:text-emerald-800"
                           >
                             Editar
                           </button>
@@ -259,13 +267,13 @@ export default function UsuariosPage() {
                 })}
 
               {draft && draft.id === "new" && (
-                <tr className="border-t border-slate-800/80 bg-slate-900/60">
+                <tr className="border-t border-slate-100 bg-slate-50/60">
                   <td className="px-3 py-2 align-top text-[11px] text-slate-500">
                     novo
                   </td>
                   <td className="px-3 py-2 align-top">
                     <input
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                       value={draft.nome || ""}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d!, nome: e.target.value }))
@@ -274,7 +282,7 @@ export default function UsuariosPage() {
                   </td>
                   <td className="px-3 py-2 align-top">
                     <input
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                       value={draft.email || ""}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d!, email: e.target.value }))
@@ -283,7 +291,7 @@ export default function UsuariosPage() {
                   </td>
                   <td className="px-3 py-2 align-top">
                     <input
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                       value={draft.telefone || ""}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d!, telefone: e.target.value }))
@@ -292,12 +300,12 @@ export default function UsuariosPage() {
                   </td>
                   <td className="px-3 py-2 align-top">
                     <select
-                      className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                      className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                       value={draft.perfil || "GESTOR"}
                       onChange={(e) =>
                         setDraft((d) => ({
                           ...d!,
-                          perfil: e.target.value as Usuario["perfil"]
+                          perfil: e.target.value as Usuario["perfil"],
                         }))
                       }
                     >
@@ -308,12 +316,12 @@ export default function UsuariosPage() {
                   </td>
                   <td className="px-3 py-2 align-top">
                     <select
-                      className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px]"
+                      className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px]"
                       value={draft.ativo ? "1" : "0"}
                       onChange={(e) =>
                         setDraft((d) => ({
                           ...d!,
-                          ativo: e.target.value === "1"
+                          ativo: e.target.value === "1",
                         }))
                       }
                     >
@@ -325,7 +333,7 @@ export default function UsuariosPage() {
                     <button
                       disabled={saving}
                       onClick={handleSave}
-                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/90 hover:bg-emerald-400 text-slate-950 px-3 py-1 text-[11px] font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1 text-[11px] font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <FiSave size={12} />
                       Salvar
