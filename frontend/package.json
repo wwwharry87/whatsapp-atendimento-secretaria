@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/generateVersion.cjs",
     "dev": "vite",
+    "prebuild": "node scripts/generateVersion.cjs",
     "build": "vite build",
     "preview": "vite preview"
   },
