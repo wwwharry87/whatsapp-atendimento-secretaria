@@ -37,7 +37,7 @@ export class Atendimento {
   @Column({ name: "idcliente", type: "int" })
   idcliente!: number;
 
-  @Column({ name: "cidadao_numero", type: "varchar", length: 30 })
+  @Column({ name: "cidadao_numero", type: "varchar", length: 20 })
   cidadaoNumero!: string;
 
   @Column({ name: "cidadao_nome", type: "varchar", length: 200, nullable: true })
