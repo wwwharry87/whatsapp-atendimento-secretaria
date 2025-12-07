@@ -264,7 +264,10 @@ function mapAgentCommandMetadata(
         );
       }
 
-      if (trimmedLower.startsWith("transferir") || trimmedLower.startsWith("setor")) {
+      if (
+        trimmedLower.startsWith("transferir") ||
+        trimmedLower.startsWith("setor")
+      ) {
         const parts = trimmedLower.split(/\s+/);
         const destino = parts[1] || "?";
         return buildMeta(
@@ -1271,7 +1274,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     );
 
     session.departmentId = departamento.id;
-    session.departmentName = departamento.nome;
+    // AJUSTE: nome pode ser null no entity, aqui normalizamos pra string | undefined
+    session.departmentName = departamento.nome ?? undefined;
     session.agentNumber = departamento.responsavelNumero || undefined;
     session.agentName = departamento.responsavelNome || "Responsável";
     session.busyReminderCount = 0;
@@ -1372,7 +1376,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     await sendNovoAtendimentoTemplateToAgent({
       to: agenteEnvio,
-      departamentoNome: departamento.nome,
+      // AJUSTE: tipo do param em whatsappService é string
+      departamentoNome: departamento.nome ?? "Setor",
       cidadaoNome: session.citizenName ?? "Cidadão",
       telefoneCidadao: session.citizenNumber,
       resumo: "-",
@@ -1633,7 +1638,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       }
 
       session.departmentId = novoDep.id;
-      session.departmentName = novoDep.nome;
+      // AJUSTE: nome pode ser null no entity
+      session.departmentName = novoDep.nome ?? undefined;
       session.agentNumber = novoDep.responsavelNumero || undefined;
       session.agentName = novoDep.responsavelNome || "Responsável";
       session.status = "WAITING_AGENT_CONFIRMATION";
