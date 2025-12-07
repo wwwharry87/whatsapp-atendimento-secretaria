@@ -1,50 +1,40 @@
 // scripts/generateVersion.cjs
 // Gera src/lib/version.ts automaticamente com:
-// - APP_VERSION (semver, incrementando patch a cada execução)
-// - APP_BUILD_DATE_ISO (data/hora do build)
-// - helpers para mostrar "Atualizado em: dd/MM/yyyy às HH:mm:ss | v X.Y.Z"
+// - APP_VERSION (semver, baseado em data/hora do build)
+// - APP_BUILD_DATE_ISO (data/hora do build em ISO)
+// - helpers para exibir "Atualizado em: dd/MM/yyyy às HH:mm:ss | v X.Y.Z"
+//
+// OBS: em ambiente de deploy (como Render), cada build é independente,
+// então não conseguimos "ler" a versão anterior de forma confiável.
+// Por isso, aqui usamos um esquema de versão baseado na data do build,
+// garantindo que cada deploy tenha um número de versão único.
 
 const fs = require("fs");
 const path = require("path");
 
 const VERSION_FILE_PATH = path.join(__dirname, "..", "src", "lib", "version.ts");
 
-function readCurrentVersion() {
-  try {
-    if (!fs.existsSync(VERSION_FILE_PATH)) {
-      return "1.0.0";
-    }
+// Ajuste aqui o major/minor quando houver mudança grande
+const BASE_MAJOR_MINOR = "1.0";
 
-    const content = fs.readFileSync(VERSION_FILE_PATH, "utf-8");
-    const match = content.match(/APP_VERSION\s*=\s*"([^"]+)"/);
-
-    if (!match) return "1.0.0";
-
-    const current = match[1];
-    const parts = current.split(".").map((n) => parseInt(n, 10));
-
-    if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) {
-      return "1.0.0";
-    }
-
-    return current;
-  } catch {
-    return "1.0.0";
-  }
-}
-
-function bumpPatch(version) {
-  const [major, minor, patch] = version.split(".").map((n) => parseInt(n, 10));
-  const newPatch = (patch || 0) + 1;
-  return `${major}.${minor}.${newPatch}`;
+/**
+ * Retorna uma string no formato YYYYMMDDHHmmss usando UTC.
+ */
+function buildPatchFromDate(date) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mm = String(date.getUTCMinutes()).padStart(2, "0");
+  const ss = String(date.getUTCSeconds()).padStart(2, "0");
+  return `${y}${m}${d}${hh}${mm}${ss}`;
 }
 
 function generateFile() {
-  const previousVersion = readCurrentVersion();
-  const newVersion = bumpPatch(previousVersion);
-
   const now = new Date();
   const iso = now.toISOString();
+  const patch = buildPatchFromDate(now);
+  const newVersion = `${BASE_MAJOR_MINOR}.${patch}`;
 
   const fileContent = `// ESTE ARQUIVO É GERADO AUTOMATICAMENTE POR scripts/generateVersion.cjs
 // NÃO EDITE MANUALMENTE.
@@ -62,9 +52,18 @@ export const VERSION_SNOOZE_KEY = "atende_app_version_snooze_until";
 export function getFormattedVersionInfo(): string {
   try {
     const date = new Date(APP_BUILD_DATE_ISO);
+    if (Number.isNaN(date.getTime())) {
+      return "v " + APP_VERSION;
+    }
 
     const formatted = date.toLocaleString("pt-BR", {
-      timeZone: "America/Sao_Paulo",
+      timeZone: "America/Fortaleza",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
       hour12: false,
     });
 
@@ -84,12 +83,7 @@ export function getFormattedVersionInfo(): string {
   fs.mkdirSync(path.dirname(VERSION_FILE_PATH), { recursive: true });
   fs.writeFileSync(VERSION_FILE_PATH, fileContent, "utf-8");
 
-  console.log(
-    "[generateVersion] Versão gerada:",
-    newVersion,
-    "build em",
-    iso
-  );
+  console.log("[generateVersion] Versão gerada:", newVersion, "build em", iso);
 }
 
 generateFile();

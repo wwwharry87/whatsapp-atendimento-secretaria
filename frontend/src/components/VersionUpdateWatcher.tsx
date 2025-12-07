@@ -1,33 +1,32 @@
 // src/components/VersionUpdateWatcher.tsx
 import { useEffect, useState } from "react";
-import {
-  APP_VERSION,
-  APP_BUILD_DATE_ISO,
-  VERSION_STORAGE_KEY,
-  VERSION_SNOOZE_KEY,
-  getFormattedVersionInfo,
-} from "../lib/version";
+import { VERSION_SNOOZE_KEY, getFormattedVersionInfo } from "../lib/version";
 
-const CHECK_INTERVAL_MS = 60_000; // 1 minuto
+const SW_INSTALLED_KEY = "atende_sw_installed";
 const SNOOZE_MINUTES = 5;
-
-// Usamos versão + data do build como ID único daquela versão
-const CURRENT_BUILD_ID = `${APP_VERSION}@${APP_BUILD_DATE_ISO}`;
 
 function now() {
   return Date.now();
 }
 
 function readSnoozeUntil(): number | null {
-  const raw = localStorage.getItem(VERSION_SNOOZE_KEY);
-  if (!raw) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+  try {
+    const raw = localStorage.getItem(VERSION_SNOOZE_KEY);
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 function setSnooze(minutes: number) {
-  const until = now() + minutes * 60_000;
-  localStorage.setItem(VERSION_SNOOZE_KEY, String(until));
+  try {
+    const until = now() + minutes * 60_000;
+    localStorage.setItem(VERSION_SNOOZE_KEY, String(until));
+  } catch {
+    // ignore
+  }
 }
 
 export default function VersionUpdateWatcher() {
@@ -35,50 +34,54 @@ export default function VersionUpdateWatcher() {
   const [info] = useState(() => getFormattedVersionInfo());
 
   useEffect(() => {
-    function check() {
+    function handleSwMessage(event: MessageEvent) {
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+      if (data.type !== "NEW_VERSION_AVAILABLE") return;
+
       try {
+        const firstInstall = !localStorage.getItem(SW_INSTALLED_KEY);
+        if (firstInstall) {
+          // primeira vez que o SW é instalado: só marca e não mostra modal
+          localStorage.setItem(SW_INSTALLED_KEY, "1");
+          console.log("[VersionUpdateWatcher] Service worker instalado.");
+          return;
+        }
+
         const snoozeUntil = readSnoozeUntil();
         if (snoozeUntil && snoozeUntil > now()) {
-          // Usuário escolheu "lembrar depois"
+          // já foi solicitado "lembrar depois" recentemente
           return;
-        }
-
-        const last = localStorage.getItem(VERSION_STORAGE_KEY);
-
-        // Primeira vez: grava e não mostra modal
-        if (!last) {
-          localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
-          return;
-        }
-
-        // Se mudou o build (versão + data), mostra aviso
-        if (last !== CURRENT_BUILD_ID) {
-          setShow(true);
         }
       } catch {
-        // se der problema com localStorage, só ignora
+        // se der erro com localStorage, segue fluxo normal
       }
+
+      setShow(true);
     }
 
-    check();
-    const id = window.setInterval(check, CHECK_INTERVAL_MS);
-    return () => window.clearInterval(id);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", handleSwMessage);
+    }
+
+    return () => {
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.removeEventListener("message", handleSwMessage);
+      }
+    };
   }, []);
 
   function handleUpdateNow() {
     try {
-      // Marca que este build já foi aplicado
-      localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
-      localStorage.removeItem(VERSION_SNOOZE_KEY);
-
-      // limpa sessão para garantir que volte pro login
+      // Limpa sessão para garantir que volte para o login
       localStorage.removeItem("atende_token");
       localStorage.removeItem("atende_usuario");
+      localStorage.removeItem(VERSION_SNOOZE_KEY);
     } catch {
-      // ignora
+      // ignore
     }
 
-    // força o browser a recarregar o app
+    // Recarrega a aplicação para buscar a versão nova
     window.location.reload();
   }
 
@@ -100,19 +103,19 @@ export default function VersionUpdateWatcher() {
 
             <div className="flex-1">
               <h2 className="text-base font-semibold text-slate-900">
-                Nova versão do painel disponível
+                Atualização disponível
               </h2>
 
               <p className="mt-2 text-sm text-slate-600">
-                Uma nova versão do <strong>Atende Cidadão</strong> foi instalada
-                neste dispositivo.
+                Foi detectada uma versão mais recente do painel{" "}
+                <strong>Atende Cidadão</strong>.
               </p>
 
               <p className="mt-2 text-xs text-slate-500">
                 Ao atualizar, o sistema será recarregado e você será
                 redirecionado para a tela de login para acessar novamente.
                 Recomendamos concluir atendimentos em andamento antes de
-                atualizar.
+                continuar.
               </p>
 
               <p className="mt-3 text-[11px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
