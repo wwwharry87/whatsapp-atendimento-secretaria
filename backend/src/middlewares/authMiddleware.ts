@@ -4,9 +4,16 @@ import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "../config/auth";
 
 type JwtPayload = {
-  sub: string; // user id
-  tipo: string;
+  sub: string; // usuário id
+  tipo: string; // perfil
+  idcliente: number;
 };
+
+export interface AuthRequest extends Request {
+  userId?: string;
+  userTipo?: string;
+  idcliente?: number;
+}
 
 export function authMiddleware(
   req: Request,
@@ -21,15 +28,20 @@ export function authMiddleware(
 
   const [, token] = authHeader.split(" ");
 
+  if (!token) {
+    return res.status(401).json({ error: "Token mal formatado" });
+  }
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
 
-    // guarda no request para uso nas rotas
-    (req as any).userId = decoded.sub;
-    (req as any).userTipo = decoded.tipo;
+    (req as AuthRequest).userId = decoded.sub;
+    (req as AuthRequest).userTipo = decoded.tipo;
+    (req as AuthRequest).idcliente = decoded.idcliente;
 
     return next();
   } catch (err) {
+    console.error("[AUTH] Erro ao validar token:", err);
     return res.status(401).json({ error: "Token inválido ou expirado" });
   }
 }

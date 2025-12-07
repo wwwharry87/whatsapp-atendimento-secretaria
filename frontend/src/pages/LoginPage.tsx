@@ -15,8 +15,8 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
-    if (!email || !senha) {
-      toast.error("Informe e-mail e senha.");
+    if (!email.trim() || !senha.trim()) {
+      toast.error("Informe e-mail (ou login) e senha.");
       return;
     }
 
@@ -24,40 +24,45 @@ export default function LoginPage() {
 
     try {
       const response = await api.post("/auth/login", {
-        email,
-        password: senha,
+        email, // pode ser e-mail ou login
+        senha, // 👈 backend espera "senha"
       });
 
       const { token, usuario } = response.data;
 
+      if (!token || !usuario) {
+        toast.error("Resposta de login inválida do servidor.");
+        setLoading(false);
+        return;
+      }
+
+      // grava token para o interceptor do axios
       localStorage.setItem("atende_token", token);
       localStorage.setItem("atende_usuario", JSON.stringify(usuario));
 
-      toast.success("Login realizado com sucesso!");
-      navigate("/dashboard");
+      toast.success(`Bem-vindo(a), ${usuario.nome}!`);
+
+      navigate("/", { replace: true });
     } catch (error: any) {
+      console.error("Erro de login:", error);
+
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
-        const msgBackend = (error.response?.data as any)?.error;
+        const data = error.response?.data as any;
 
-        const mensagem =
-          msgBackend ||
-          (status === 400
-            ? "Dados inválidos. Verifique e-mail e senha."
-            : status === 401
-            ? "Usuário ou senha inválidos."
-            : "Erro ao fazer login. Tente novamente.");
-
-        console.error("Erro de login:", {
-          status,
-          url: error.config?.url,
-          method: error.config?.method,
-        });
-
-        toast.error(mensagem);
+        if (status === 400 || status === 401) {
+          toast.error(
+            data?.error ||
+              "Credenciais inválidas. Verifique e-mail/login e senha."
+          );
+        } else {
+          toast.error(
+            data?.error ||
+              "Não foi possível realizar o login. Tente novamente."
+          );
+        }
       } else {
-        console.error("Erro inesperado de login.");
-        toast.error("Erro inesperado ao fazer login.");
+        toast.error("Erro inesperado ao tentar logar.");
       }
     } finally {
       setLoading(false);
@@ -65,83 +70,70 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      {/* Container central */}
-      <div className="w-full max-w-5xl px-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
-          {/* Lado esquerdo - texto institucional */}
-          <div className="hidden md:flex flex-col space-y-3 text-slate-700">
-            <h1 className="text-2xl font-semibold tracking-tight">
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="bg-slate-950/70 border border-slate-800 rounded-2xl shadow-xl px-6 py-8">
+          <div className="mb-6 text-center">
+            <h1 className="text-xl font-semibold text-white">
               Atende Cidadão
             </h1>
-            <p className="text-sm text-slate-500 leading-relaxed">
-              Plataforma de atendimento da Secretaria via WhatsApp.
-              Acompanhe as demandas dos cidadãos, organize os departamentos
-              e tome decisões com base em dados reais do dia a dia.
+            <p className="text-xs text-slate-400 mt-1">
+              Acesso restrito aos atendentes e responsáveis pela Secretaria.
             </p>
-            <div className="mt-2 text-xs text-slate-400">
-              <p>BW Soluções Inteligentes</p>
-              <p>Sistema pensado para o uso diário na gestão pública.</p>
-            </div>
           </div>
 
-          {/* Lado direito - card de login */}
-          <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-8">
-            <h2 className="text-lg font-semibold text-slate-800 mb-1 text-center">
-              Acesso ao painel
-            </h2>
-            <p className="text-xs text-slate-500 mb-6 text-center">
-              Entre com seu e-mail institucional e senha.
-            </p>
-
-            <form className="space-y-4" onSubmit={handleSubmit}>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  E-mail
-                </label>
-                <input
-                  type="email"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm 
-                             outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-500 
-                             bg-slate-50 text-slate-900 placeholder-slate-400"
-                  placeholder="seuemail@prefeitura.gov.br"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Senha
-                </label>
-                <input
-                  type="password"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm 
-                             outline-none focus:ring-2 focus:ring-emerald-500/70 focus:border-emerald-500 
-                             bg-slate-50 text-slate-900 placeholder-slate-400"
-                  placeholder="Digite sua senha"
-                  autoComplete="current-password"
-                  value={senha}
-                  onChange={(e) => setSenha(e.target.value)}
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-2 rounded-lg mt-2 transition"
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="email"
+                className="block text-xs font-medium text-slate-300"
               >
-                {loading ? "Entrando..." : "Entrar"}
-              </button>
-            </form>
+                E-mail ou login
+              </label>
+              <input
+                id="email"
+                type="text"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="seu.email@prefeitura.gov.br"
+                autoComplete="username"
+              />
+            </div>
 
-            <p className="mt-4 text-[11px] text-slate-500 text-center leading-relaxed">
-              Seu acesso é pessoal e intransferível.
-              Em caso de dúvida ou necessidade de alteração de senha,
-              procure o responsável pelo sistema na Secretaria.
-            </p>
-          </div>
+            <div>
+              <label
+                htmlFor="senha"
+                className="block text-xs font-medium text-slate-300"
+              >
+                Senha
+              </label>
+              <input
+                id="senha"
+                type="password"
+                value={senha}
+                onChange={(e) => setSenha(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="Digite sua senha"
+                autoComplete="current-password"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full mt-2 inline-flex items-center justify-center rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed transition"
+            >
+              {loading ? "Entrando..." : "Entrar"}
+            </button>
+          </form>
+
+          <p className="mt-4 text-[11px] text-slate-500 text-center leading-relaxed">
+            Seu acesso é pessoal e intransferível.
+            <br />
+            Em caso de dúvida ou necessidade de alteração de senha,
+            procure o responsável pelo sistema na Secretaria.
+          </p>
         </div>
       </div>
     </div>

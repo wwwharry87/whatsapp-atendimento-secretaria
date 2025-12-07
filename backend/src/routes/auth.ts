@@ -1,10 +1,14 @@
 // src/routes/auth.ts
 import { Router, Request, Response } from "express";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
+import { JWT_SECRET, JWT_EXPIRES_IN } from "../config/auth";
+import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
+const usuariosRepo = AppDataSource.getRepository(Usuario);
 
 /**
  * Hash simples com SHA-256 (sem depender de bcrypt)
@@ -14,113 +18,129 @@ function hashPassword(raw: string): string {
 }
 
 function checkPassword(raw: string, hash: string): boolean {
-  return hashPassword(raw) === hash;
+  const hashed = hashPassword(raw);
+  return hashed === hash;
 }
 
 /**
  * POST /auth/login
- * Body aceita tanto { login, senha } quanto { email, senha }.
- * Vamos autenticar pelo e-mail.
+ * Body: { email?: string, login?: string, senha: string }
  */
-router.post("/login", async (req: Request, res: Response) => {
-  try {
-    const { login, email, senha } = req.body as {
-      login?: string;
-      email?: string;
-      senha?: string;
-    };
+router.post(
+  "/login",
+  async (req: Request, res: Response): Promise<Response> => {
+    try {
+      const { email, login, senha } = req.body as {
+        email?: string;
+        login?: string;
+        senha?: string;
+      };
 
-    const loginValue = (email || login || "").toString().trim().toLowerCase();
+      const loginValue = (email || login || "").toString().trim().toLowerCase();
 
-    if (!loginValue || !senha) {
+      if (!loginValue || !senha) {
+        return res
+          .status(400)
+          .json({ error: "Informe e-mail (ou login) e senha." });
+      }
+
+      // Busca usuário por e-mail OU login, sempre em minúsculas
+      const usuario = await usuariosRepo
+        .createQueryBuilder("u")
+        .where("LOWER(u.email) = :login", { login: loginValue })
+        .orWhere("LOWER(u.login) = :login", { login: loginValue })
+        .andWhere("u.ativo = :ativo", { ativo: true })
+        .getOne();
+
+      if (!usuario) {
+        return res
+          .status(401)
+          .json({ error: "Usuário ou senha inválidos." });
+      }
+
+      if (!checkPassword(senha, usuario.senhaHash)) {
+        return res
+          .status(401)
+          .json({ error: "Usuário ou senha inválidos." });
+      }
+
+      const payload = {
+        sub: usuario.id,
+        tipo: usuario.perfil,
+        idcliente: usuario.idcliente,
+      };
+
+      const token = jwt.sign(payload, JWT_SECRET, {
+        expiresIn: JWT_EXPIRES_IN,
+      });
+
+      return res.json({
+        token,
+        usuario: {
+          id: usuario.id,
+          nome: usuario.nome,
+          email: usuario.email,
+          login: usuario.login,
+          perfil: usuario.perfil,
+          idcliente: usuario.idcliente,
+        },
+      });
+    } catch (err) {
+      console.error("[AUTH] Erro no /login:", err);
       return res
-        .status(400)
-        .json({ error: "Informe e-mail (ou login) e senha." });
+        .status(500)
+        .json({ error: "Erro interno ao tentar realizar login." });
     }
-
-    const repo = AppDataSource.getRepository(Usuario);
-
-    const usuario = await repo.findOne({
-      where: { email: loginValue },
-    });
-
-    if (!usuario || !usuario.ativo) {
-      return res.status(401).json({ error: "Usuário ou senha inválidos." });
-    }
-
-    if (!usuario.senhaHash) {
-      return res.status(401).json({ error: "Usuário sem senha cadastrada." });
-    }
-
-    const senhaOk = checkPassword(senha, usuario.senhaHash);
-    if (!senhaOk) {
-      return res.status(401).json({ error: "Usuário ou senha inválidos." });
-    }
-
-    // Token simples (sem JWT) – suficiente pro painel front
-    const tokenPayload = {
-      id: usuario.id,
-      nome: usuario.nome,
-      email: usuario.email,
-      perfil: (usuario as any).perfil ?? (usuario as any).tipo ?? "ATENDENTE",
-      idcliente: (usuario as any).idcliente ?? null,
-    };
-
-    const token = Buffer.from(JSON.stringify(tokenPayload)).toString("base64");
-
-    return res.json({
-      token,
-      usuario: {
-        id: usuario.id,
-        nome: usuario.nome,
-        email: usuario.email,
-        telefone: usuario.telefone,
-        perfil: tokenPayload.perfil,
-        // se o frontend ainda usa "tipo", mantemos o alias:
-        tipo: tokenPayload.perfil,
-        idcliente: tokenPayload.idcliente,
-      },
-    });
-  } catch (err) {
-    console.error("[AUTH] Erro no login:", err);
-    return res.status(500).json({ error: "Erro ao autenticar." });
   }
-});
+);
 
 /**
  * GET /auth/me
- * Opcional: o frontend pode mandar Authorization: Bearer <token-base64>
- * e aqui só decodificamos esse token simples.
+ * Retorna dados do usuário logado com base no token
  */
-router.get("/me", async (req: Request, res: Response) => {
-  try {
-    const auth = req.headers["authorization"] || "";
-    const [, token] = auth.split(" ");
-
-    if (!token) {
-      return res.status(401).json({ error: "Não autenticado." });
-    }
-
-    let payload: any;
+router.get(
+  "/me",
+  async (req: Request, res: Response): Promise<Response> => {
     try {
-      const json = Buffer.from(token, "base64").toString("utf-8");
-      payload = JSON.parse(json);
-    } catch {
-      return res.status(401).json({ error: "Token inválido." });
-    }
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ error: "Token não informado." });
+      }
 
-    return res.json({
-      id: payload.id,
-      nome: payload.nome,
-      email: payload.email,
-      perfil: payload.perfil,
-      tipo: payload.perfil,
-      idcliente: payload.idcliente,
-    });
-  } catch (err) {
-    console.error("[AUTH] Erro no /me:", err);
-    return res.status(500).json({ error: "Erro ao carregar usuário." });
+      const [, token] = authHeader.split(" ");
+      if (!token) {
+        return res.status(401).json({ error: "Token mal formatado." });
+      }
+
+      const decoded = jwt.verify(token, JWT_SECRET) as {
+        sub: string;
+        tipo: string;
+        idcliente: number;
+      };
+
+      const usuario = await usuariosRepo.findOne({
+        where: { id: decoded.sub },
+      });
+
+      if (!usuario || !usuario.ativo) {
+        return res.status(401).json({ error: "Usuário não encontrado." });
+      }
+
+      return res.json({
+        id: usuario.id,
+        nome: usuario.nome,
+        email: usuario.email,
+        login: usuario.login,
+        perfil: usuario.perfil,
+        idcliente: usuario.idcliente,
+      });
+    } catch (err) {
+      console.error("[AUTH] Erro no /me:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao carregar dados do usuário." });
+    }
   }
-});
+);
 
 export default router;

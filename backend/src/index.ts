@@ -9,50 +9,43 @@ import webhookRoutes from "./routes/webhook";
 import mediaRoutes from "./routes/media";
 import atendimentosRoutes from "./routes/atendimentos";
 import authRoutes from "./routes/auth";
-
 import painelRoutes from "./routes/painel";
 import departamentosRoutes from "./routes/departamentos";
 import usuariosRoutes from "./routes/usuarios";
 import horariosRoutes from "./routes/horarios";
 
+import { authMiddleware } from "./middlewares/authMiddleware";
+
 const app = express();
+
+app.use(express.json());
 
 app.use(
   cors({
-    origin: "*", // se quiser, depois podemos restringir para o domínio do frontend
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-app.use(express.json());
+
+// Rotas públicas (webhook do WhatsApp, mídia e login)
+app.use("/webhook", webhookRoutes);
+app.use("/media", mediaRoutes);
+app.use("/auth", authRoutes);
+
+// Rotas protegidas – exigem token
+app.use("/atendimentos", authMiddleware, atendimentosRoutes);
+app.use("/painel", authMiddleware, painelRoutes);
+app.use("/departamentos", authMiddleware, departamentosRoutes);
+app.use("/usuarios", authMiddleware, usuariosRoutes);
+app.use("/horarios", authMiddleware, horariosRoutes);
 
 app.get("/", (req, res) => {
-  res.send("API de Atendimento WhatsApp - Secretaria");
+  res.json({
+    status: "ok",
+    message: "API Atende Cidadão rodando.",
+  });
 });
-
-// Webhook do WhatsApp (sem auth)
-app.use("/webhook", webhookRoutes);
-
-// Auth (login)
-app.use("/auth", authRoutes);
-app.use("/api/auth", authRoutes); // alias se precisar
-
-// Mídias (se estiver usando)
-app.use("/api/media", mediaRoutes);
-
-// Rotas antigas de atendimentos (se houver algo legado)
-app.use("/api/atendimentos", atendimentosRoutes);
-
-// 🔹 Rotas do painel (frontend)
-// - /atendimentos
-// - /dashboard/resumo-atendimentos
-// - /departamentos
-// - /usuarios
-// - /horarios
-app.use("/", painelRoutes);
-app.use("/departamentos", departamentosRoutes);
-app.use("/usuarios", usuariosRoutes);
-app.use("/horarios", horariosRoutes);
 
 async function start() {
   try {
