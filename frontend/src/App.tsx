@@ -9,7 +9,6 @@ import DepartamentosPage from "./pages/DepartamentosPage";
 import HorariosPage from "./pages/HorariosPage";
 import UsuariosPage from "./pages/UsuariosPage";
 import VersionUpdateWatcher from "./components/VersionUpdateWatcher";
-import VersionInfoBadge from "./components/VersionInfoBadge";
 
 export default function App() {
   return (
@@ -20,10 +19,8 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" />} />
           <Route path="dashboard" element={<DashboardPage />} />
-
           <Route path="atendimentos" element={<AtendimentosPage />} />
           <Route path="atendimentos/:id" element={<AtendimentoDetalhePage />} />
-
           <Route path="departamentos" element={<DepartamentosPage />} />
           <Route path="horarios" element={<HorariosPage />} />
           <Route path="usuarios" element={<UsuariosPage />} />
@@ -32,11 +29,8 @@ export default function App() {
         <Route path="*" element={<Navigate to="/dashboard" />} />
       </Routes>
 
-      {/* Observador de versão (detecta build novo e mostra modal) */}
+      {/* Observador de versão: mostra o modal quando há atualização */}
       <VersionUpdateWatcher />
-
-      {/* Badge fixo com data/hora e versão atual */}
-      <VersionInfoBadge />
     </>
   );
 }

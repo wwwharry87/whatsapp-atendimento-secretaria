@@ -1,9 +1,19 @@
 // src/components/VersionUpdateWatcher.tsx
 import { useEffect, useState } from "react";
-import { VERSION_SNOOZE_KEY, getFormattedVersionInfo } from "../lib/version";
+import {
+  APP_VERSION,
+  APP_BUILD_DATE_ISO,
+  VERSION_STORAGE_KEY,
+  VERSION_SNOOZE_KEY,
+  getFormattedVersionInfo,
+} from "../lib/version";
 
 const SW_INSTALLED_KEY = "atende_sw_installed";
+const CHECK_INTERVAL_MS = 60_000; // 1 minuto
 const SNOOZE_MINUTES = 5;
+
+// ID único desse build (versão + data de build)
+const CURRENT_BUILD_ID = `${APP_VERSION}@${APP_BUILD_DATE_ISO}`;
 
 function now() {
   return Date.now();
@@ -34,6 +44,38 @@ export default function VersionUpdateWatcher() {
   const [info] = useState(() => getFormattedVersionInfo());
 
   useEffect(() => {
+    function checarPorVersao() {
+      try {
+        const snoozeUntil = readSnoozeUntil();
+        if (snoozeUntil && snoozeUntil > now()) {
+          // usuário já pediu "lembrar depois" recentemente
+          return;
+        }
+
+        const last = localStorage.getItem(VERSION_STORAGE_KEY);
+
+        // Primeira vez: grava build atual e não mostra modal
+        if (!last) {
+          localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
+          return;
+        }
+
+        // Se mudou o build (versão ou data do build), mostra aviso
+        if (last !== CURRENT_BUILD_ID) {
+          setShow(true);
+        }
+      } catch {
+        // se der erro com localStorage, segue sem quebrar a tela
+      }
+    }
+
+    // Checa uma vez ao montar
+    checarPorVersao();
+
+    // E continua checando de tempos em tempos (caso SW não avise)
+    const id = window.setInterval(checarPorVersao, CHECK_INTERVAL_MS);
+
+    // Listener para mensagens do service worker (NEW_VERSION_AVAILABLE)
     function handleSwMessage(event: MessageEvent) {
       const data = event.data;
       if (!data || typeof data !== "object") return;
@@ -42,7 +84,7 @@ export default function VersionUpdateWatcher() {
       try {
         const firstInstall = !localStorage.getItem(SW_INSTALLED_KEY);
         if (firstInstall) {
-          // primeira vez que o SW é instalado: só marca e não mostra modal
+          // primeira instalação do SW: só marca, não mostra modal
           localStorage.setItem(SW_INSTALLED_KEY, "1");
           console.log("[VersionUpdateWatcher] Service worker instalado.");
           return;
@@ -50,11 +92,10 @@ export default function VersionUpdateWatcher() {
 
         const snoozeUntil = readSnoozeUntil();
         if (snoozeUntil && snoozeUntil > now()) {
-          // já foi solicitado "lembrar depois" recentemente
           return;
         }
       } catch {
-        // se der erro com localStorage, segue fluxo normal
+        // ignora erros de storage
       }
 
       setShow(true);
@@ -65,23 +106,30 @@ export default function VersionUpdateWatcher() {
     }
 
     return () => {
+      window.clearInterval(id);
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.removeEventListener("message", handleSwMessage);
+        navigator.serviceWorker.removeEventListener(
+          "message",
+          handleSwMessage
+        );
       }
     };
   }, []);
 
   function handleUpdateNow() {
     try {
-      // Limpa sessão para garantir que volte para o login
+      // marca build atual como última versão aplicada
+      localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
+      localStorage.removeItem(VERSION_SNOOZE_KEY);
+
+      // limpa sessão para garantir volta ao login
       localStorage.removeItem("atende_token");
       localStorage.removeItem("atende_usuario");
-      localStorage.removeItem(VERSION_SNOOZE_KEY);
     } catch {
       // ignore
     }
 
-    // Recarrega a aplicação para buscar a versão nova
+    // recarrega a aplicação para buscar o bundle novo
     window.location.reload();
   }
 

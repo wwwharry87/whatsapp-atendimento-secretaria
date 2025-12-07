@@ -1,22 +1,19 @@
 // scripts/generateVersion.cjs
 // Gera src/lib/version.ts automaticamente com:
-// - APP_VERSION em formato semver simples: MAJOR.MINOR.PATCH
-//   - PATCH vai de 0 até 99
-//   - MINOR vai de 0 até 9
-//   - Quando PATCH > 99, reseta para 0 e incrementa MINOR
-//   - Quando MINOR > 9, reseta para 0 e incrementa MAJOR
-// - APP_BUILD_DATE_ISO (data/hora do build)
-// - Helpers para mostrar:
-//   "Atualizado em: dd/MM/yyyy, às HH:mm:ss | v X.Y.Z"
+// - APP_VERSION no formato MAJOR.MINOR.PATCH
+//   - PATCH: 0 → 99
+//   - MINOR: 0 → 9
+//   - Quando PATCH > 99  → PATCH = 0 e MINOR++
+//   - Quando MINOR > 9   → MINOR = 0 e MAJOR++
+// - APP_BUILD_DATE_ISO: data/hora exata do build
+// - getFormattedVersionInfo():
+//   "Atualizado em: dd/MM/yyyy às HH:mm:ss | v X.Y.Z"
 //
-// IMPORTANTE:
-// Em serviços de deploy automático (como Render, Vercel etc.),
-// cada build começa a partir dos arquivos do repositório.
-// Para que a versão avance (1.0.1 → 1.0.2 → 1.0.3 ...),
-// é necessário que o arquivo gerado src/lib/version.ts
-// seja commitado em algum momento no Git.
-// Se o arquivo nunca for commitado, o build remoto
-// sempre vai partir da mesma versão base.
+// IMPORTANTE (Render / deploy automático):
+// O build remoto sempre começa da versão que está COMMITADA
+// em src/lib/version.ts. Para a versão subir de 1.0.1 → 1.0.2 etc.
+// entre deploys no Render, é importante COMMITAR o version.ts
+// gerado de vez em quando (por exemplo, em cada release).
 
 const fs = require("fs");
 const path = require("path");
@@ -98,7 +95,7 @@ export const VERSION_SNOOZE_KEY = "atende_app_version_snooze_until";
 
 /**
  * Retorna um texto amigável com:
- * "Atualizado em: dd/MM/yyyy, às HH:mm:ss | v X.Y.Z"
+ * "Atualizado em: dd/MM/yyyy às HH:mm:ss | v X.Y.Z"
  */
 export function getFormattedVersionInfo(): string {
   try {
@@ -118,13 +115,16 @@ export function getFormattedVersionInfo(): string {
       hour12: false,
     });
 
-    // Normalmente vem "dd/mm/aaaa hh:mm:ss"
-    const [data, hora] = formatted.split(" ");
-    if (!data || !hora) {
+    // Normalmente vem "dd/mm/aaaa, hh:mm:ss"
+    const [dataRaw, hora] = formatted.split(" ");
+    if (!dataRaw || !hora) {
       return "v " + APP_VERSION;
     }
 
-    return \`Atualizado em: \${data}, às \${hora} | v \${APP_VERSION}\`;
+    // Remove vírgulas sobrando do final da data, ex: "07/12/2025,"
+    const data = dataRaw.replace(/,+$/, "");
+
+    return \`Atualizado em: \${data} às \${hora} | v \${APP_VERSION}\`;
   } catch {
     return "v " + APP_VERSION;
   }
