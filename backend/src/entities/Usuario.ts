@@ -29,7 +29,7 @@ export class Usuario {
   @Column({ name: "idcliente", type: "int" })
   idcliente!: number;
 
-  @Column({ type: "varchar", length: 200 })
+  @Column({ type: "varchar", length: 150 })
   nome!: string;
 
   @Column({ type: "varchar", length: 200, unique: true })
