@@ -4,10 +4,12 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
+import { Cliente } from "../entities/Cliente";
 import { JWT_SECRET, JWT_EXPIRES_IN } from "../config/auth";
 
 const router = Router();
 const usuariosRepo = AppDataSource.getRepository(Usuario);
+const clientesRepo = AppDataSource.getRepository(Cliente);
 
 /**
  * Hash simples com SHA-256 (sem depender de bcrypt)
@@ -65,6 +67,21 @@ router.post(
           .json({ error: "Usuário ou senha inválidos." });
       }
 
+      // Busca o nome do cliente vinculado (tabela clientes)
+      let clienteNome: string | null = null;
+      try {
+        if (usuario.idcliente) {
+          const cliente = await clientesRepo.findOne({
+            where: { id: usuario.idcliente },
+          });
+          if (cliente) {
+            clienteNome = cliente.nome;
+          }
+        }
+      } catch (err) {
+        console.error("[AUTH] Erro ao carregar cliente no /login:", err);
+      }
+
       const payload = {
         sub: usuario.id,
         tipo: usuario.perfil,
@@ -85,6 +102,8 @@ router.post(
           login: usuario.email,
           perfil: usuario.perfil,
           idcliente: usuario.idcliente,
+          // novo campo para o frontend exibir o nome do cliente
+          cliente_nome: clienteNome,
         },
       });
     } catch (err) {
@@ -128,6 +147,21 @@ router.get(
         return res.status(401).json({ error: "Usuário não encontrado." });
       }
 
+      // Busca o nome do cliente também no /me para manter consistência
+      let clienteNome: string | null = null;
+      try {
+        if (usuario.idcliente) {
+          const cliente = await clientesRepo.findOne({
+            where: { id: usuario.idcliente },
+          });
+          if (cliente) {
+            clienteNome = cliente.nome;
+          }
+        }
+      } catch (err) {
+        console.error("[AUTH] Erro ao carregar cliente no /me:", err);
+      }
+
       return res.json({
         id: usuario.id,
         nome: usuario.nome,
@@ -136,6 +170,7 @@ router.get(
         login: usuario.email,
         perfil: usuario.perfil,
         idcliente: usuario.idcliente,
+        cliente_nome: clienteNome,
       });
     } catch (err) {
       console.error("[AUTH] Erro no /me:", err);

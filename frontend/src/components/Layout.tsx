@@ -3,29 +3,19 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { getFormattedVersionInfo } from "../lib/version";
 
-type ClienteInfo = {
-  id?: number;
-  nome?: string;
-  // caso em algum momento você inclua mais campos no retorno,
-  // eles podem ser aproveitados aqui:
-  razao_social?: string;
-  nome_fantasia?: string;
-};
-
 type UsuarioLogado = {
   id: string;
   nome: string;
   email?: string;
-  tipo?: string;     // perfil amigável para exibir na UI
-  perfil?: string;   // perfil técnico que vem do backend (ADMIN, SUPERVISOR, ATENDENTE)
+  tipo?: string; // campo mais "amigável" se algum dia vier do backend
+  perfil?: string; // perfil técnico (ADMIN, SUPERVISOR, ATENDENTE)
   idcliente?: number;
-  cliente?: ClienteInfo;
+  cliente_nome?: string | null;
 };
 
 export default function Layout() {
   const navigate = useNavigate();
   const [usuario, setUsuario] = useState<UsuarioLogado | null>(null);
-  const [clienteNome, setClienteNome] = useState<string | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("atende_token");
@@ -38,40 +28,24 @@ export default function Layout() {
 
     try {
       const u: UsuarioLogado = JSON.parse(usuarioStr);
-
       setUsuario(u);
-
-      // 1) tenta pegar do objeto do usuário salvo (usuario.cliente.nome)
-      let nomeCliente: string | null =
-        (u.cliente?.nome ||
-          u.cliente?.nome_fantasia ||
-          u.cliente?.razao_social) ??
-        null;
-
-      // 2) fallback: se em algum lugar você salvar cliente_nome no localStorage
-      if (!nomeCliente) {
-        nomeCliente =
-          localStorage.getItem("cliente_nome") ||
-          localStorage.getItem("nome_cliente");
-      }
-
-      setClienteNome(nomeCliente);
     } catch {
       setUsuario(null);
-      setClienteNome(null);
     }
   }, [navigate]);
 
   function handleLogout() {
     localStorage.removeItem("atende_token");
     localStorage.removeItem("atende_usuario");
-    // se em algum momento você salvar cliente_nome em localStorage, já limpa:
-    localStorage.removeItem("cliente_nome");
-    localStorage.removeItem("nome_cliente");
     navigate("/login");
   }
 
   const versionInfo = getFormattedVersionInfo();
+
+  // Nome do cliente exibido no topo
+  const nomeCliente =
+    usuario?.cliente_nome ||
+    (usuario?.idcliente ? `ID ${usuario.idcliente}` : "Não identificado");
 
   return (
     <div className="h-screen flex bg-slate-100 overflow-hidden">
@@ -158,7 +132,7 @@ export default function Layout() {
           </NavLink>
         </nav>
 
-        {/* Rodapé da sidebar: info do usuário */}
+        {/* Rodapé da sidebar: info do usuário logado */}
         <div className="px-4 py-3 border-t border-slate-200 text-xs text-slate-500 bg-slate-50">
           {usuario ? (
             <>
@@ -183,21 +157,12 @@ export default function Layout() {
         {/* Topbar */}
         <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6">
           <div className="text-sm text-slate-500">
-            {clienteNome ? (
-              <span>
-                Cliente:{" "}
-                <span className="font-semibold text-slate-700">
-                  {clienteNome}
-                </span>
+            <span>
+              Cliente:{" "}
+              <span className="font-semibold text-slate-700">
+                {nomeCliente}
               </span>
-            ) : (
-              <span>
-                Cliente:{" "}
-                <span className="font-semibold text-slate-400">
-                  Não identificado
-                </span>
-              </span>
-            )}
+            </span>
           </div>
 
           <div className="flex items-center gap-3">
