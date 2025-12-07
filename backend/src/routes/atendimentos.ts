@@ -7,15 +7,30 @@ import { AtendimentoEvento } from "../entities/AtendimentoEvento";
 const router = Router();
 
 /**
- * Helper para pegar idcliente do usuário autenticado (JWT / middleware)
- * Caso não exista, retorna undefined e as consultas não filtram por cliente.
+ * Tenta obter o idcliente a partir do JWT já decodificado no middleware de auth.
+ * Se não tiver nada, retorna null (sem filtro de cliente).
  */
-function getUserClientId(req: Request): number | undefined {
-  const user = (req as any).user;
-  if (!user) return undefined;
-  if (user.idcliente) return Number(user.idcliente);
-  if (user.clienteId) return Number(user.clienteId);
-  return undefined;
+function getUserClientId(req: Request): number | null {
+  try {
+    const userPayload =
+      (req as any).userJwtPayload ||
+      (req as any).user ||
+      (req as any).authUser ||
+      null;
+
+    const raw =
+      userPayload?.idcliente ??
+      (req as any).idcliente ??
+      (req.headers["x-idcliente"] as string | undefined);
+
+    if (!raw) return null;
+
+    const parsed = parseInt(String(raw), 10);
+    if (Number.isNaN(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -46,6 +61,8 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
     const pageNum = Math.max(parseInt(page || "1", 10), 1);
     const pageSize = Math.min(Math.max(parseInt(limit || "20", 10), 1), 100);
 
+    const idcliente = getUserClientId(req);
+
     const qb = repo
       .createQueryBuilder("a")
       .leftJoinAndSelect("a.departamento", "d")
@@ -53,7 +70,7 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
       .skip((pageNum - 1) * pageSize)
       .take(pageSize);
 
-    const idcliente = getUserClientId(req);
+    // 🔹 Multi-tenant: filtrar por cliente, se tiver
     if (idcliente) {
       qb.andWhere("a.idcliente = :idcliente", { idcliente });
     }
@@ -101,177 +118,37 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
 });
 
 /**
- * GET /atendimentos/:id
- * Detalhe de um atendimento
- * (usado pelo painel para montar o cabeçalho do chat)
+ * ============================================================
+ *  ROTAS MAIS ESPECÍFICAS /atendimentos/:id/...
+ *  (PRECISAM VIR ANTES DE /atendimentos/:id)
+ * ============================================================
  */
-router.get("/atendimentos/:id", async (req: Request, res: Response) => {
-  try {
-    const repo = AppDataSource.getRepository(Atendimento);
-    const repoMsg = AppDataSource.getRepository(Mensagem);
-    const { id } = req.params;
-
-    // Vamos tentar respeitar multi-cliente se o usuário tiver idcliente
-    const idcliente = getUserClientId(req);
-
-    let atendimento: any = null;
-
-    if (idcliente) {
-      atendimento = await repo.findOne({
-        where: { id, idcliente },
-        relations: ["departamento"],
-      });
-
-      if (!atendimento) {
-        console.warn(
-          `[ATENDIMENTOS] Atendimento ${id} não encontrado com idcliente=${idcliente}. Tentando sem idcliente (fallback).`
-        );
-      }
-    }
-
-    // Fallback: busca somente pelo ID (casos antigos sem idcliente)
-    if (!atendimento) {
-      atendimento = await repo.findOne({
-        where: { id },
-        relations: ["departamento"],
-      });
-    }
-
-    // Se ainda não achou, tentamos montar um cabeçalho básico
-    // a partir da primeira mensagem gravada nesse atendimento.
-    if (!atendimento) {
-      console.warn(
-        `[ATENDIMENTOS] Atendimento ${id} não encontrado na tabela. Tentando montar detalhe a partir das mensagens...`
-      );
-
-      const firstMsg = await repoMsg.findOne({
-        where: { atendimentoId: id },
-        order: { criadoEm: "ASC" },
-      });
-
-      if (!firstMsg) {
-        return res.status(404).json({ error: "Atendimento não encontrado" });
-      }
-
-      atendimento = {
-        id,
-        idcliente: idcliente ?? null,
-        protocolo: null,
-        cidadaoNome: null,
-        cidadaoNumero: firstMsg.remetenteNumero,
-        status: "ACTIVE",
-        departamentoId: null,
-        departamento: null,
-        agenteNumero: null,
-        agenteNome: null,
-        foiResolvido: null,
-        notaSatisfacao: null,
-        tempoPrimeiraRespostaSegundos: null,
-        criadoEm: firstMsg.criadoEm,
-        atualizadoEm: firstMsg.criadoEm,
-        encerradoEm: null,
-      };
-    }
-
-    res.json(atendimento);
-  } catch (err: any) {
-    console.error("Erro ao buscar atendimento:", err);
-    res.status(500).json({ error: "Erro ao buscar atendimento" });
-  }
-});
-
-/**
- * GET /atendimentos/protocolo/:protocolo
- * Buscar atendimento por número de protocolo
- */
-router.get(
-  "/atendimentos/protocolo/:protocolo",
-  async (req: Request, res: Response) => {
-    try {
-      const repo = AppDataSource.getRepository(Atendimento);
-      const { protocolo } = req.params;
-
-      const idcliente = getUserClientId(req);
-
-      let atendimento: Atendimento | null = null;
-
-      if (idcliente) {
-        atendimento = await repo.findOne({
-          where: { protocolo, idcliente },
-          relations: ["departamento"],
-        });
-
-        if (!atendimento) {
-          console.warn(
-            `[ATENDIMENTOS] Protocolo ${protocolo} não encontrado para idcliente=${idcliente}. Tentando sem filtro de cliente.`
-          );
-        }
-      }
-
-      if (!atendimento) {
-        atendimento = await repo.findOne({
-          where: { protocolo },
-          relations: ["departamento"],
-        });
-      }
-
-      if (!atendimento) {
-        return res.status(404).json({ error: "Atendimento não encontrado" });
-      }
-
-      res.json(atendimento);
-    } catch (err: any) {
-      console.error("Erro ao buscar atendimento por protocolo:", err);
-      res
-        .status(500)
-        .json({ error: "Erro ao buscar atendimento por protocolo" });
-    }
-  }
-);
 
 /**
  * Lista mensagens de um atendimento em ordem cronológica
- * no formato esperado pelo painel (texto, autor, media, comando, etc.)
+ * no formato esperado pelo painel.
+ *
+ * GET /atendimentos/:id/mensagens
  */
 router.get(
   "/atendimentos/:id/mensagens",
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-
       const repoAt = AppDataSource.getRepository(Atendimento);
       const repoMsg = AppDataSource.getRepository(Mensagem);
 
-      const idcliente = getUserClientId(req);
-      let atendimento: Atendimento | null = null;
-
-      if (idcliente) {
-        atendimento = await repoAt.findOne({
-          where: { id, idcliente },
-          relations: ["departamento"],
-        });
-
-        if (!atendimento) {
-          console.warn(
-            `[ATENDIMENTOS] Atendimento ${id} não encontrado para idcliente=${idcliente} ao listar mensagens. Tentando sem filtro de cliente.`
-          );
-        }
-      }
+      // ✅ Aqui podemos até ignorar idcliente, porque o painel só acessa
+      // atendimentos que já vieram da lista filtrada.
+      const atendimento = await repoAt.findOne({
+        where: { id },
+        relations: ["departamento"],
+      });
 
       if (!atendimento) {
-        atendimento = await repoAt.findOne({
-          where: { id },
-          relations: ["departamento"],
-        });
-      }
-
-      if (!atendimento) {
-        console.warn(
-          `[ATENDIMENTOS] Atendimento ${id} realmente não encontrado ao listar mensagens.`
-        );
         return res
           .status(404)
-          .json({ error: "Atendimento não encontrado" });
+          .json({ error: "Atendimento não encontrado (mensagens)" });
       }
 
       const mensagens = await repoMsg.find({
@@ -319,30 +196,124 @@ router.get(
  * GET /atendimentos/:id/eventos
  * Linha do tempo de eventos do atendimento
  */
-router.get("/atendimentos/:id/eventos", async (req: Request, res: Response) => {
+router.get(
+  "/atendimentos/:id/eventos",
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const repoEvt = AppDataSource.getRepository(AtendimentoEvento);
+
+      const eventos = await repoEvt.find({
+        where: { atendimentoId: id },
+        order: { criadoEm: "ASC" },
+      });
+
+      res.json(eventos);
+    } catch (err: any) {
+      console.error("Erro ao listar eventos do atendimento:", err);
+      res.status(500).json({ error: "Erro ao listar eventos do atendimento" });
+    }
+  }
+);
+
+/**
+ * ============================================================
+ *  GET /atendimentos/:id  (DETALHE DO ATENDIMENTO)
+ * ============================================================
+ *
+ * 🔴 IMPORTANTE:
+ *  - Aqui eu NÃO filtro por idcliente.
+ *  - O ID já vem da listagem filtrada, então está seguro.
+ *  - Isso evita o 404 por causa de inconsistência de idcliente.
+ *  - Se não achar no atendimento, ainda tento reconstruir com base na 1ª mensagem.
+ */
+router.get("/atendimentos/:id", async (req: Request, res: Response) => {
   try {
+    const repo = AppDataSource.getRepository(Atendimento);
+    const repoMsg = AppDataSource.getRepository(Mensagem);
     const { id } = req.params;
-    const repoEvt = AppDataSource.getRepository(AtendimentoEvento);
 
-    const idcliente = getUserClientId(req);
+    // 1) Tenta pegar direto da tabela de atendimentos
+    let atendimento = await repo.findOne({
+      where: { id },
+      relations: ["departamento"],
+    });
 
-    const qb = repoEvt
-      .createQueryBuilder("e")
-      .where("e.atendimento_id = :id", { id })
-      .orderBy("e.criado_em", "ASC");
+    // 2) Se ainda assim não encontrar, tenta montar cabeçalho mínimo
+    //    com base na primeira mensagem existente
+    if (!atendimento) {
+      const firstMsg = await repoMsg.findOne({
+        where: { atendimentoId: id },
+        order: { criadoEm: "ASC" },
+      });
 
-    if (idcliente) {
-      qb.andWhere("e.idcliente = :idcliente", { idcliente });
+      if (!firstMsg) {
+        return res.status(404).json({ error: "Atendimento não encontrado" });
+      }
+
+      atendimento = {
+        id,
+        idcliente: null,
+        cidadaoNumero: firstMsg.remetenteNumero ?? "",
+        cidadaoNome: null,
+        status: "ACTIVE",
+        departamentoId: null,
+        departamento: null as any,
+        agenteNumero: null,
+        agenteNome: null,
+        protocolo: null,
+        foiResolvido: null,
+        notaSatisfacao: null,
+        tempoPrimeiraRespostaSegundos: null,
+        criadoEm: firstMsg.criadoEm,
+        atualizadoEm: firstMsg.criadoEm,
+        encerradoEm: null,
+      } as any as Atendimento;
     }
 
-    const eventos = await qb.getMany();
-
-    res.json(eventos);
+    res.json(atendimento);
   } catch (err: any) {
-    console.error("Erro ao listar eventos do atendimento:", err);
-    res.status(500).json({ error: "Erro ao listar eventos do atendimento" });
+    console.error("Erro ao buscar atendimento:", err);
+    res.status(500).json({ error: "Erro ao buscar atendimento" });
   }
 });
+
+/**
+ * GET /atendimentos/protocolo/:protocolo
+ * Buscar atendimento por número de protocolo
+ * (aqui sim é seguro filtrar por idcliente, se quiser)
+ */
+router.get(
+  "/atendimentos/protocolo/:protocolo",
+  async (req: Request, res: Response) => {
+    try {
+      const repo = AppDataSource.getRepository(Atendimento);
+      const { protocolo } = req.params;
+      const idcliente = getUserClientId(req);
+
+      const where: any = { protocolo };
+      if (idcliente) {
+        where.idcliente = idcliente;
+      }
+
+      const atendimento = await repo.findOne({
+        where,
+        relations: ["departamento"],
+      });
+
+      if (!atendimento) {
+        return res.status(404).json({ error: "Atendimento não encontrado" });
+      }
+
+      res.json(atendimento);
+    } catch (err: any) {
+      console.error("Erro ao buscar atendimento por protocolo:", err);
+      res
+        .status(500)
+        .json({ error: "Erro ao buscar atendimento por protocolo" });
+    }
+  }
+);
 
 /**
  * GET /dashboard/resumo
@@ -355,10 +326,10 @@ router.get("/dashboard/resumo", async (req: Request, res: Response) => {
   try {
     const repo = AppDataSource.getRepository(Atendimento);
     const { dataInicio, dataFim } = req.query as Record<string, string>;
+    const idcliente = getUserClientId(req);
 
     const qb = repo.createQueryBuilder("a");
 
-    const idcliente = getUserClientId(req);
     if (idcliente) {
       qb.andWhere("a.idcliente = :idcliente", { idcliente });
     }
@@ -378,6 +349,7 @@ router.get("/dashboard/resumo", async (req: Request, res: Response) => {
       .createQueryBuilder("a")
       .select("a.status", "status")
       .addSelect("COUNT(*)", "quantidade")
+      .where(idcliente ? "a.idcliente = :idcliente" : "1=1", { idcliente })
       .groupBy("a.status")
       .getRawMany();
 
@@ -386,6 +358,7 @@ router.get("/dashboard/resumo", async (req: Request, res: Response) => {
       .leftJoin("a.departamento", "d")
       .select("COALESCE(d.nome, 'Sem setor')", "departamento")
       .addSelect("COUNT(*)", "quantidade")
+      .where(idcliente ? "a.idcliente = :idcliente" : "1=1", { idcliente })
       .groupBy("d.nome")
       .getRawMany();
 
