@@ -1,6 +1,10 @@
+// src/routes/webhook.ts
 import { Router, Request, Response } from "express";
 import { env } from "../config/env";
-import { handleCitizenMessage, handleAgentMessage } from "../services/sessionService";
+import {
+  handleCitizenMessage,
+  handleAgentMessage,
+} from "../services/sessionService";
 import { MensagemTipo } from "../entities/Mensagem";
 import { AppDataSource } from "../database/data-source";
 import { Departamento } from "../entities/Departamento";
@@ -12,7 +16,8 @@ function normalizePhone(num: string): string {
   return num.replace(/\D/g, "");
 }
 
-// Verificação do webhook (GET)
+// ===================== VERIFICAÇÃO DO WEBHOOK (GET) =====================
+
 router.get("/", (req: Request, res: Response) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -27,7 +32,8 @@ router.get("/", (req: Request, res: Response) => {
   }
 });
 
-// Verifica no BANCO se o número é de um agente
+// ===================== CHECAGEM SE É AGENTE NO BANCO =====================
+
 async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   const normalized = normalizePhone(whatsappNumber);
   const last8 = normalized.slice(-8); // ex: 91296984
@@ -51,11 +57,11 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
     return true;
   }
 
-  // 2) Verifica se é um usuário cadastrado com telefone_whatsapp
+  // 2) Verifica se é um usuário cadastrado com TELEFONE (coluna existente)
   const usuario = await userRepo
     .createQueryBuilder("u")
     .where(
-      "right(regexp_replace(coalesce(u.telefone_whatsapp, ''), '\\D', '', 'g'), 8) = :last8",
+      "right(regexp_replace(coalesce(u.telefone, ''), '\\D', '', 'g'), 8) = :last8",
       { last8 }
     )
     .getOne();
@@ -71,8 +77,87 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   return false;
 }
 
+// ===================== PARSE DE MENSAGEM DO WHATSAPP =====================
 
-// Webhook de mensagens (POST)
+type WhatsappMessage = {
+  from: string;
+  id: string;
+  type: string;
+  text?: { body: string };
+  image?: { id: string; mime_type?: string; caption?: string };
+  audio?: { id: string; mime_type?: string };
+  video?: { id: string; mime_type?: string; caption?: string };
+  document?: {
+    id: string;
+    mime_type?: string;
+    filename?: string;
+    caption?: string;
+  };
+  interactive?: {
+    type: "button_reply" | "list_reply";
+    button_reply?: { id: string; title: string };
+    list_reply?: { id: string; title: string };
+  };
+};
+
+function mapMessageToIncoming(msg: WhatsappMessage) {
+  const { from, id, type } = msg;
+
+  let tipo: MensagemTipo = "TEXT";
+  let text: string | undefined;
+  let mediaId: string | undefined;
+  let mimeType: string | undefined;
+  let fileName: string | undefined;
+
+  if (type === "text" && msg.text) {
+    tipo = "TEXT";
+    text = msg.text.body;
+  } else if (type === "image" && msg.image) {
+    tipo = "IMAGE";
+    mediaId = msg.image.id;
+    mimeType = msg.image.mime_type;
+    text = msg.image.caption;
+  } else if (type === "audio" && msg.audio) {
+    tipo = "AUDIO";
+    mediaId = msg.audio.id;
+    mimeType = msg.audio.mime_type;
+  } else if (type === "video" && msg.video) {
+    tipo = "VIDEO";
+    mediaId = msg.video.id;
+    mimeType = msg.video.mime_type;
+    text = msg.video.caption;
+  } else if (type === "document" && msg.document) {
+    tipo = "DOCUMENT";
+    mediaId = msg.document.id;
+    mimeType = msg.document.mime_type;
+    fileName = msg.document.filename;
+    text = msg.document.caption;
+  } else if (type === "interactive" && msg.interactive) {
+    tipo = "TEXT";
+    if (msg.interactive.type === "button_reply" && msg.interactive.button_reply) {
+      text = msg.interactive.button_reply.title || msg.interactive.button_reply.id;
+    } else if (msg.interactive.type === "list_reply" && msg.interactive.list_reply) {
+      text = msg.interactive.list_reply.title || msg.interactive.list_reply.id;
+    }
+  } else {
+    // tipos não mapeados a gente trata como TEXT genérico
+    tipo = "TEXT";
+    text = "";
+  }
+
+  return {
+    from,
+    text,
+    tipo,
+    whatsappMessageId: id,
+    mediaId,
+    mimeType,
+    fileName,
+  };
+}
+
+// ===================== WEBHOOK DE MENSAGENS (POST) =====================
+
 router.post("/", async (req: Request, res: Response) => {
   try {
     const body = req.body;
@@ -87,63 +172,21 @@ router.post("/", async (req: Request, res: Response) => {
         const value = change.value;
         if (!value) continue;
 
-        const messages = value.messages;
-        if (!messages || !Array.isArray(messages)) continue;
+        const messages: WhatsappMessage[] = value.messages || [];
+        if (!messages || !Array.isArray(messages) || messages.length === 0) {
+          continue;
+        }
 
         for (const message of messages) {
-          const from = message.from; // número do WhatsApp de quem enviou
+          const from = message.from;
           if (!from) continue;
 
-          let tipo: MensagemTipo = "TEXT";
-          let texto: string | undefined = undefined;
-          let mediaId: string | undefined = undefined;
-          let mimeType: string | undefined = undefined;
-          let fileName: string | undefined = undefined;
-
-          if (message.type === "text" && message.text) {
-            tipo = "TEXT";
-            texto = message.text.body;
-          } else if (message.type === "image" && message.image) {
-            tipo = "IMAGE";
-            mediaId = message.image.id;
-            mimeType = message.image.mime_type;
-            texto = message.image.caption;
-          } else if (message.type === "audio" && message.audio) {
-            tipo = "AUDIO";
-            mediaId = message.audio.id;
-            mimeType = message.audio.mime_type;
-          } else if (message.type === "video" && message.video) {
-            tipo = "VIDEO";
-            mediaId = message.video.id;
-            mimeType = message.video.mime_type;
-            texto = message.video.caption;
-          } else if (message.type === "document" && message.document) {
-            tipo = "DOCUMENT";
-            mediaId = message.document.id;
-            mimeType = message.document.mime_type;
-            fileName = message.document.filename;
-          } else {
-            console.log("Mensagem de tipo não suportado ainda:", message.type);
-            continue;
-          }
-
+          const incoming = mapMessageToIncoming(message);
           const isAgent = await isAgentFromDatabase(from);
 
-          const incoming = {
-            from, // número original do WhatsApp
-            text: texto,
-            whatsappMessageId: message.id,
-            tipo,
-            mediaId,
-            mimeType,
-            fileName
-          };
-
           if (isAgent) {
-            console.log("→ Roteando como AGENTE:", from, texto);
             await handleAgentMessage(incoming);
           } else {
-            console.log("→ Roteando como CIDADÃO:", from, texto);
             await handleCitizenMessage(incoming);
           }
         }
