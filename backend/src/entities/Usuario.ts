@@ -7,11 +7,8 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
-  OneToMany,
 } from "typeorm";
 import { Cliente } from "./Cliente";
-import { UsuarioDepartamento } from "./UsuarioDepartamento";
-import { Atendimento } from "./Atendimento";
 
 export type PerfilUsuario = "ADMIN" | "SUPERVISOR" | "ATENDENTE";
 
@@ -57,11 +54,4 @@ export class Usuario {
 
   @UpdateDateColumn({ name: "atualizado_em" })
   atualizadoEm!: Date;
-
-  // Relacionamentos opcionais (usados em outras partes do sistema)
-  @OneToMany(() => UsuarioDepartamento, (ud) => ud.usuario)
-  departamentos!: UsuarioDepartamento[];
-
-  @OneToMany(() => Atendimento, (a) => a.agenteNumero)
-  atendimentosAgente!: Atendimento[];
 }
