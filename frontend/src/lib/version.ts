@@ -35,7 +35,7 @@ export function getFormattedVersionInfo(): string {
       return "v " + APP_VERSION;
     }
 
-    return `Atualizado em: ${data}, às ${hora} | v ${APP_VERSION}`;
+    return `Atualizado em: ${data} às ${hora} | v ${APP_VERSION}`;
   } catch {
     return "v " + APP_VERSION;
   }
