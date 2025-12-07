@@ -1,67 +1,84 @@
-// frontend/src/components/VersionUpdateWatcher.tsx
+// src/components/VersionUpdateWatcher.tsx
 import { useEffect, useState } from "react";
-import { APP_VERSION, getFormattedVersionInfo } from "../lib/version";
-
-const STORAGE_KEY = "atende_cidadao_last_version";
-const SNOOZE_KEY = "atende_cidadao_update_snooze_until";
+import {
+  APP_VERSION,
+  APP_BUILD_DATE_ISO,
+  VERSION_STORAGE_KEY,
+  VERSION_SNOOZE_KEY,
+  getFormattedVersionInfo,
+} from "../lib/version";
 
 const CHECK_INTERVAL_MS = 60_000; // 1 minuto
 const SNOOZE_MINUTES = 5;
 
-function getNow() {
+// Usamos versão + data do build como ID único daquela versão
+const CURRENT_BUILD_ID = `${APP_VERSION}@${APP_BUILD_DATE_ISO}`;
+
+function now() {
   return Date.now();
 }
 
-function getSnoozeUntil(): number | null {
-  const raw = localStorage.getItem(SNOOZE_KEY);
+function readSnoozeUntil(): number | null {
+  const raw = localStorage.getItem(VERSION_SNOOZE_KEY);
   if (!raw) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
 
 function setSnooze(minutes: number) {
-  const until = getNow() + minutes * 60_000;
-  localStorage.setItem(SNOOZE_KEY, String(until));
+  const until = now() + minutes * 60_000;
+  localStorage.setItem(VERSION_SNOOZE_KEY, String(until));
 }
 
 export default function VersionUpdateWatcher() {
   const [show, setShow] = useState(false);
-  const [info] = useState(getFormattedVersionInfo());
+  const [info] = useState(() => getFormattedVersionInfo());
 
   useEffect(() => {
     function check() {
       try {
-        const last = localStorage.getItem(STORAGE_KEY);
-        const snoozeUntil = getSnoozeUntil();
-
-        if (snoozeUntil && snoozeUntil > getNow()) {
+        const snoozeUntil = readSnoozeUntil();
+        if (snoozeUntil && snoozeUntil > now()) {
+          // Usuário escolheu "lembrar depois"
           return;
         }
 
+        const last = localStorage.getItem(VERSION_STORAGE_KEY);
+
+        // Primeira vez: grava e não mostra banner
         if (!last) {
-          localStorage.setItem(STORAGE_KEY, APP_VERSION);
+          localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
           return;
         }
 
-        if (last !== APP_VERSION) {
+        // Se mudou o build (versão + data), mostra aviso
+        if (last !== CURRENT_BUILD_ID) {
           setShow(true);
         }
       } catch {
-        // ignora
+        // se der problema com localStorage, só ignora
       }
     }
 
     check();
-    const id = setInterval(check, CHECK_INTERVAL_MS);
-    return () => clearInterval(id);
+    const id = window.setInterval(check, CHECK_INTERVAL_MS);
+    return () => window.clearInterval(id);
   }, []);
 
   function handleUpdateNow() {
     try {
-      localStorage.setItem(STORAGE_KEY, APP_VERSION);
-      localStorage.removeItem(SNOOZE_KEY);
-    } catch {}
-    // força reload completo
+      // Marca que este build já foi aplicado
+      localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
+      localStorage.removeItem(VERSION_SNOOZE_KEY);
+
+      // opcional: limpar sessão para garantir login novo
+      localStorage.removeItem("atende_token");
+      localStorage.removeItem("atende_usuario");
+    } catch {
+      // ignora
+    }
+
+    // força o browser a recarregar o app
     window.location.reload();
   }
 
@@ -84,25 +101,20 @@ export default function VersionUpdateWatcher() {
               <h2 className="text-sm font-semibold text-slate-900">
                 Nova versão disponível
               </h2>
-
-              <p className="mt-1 text-xs text-slate-600 leading-relaxed">
-                O sistema{" "}
-                <span className="font-semibold">Atende Cidadão</span> foi
-                atualizado. Para garantir que tudo funcione corretamente,
-                recomendamos aplicar a atualização agora.
+              <p className="mt-1 text-xs text-slate-600">
+                Foi detectada uma nova versão do painel{" "}
+                <strong>Atende Cidadão</strong>.
               </p>
-
-              <p className="mt-2 text-[11px] text-slate-500">
+              <p className="mt-2 text-[10px] text-slate-500">
                 {info}
               </p>
-
               <div className="mt-3 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={handleLembrarDepois}
                   className="px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-50"
                 >
-                  Lembrar mais tarde
+                  Lembrar depois
                 </button>
                 <button
                   type="button"
