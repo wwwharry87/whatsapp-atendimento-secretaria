@@ -7,6 +7,24 @@ import { Mensagem } from "../entities/Mensagem";
 const router = Router();
 
 /**
+ * Lê o idcliente do header X-Id-Cliente ou da variável
+ * de ambiente DEFAULT_CLIENTE_ID. Se nada vier, usa 1.
+ *
+ * (Mesma lógica utilizada em routes/usuarios.ts)
+ */
+function getIdClienteFromRequest(req: Request): number {
+  const headerVal = (req.headers["x-id-cliente"] || "").toString();
+  if (headerVal && !Number.isNaN(Number(headerVal))) {
+    return Number(headerVal);
+  }
+  const envVal = process.env.DEFAULT_CLIENTE_ID;
+  if (envVal && !Number.isNaN(Number(envVal))) {
+    return Number(envVal);
+  }
+  return 1;
+}
+
+/**
  * Converte um objeto Date ou string para ISO string.
  */
 function toIsoString(value: any): string | null {
@@ -25,12 +43,13 @@ function toIsoString(value: any): string | null {
  * Carrega a lista de atendimentos em formato de resumo,
  * usada tanto na listagem quanto no dashboard.
  */
-async function carregarResumos() {
+async function carregarResumos(idcliente: number) {
   const repo = AppDataSource.getRepository(Atendimento);
 
   const atendimentos = await repo
     .createQueryBuilder("a")
     .leftJoinAndSelect("a.departamento", "d")
+    .where("a.idcliente = :idcliente", { idcliente })
     .orderBy("a.criado_em", "DESC")
     .getMany();
 
@@ -79,10 +98,16 @@ async function carregarResumos() {
 /**
  * GET /atendimentos
  * Lista todos os atendimentos em formato de resumo.
+ *
+ * No index.ts esse router é montado em:
+ *   app.use("/", authMiddleware, painelRoutes);
+ * Então a URL final que o frontend chama é:
+ *   GET /atendimentos
  */
 router.get("/atendimentos", async (req: Request, res: Response) => {
   try {
-    const resumos = await carregarResumos();
+    const idcliente = getIdClienteFromRequest(req);
+    const resumos = await carregarResumos(idcliente);
     res.json(resumos);
   } catch (err) {
     console.error("Erro ao listar atendimentos:", err);
@@ -94,15 +119,15 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
  * GET /dashboard/resumo-atendimentos
  * Mesmo formato de /atendimentos, para o DashboardPage.tsx.
  *
- * OBS: no index.ts, esse router é montado em "/dashboard",
- * então o caminho completo é:
+ * No index.ts, esse router também é montado em "/dashboard", então:
  *   GET /dashboard/resumo-atendimentos
  */
 router.get(
   "/resumo-atendimentos",
   async (req: Request, res: Response) => {
     try {
-      const resumos = await carregarResumos();
+      const idcliente = getIdClienteFromRequest(req);
+      const resumos = await carregarResumos(idcliente);
       res.json(resumos);
     } catch (err) {
       console.error("Erro ao carregar resumo para dashboard:", err);
@@ -116,18 +141,21 @@ router.get(
 /**
  * GET /atendimentos/:id/mensagens
  * Retorna a linha do tempo de mensagens de um atendimento, com metadados.
+ *
+ * O AtendimentoDetalhePage.tsx chama exatamente esta URL.
  */
 router.get(
   "/atendimentos/:id/mensagens",
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const idcliente = getIdClienteFromRequest(req);
 
       const repoAt = AppDataSource.getRepository(Atendimento);
       const repoMsg = AppDataSource.getRepository(Mensagem);
 
       const atendimento = await repoAt.findOne({
-        where: { id },
+        where: { id, idcliente },
         relations: ["departamento"],
       });
 
@@ -246,6 +274,48 @@ router.get(
       res
         .status(500)
         .json({ error: "Erro ao buscar mensagens do atendimento" });
+    }
+  }
+);
+
+/**
+ * GET /atendimentos/:id
+ * Cabeçalho detalhado de um atendimento (usado em AtendimentoDetalhePage.tsx)
+ */
+router.get(
+  "/atendimentos/:id",
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const idcliente = getIdClienteFromRequest(req);
+
+      const repo = AppDataSource.getRepository(Atendimento);
+
+      const atendimento = await repo.findOne({
+        where: { id, idcliente },
+        relations: ["departamento"],
+      });
+
+      if (!atendimento) {
+        return res.status(404).json({ error: "Atendimento não encontrado" });
+      }
+
+      res.json({
+        id: atendimento.id,
+        protocolo: atendimento.protocolo,
+        status: atendimento.status,
+        cidadao_nome: atendimento.cidadaoNome,
+        cidadao_numero: atendimento.cidadaoNumero,
+        departamento_nome: atendimento.departamento?.nome ?? null,
+        agente_nome: atendimento.agenteNome ?? null,
+        foi_resolvido: atendimento.foiResolvido,
+        nota_satisfacao: atendimento.notaSatisfacao,
+        criado_em: atendimento.criadoEm,
+        encerrado_em: atendimento.encerradoEm,
+      });
+    } catch (err) {
+      console.error("Erro ao buscar cabeçalho do atendimento:", err);
+      res.status(500).json({ error: "Erro ao buscar cabeçalho do atendimento" });
     }
   }
 );

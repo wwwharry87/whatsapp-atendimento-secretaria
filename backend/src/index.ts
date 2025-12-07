@@ -29,7 +29,9 @@ app.use(
   })
 );
 
-// Rotas públicas (webhook do WhatsApp, mídia e login)
+// ===============================
+// ROTAS PÚBLICAS
+// ===============================
 app.use("/webhook", webhookRoutes);
 app.use("/media", mediaRoutes);
 app.use("/auth", authRoutes);
@@ -38,16 +40,13 @@ app.use("/auth", authRoutes);
 // ROTAS DO PAINEL / DASHBOARD
 // ===============================
 //
-// Aqui estão as rotas que o frontend usa diretamente:
-// - GET /dashboard/resumo-atendimentos   (DashboardPage)
-// - GET /atendimentos                    (AtendimentosPage)
-// - GET /atendimentos/:id                (AtendimentoDetalhePage)
-// - GET /atendimentos/:id/mensagens      (AtendimentoDetalhePage)
+// Usadas direto pelo frontend:
 //
-// O mesmo router (painelRoutes) é montado em dois prefixos:
-//
-// 1) /dashboard  -> para chamadas tipo /dashboard/resumo-atendimentos
-// 2) /           -> para chamadas tipo /atendimentos, /atendimentos/:id, etc.
+// - GET /dashboard/resumo-atendimentos
+// - GET /atendimentos
+// - GET /atendimentos/:id
+// - GET /atendimentos/:id/mensagens
+// - GET /atendimentos/:id/eventos
 //
 app.use("/dashboard", authMiddleware, painelRoutes);
 app.use("/", authMiddleware, painelRoutes);
@@ -60,17 +59,15 @@ app.use("/usuarios", authMiddleware, usuariosRoutes);
 app.use("/horarios", authMiddleware, horariosRoutes);
 
 // ===============================
-// ROTAS AVANÇADAS DE ATENDIMENTOS (API)
+// ROTAS AVANÇADAS DE ATENDIMENTOS (API técnica)
 // ===============================
 //
-// Essas são rotas mais "técnicas" (filtros/paginação detalhada, etc),
-// definidas em src/routes/atendimentos.ts. Para não conflitar com o
-// que o painel usa, deixamos sob /api/atendimentos.
+// Exemplo: GET /api/atendimentos/atendimentos?status=ACTIVE
 //
 app.use("/api/atendimentos", authMiddleware, atendimentosRoutes);
 
 // ===============================
-// ROTA RAIZ
+// ROTA RAIZ (healthcheck simples)
 // ===============================
 app.get("/", (req, res) => {
   res.json({
