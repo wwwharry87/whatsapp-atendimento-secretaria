@@ -26,7 +26,7 @@ export class Usuario {
   @Column({ type: "varchar", length: 150, nullable: true })
   email?: string | null;
 
-  @Column({ type: "varchar", length: 50, unique: true })
+  @Column({ type: "varchar", length: 50 })
   login!: string;
 
   @Column({ name: "senha_hash", type: "varchar", length: 255 })
