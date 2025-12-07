@@ -26,8 +26,12 @@ export class Usuario {
   @Column({ type: "varchar", length: 150, nullable: true })
   email?: string | null;
 
-  @Column({ type: "varchar", length: 50 })
-  login!: string;
+  /**
+   * Campo de login apenas em memória.
+   * NÃO está mapeado como coluna, pois no banco atual não existe "login".
+   * Se depois você criar a coluna no banco, a gente volta a mapear.
+   */
+  login?: string | null;
 
   @Column({ name: "senha_hash", type: "varchar", length: 255 })
   senhaHash!: string;

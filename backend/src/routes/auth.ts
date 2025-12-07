@@ -5,7 +5,6 @@ import jwt from "jsonwebtoken";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
 import { JWT_SECRET, JWT_EXPIRES_IN } from "../config/auth";
-import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
 const usuariosRepo = AppDataSource.getRepository(Usuario);
@@ -25,6 +24,8 @@ function checkPassword(raw: string, hash: string): boolean {
 /**
  * POST /auth/login
  * Body: { email?: string, login?: string, senha: string }
+ *
+ * No banco atual estamos usando APENAS o email para autenticar.
  */
 router.post(
   "/login",
@@ -36,19 +37,19 @@ router.post(
         senha?: string;
       };
 
+      // Por enquanto vamos considerar que o usuário digita o e-mail.
       const loginValue = (email || login || "").toString().trim().toLowerCase();
 
       if (!loginValue || !senha) {
         return res
           .status(400)
-          .json({ error: "Informe e-mail (ou login) e senha." });
+          .json({ error: "Informe e-mail e senha." });
       }
 
-      // Busca usuário por e-mail OU login, sempre em minúsculas
+      // Busca usuário APENAS pelo e-mail (coluna que existe no banco)
       const usuario = await usuariosRepo
         .createQueryBuilder("u")
         .where("LOWER(u.email) = :login", { login: loginValue })
-        .orWhere("LOWER(u.login) = :login", { login: loginValue })
         .andWhere("u.ativo = :ativo", { ativo: true })
         .getOne();
 
@@ -80,7 +81,8 @@ router.post(
           id: usuario.id,
           nome: usuario.nome,
           email: usuario.email,
-          login: usuario.login,
+          // Por enquanto, "login" na resposta é só um alias pro email
+          login: usuario.email,
           perfil: usuario.perfil,
           idcliente: usuario.idcliente,
         },
@@ -130,7 +132,8 @@ router.get(
         id: usuario.id,
         nome: usuario.nome,
         email: usuario.email,
-        login: usuario.login,
+        // Mesmo esquema: login só como alias pro email neste momento
+        login: usuario.email,
         perfil: usuario.perfil,
         idcliente: usuario.idcliente,
       });
