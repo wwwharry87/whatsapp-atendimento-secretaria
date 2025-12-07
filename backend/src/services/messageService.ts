@@ -1,6 +1,7 @@
-// backend/src/services/messageService.ts
+// src/services/messageService.ts
 import { AppDataSource } from "../database/data-source";
 import { Mensagem, MensagemDirecao, MensagemTipo } from "../entities/Mensagem";
+import { Atendimento } from "../entities/Atendimento";
 
 export type SaveMensagemParams = {
   atendimentoId: string;
@@ -14,24 +15,43 @@ export type SaveMensagemParams = {
   fileName?: string;
   fileSize?: string | null;
   remetenteNumero: string;
-
-  // novos campos opcionais
   comandoCodigo?: string | null;
   comandoDescricao?: string | null;
+
+  /**
+   * Opcional: se você quiser passar o idcliente explicitamente.
+   * Se não vier, eu busco pelo atendimento.
+   */
+  idcliente?: number;
 };
 
-export async function salvarMensagem(
-  params: SaveMensagemParams
-): Promise<Mensagem> {
-  const repo = AppDataSource.getRepository(Mensagem);
+export async function salvarMensagem(params: SaveMensagemParams) {
+  const mensagemRepo = AppDataSource.getRepository(Mensagem);
 
-  const mediaUrl =
-    params.mediaUrl ??
-    (params.whatsappMediaId ? `/media/${params.whatsappMediaId}` : undefined);
+  let idcliente = params.idcliente;
 
-  const msg = repo.create({
-    atendimento: { id: params.atendimentoId } as any,
+  // Se não veio idcliente, eu descubro pelo atendimento
+  if (idcliente == null) {
+    const atendimentoRepo = AppDataSource.getRepository(Atendimento);
+
+    const atendimento = await atendimentoRepo.findOne({
+      where: { id: params.atendimentoId },
+    });
+
+    if (!atendimento) {
+      throw new Error(
+        `Atendimento ${params.atendimentoId} não encontrado ao salvar mensagem.`
+      );
+    }
+
+    idcliente = atendimento.idcliente;
+  }
+
+  const mediaUrl = params.mediaUrl ?? undefined;
+
+  const msg = mensagemRepo.create({
     atendimentoId: params.atendimentoId,
+    idcliente,
     direcao: params.direcao,
     tipo: params.tipo,
     conteudoTexto: params.conteudoTexto ?? null,
@@ -46,5 +66,5 @@ export async function salvarMensagem(
     comandoDescricao: params.comandoDescricao ?? null,
   });
 
-  return await repo.save(msg);
+  return await mensagemRepo.save(msg);
 }

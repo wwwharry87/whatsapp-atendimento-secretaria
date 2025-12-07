@@ -19,6 +19,7 @@ import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { salvarMensagem } from "./messageService";
 import { MensagemTipo } from "../entities/Mensagem";
+import { Cliente } from "../entities/Cliente";
 
 export type SessionStatus =
   | "ASK_NAME"
@@ -45,6 +46,8 @@ export type Session = {
   busyReminderCount?: number;
   lastActiveAt?: number;
   protocolo?: string;
+  /** NOVO: id do cliente (tabela clientes.id) */
+  idcliente?: number;
 };
 
 const sessionsByCitizen = new Map<string, Session>();
@@ -283,29 +286,62 @@ function mapAgentCommandMetadata(
   }
 }
 
-// ====================== BANCO / ATENDIMENTOS ======================
+// ====================== BANCO / CLIENTE & ATENDIMENTOS ======================
+
+let defaultClienteIdCache: number | null = null;
+
+/**
+ * Recupera o id do cliente padrão.
+ * Por enquanto: primeiro cliente ATIVO da tabela `clientes`.
+ * (No teu banco: SEMED Tucuruí com id=1).
+ */
+async function getDefaultClienteId(): Promise<number> {
+  if (defaultClienteIdCache !== null) {
+    return defaultClienteIdCache;
+  }
+
+  const repo = AppDataSource.getRepository(Cliente);
+
+  const cliente = await repo.findOne({
+    where: { ativo: true },
+    order: { id: "ASC" as any },
+  });
+
+  if (!cliente) {
+    throw new Error(
+      "Nenhum cliente ativo encontrado na tabela 'clientes'. Cadastre pelo menos um cliente ativo."
+    );
+  }
+
+  defaultClienteIdCache = cliente.id;
+  return defaultClienteIdCache;
+}
 
 async function criarNovoAtendimento(
   citizenNumber: string
 ): Promise<Atendimento> {
   const repo = AppDataSource.getRepository(Atendimento);
   const numero = normalizePhone(citizenNumber);
+  const idcliente = await getDefaultClienteId();
 
   console.log(
     "[ATENDIMENTO] Criando novo atendimento para cidadão",
     numero,
+    "com idcliente=",
+    idcliente,
     "..."
   );
 
-  // Tenta recuperar o último atendimento para este número
+  // Tenta recuperar o último atendimento para este número + cliente
   const ultimo = await repo.findOne({
-    where: { cidadaoNumero: numero },
+    where: { cidadaoNumero: numero, idcliente },
     order: { criadoEm: "DESC" },
   });
 
   const temNomeAnterior = !!ultimo?.cidadaoNome;
 
   const atendimento = repo.create({
+    idcliente,
     cidadaoNumero: numero,
     ...(temNomeAnterior && { cidadaoNome: ultimo!.cidadaoNome }),
     status: (temNomeAnterior ? "ASK_DEPARTMENT" : "ASK_NAME") as AtendimentoStatus,
@@ -319,7 +355,9 @@ async function criarNovoAtendimento(
     ", status=",
     atendimento.status,
     ", temNomeAnterior=",
-    temNomeAnterior
+    temNomeAnterior,
+    ", idcliente=",
+    atendimento.idcliente
   );
 
   return atendimento;
@@ -327,12 +365,15 @@ async function criarNovoAtendimento(
 
 async function criarNovoAtendimentoParaOutroSetor(
   citizenNumber: string,
-  citizenName?: string
+  citizenName?: string,
+  idclienteParam?: number
 ): Promise<Atendimento> {
   const repo = AppDataSource.getRepository(Atendimento);
   const numero = normalizePhone(citizenNumber);
+  const idcliente = idclienteParam ?? (await getDefaultClienteId());
 
   const atendimento = repo.create({
+    idcliente,
     cidadaoNumero: numero,
     ...(citizenName && { cidadaoNome: citizenName }),
     status: "ASK_DEPARTMENT" as AtendimentoStatus,
@@ -347,10 +388,13 @@ async function carregarAtendimentoAberto(
 ): Promise<Atendimento | null> {
   const repo = AppDataSource.getRepository(Atendimento);
   const numero = normalizePhone(citizenNumber);
+  const idcliente = await getDefaultClienteId();
 
   console.log(
     "[ATENDIMENTO] Buscando atendimento aberto (ACTIVE) para cidadão",
     numero,
+    "idcliente=",
+    idcliente,
     "..."
   );
 
@@ -358,6 +402,7 @@ async function carregarAtendimentoAberto(
     where: {
       cidadaoNumero: numero,
       status: "ACTIVE",
+      idcliente,
     },
     relations: ["departamento"],
     order: { criadoEm: "DESC" },
@@ -366,7 +411,9 @@ async function carregarAtendimentoAberto(
   if (!atendimento) {
     console.log(
       "[ATENDIMENTO] Nenhum atendimento ACTIVE encontrado para",
-      numero
+      numero,
+      "idcliente=",
+      idcliente
     );
   }
 
@@ -428,6 +475,7 @@ async function recoverAgentSession(
     busyReminderCount: 0,
     lastActiveAt: Date.now(),
     protocolo: atendimento.protocolo ?? undefined,
+    idcliente: atendimento.idcliente,
   };
 
   const citizenKey = normalizePhone(session.citizenNumber);
@@ -439,7 +487,7 @@ async function recoverAgentSession(
   }
 
   console.log(
-    `🔄 Sessão do agente recuperada do banco. Agente=${agentFull} Cidadão=${session.citizenNumber}`
+    `🔄 Sessão do agente recuperada do banco. Agente=${agentFull} Cidadão=${session.citizenNumber} idcliente=${session.idcliente}`
   );
 
   return session;
@@ -463,7 +511,9 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
       ": status=",
       existente.status,
       ", atendimentoId=",
-      existente.atendimentoId
+      existente.atendimentoId,
+      ", idcliente=",
+      existente.idcliente
     );
     return existente;
   }
@@ -485,6 +535,7 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     busyReminderCount: 0,
     lastActiveAt: Date.now(),
     protocolo: atendimento.protocolo ?? undefined,
+    idcliente: atendimento.idcliente,
   };
 
   console.log(
@@ -497,7 +548,9 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     ", dep=",
     session.departmentId,
     ", agente=",
-    session.agentNumber
+    session.agentNumber,
+    ", idcliente=",
+    session.idcliente
   );
 
   sessionsByCitizen.set(citizenKey, session);
@@ -574,7 +627,8 @@ async function fecharAtendimentoComProtocolo(
 // ====================== FILA (QUEUE) ======================
 
 async function getAgentBusyAndQueueCount(
-  agentNumber: string
+  agentNumber: string,
+  idcliente: number
 ): Promise<{ busy: boolean; queueCount: number }> {
   const repo = AppDataSource.getRepository(Atendimento);
   const normalized = normalizePhone(agentNumber);
@@ -600,7 +654,9 @@ async function getAgentBusyAndQueueCount(
     ") limiteBusy=",
     limiteBusy.toISOString(),
     "limiteFila=",
-    limiteFila.toISOString()
+    limiteFila.toISOString(),
+    "idcliente=",
+    idcliente
   );
 
   const busyCount = await repo
@@ -610,6 +666,7 @@ async function getAgentBusyAndQueueCount(
       statuses: ["WAITING_AGENT_CONFIRMATION", "ACTIVE"] as AtendimentoStatus[],
     })
     .andWhere("a.atualizado_em > :limiteBusy", { limiteBusy })
+    .andWhere("a.idcliente = :idcliente", { idcliente })
     .andWhere(
       "(" +
         "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
@@ -624,6 +681,7 @@ async function getAgentBusyAndQueueCount(
     .leftJoin("a.departamento", "d")
     .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus })
     .andWhere("a.atualizado_em > :limiteFila", { limiteFila })
+    .andWhere("a.idcliente = :idcliente", { idcliente })
     .andWhere(
       "(" +
         "right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
@@ -639,7 +697,9 @@ async function getAgentBusyAndQueueCount(
     ": busyCount=",
     busyCount,
     ", queueCount=",
-    queueCount
+    queueCount,
+    ", idcliente=",
+    idcliente
   );
 
   return {
@@ -655,6 +715,8 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     ? normalizePhone(sessionEncerrada.agentNumber)
     : null;
   const departmentId = sessionEncerrada.departmentId ?? null;
+  const idcliente =
+    sessionEncerrada.idcliente ?? (await getDefaultClienteId());
 
   console.log(
     "[QUEUE_NEXT] Procurando próximo da fila após encerrar atendimento=",
@@ -662,7 +724,9 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     "agent=",
     agentNumber,
     "depId=",
-    departmentId
+    departmentId,
+    "idcliente=",
+    idcliente
   );
 
   if (!agentNumber && !departmentId) {
@@ -672,7 +736,8 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
   const qb = repo
     .createQueryBuilder("a")
     .leftJoinAndSelect("a.departamento", "d")
-    .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus });
+    .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus })
+    .andWhere("a.idcliente = :idcliente", { idcliente });
 
   if (agentNumber) {
     const last8 = agentNumber.slice(-8);
@@ -690,7 +755,7 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
   const proximo = await qb.orderBy("a.criado_em", "ASC").getOne();
   if (!proximo) {
     console.log(
-      "[QUEUE_NEXT] Nenhum atendimento IN_QUEUE encontrado para este agente/setor."
+      "[QUEUE_NEXT] Nenhum atendimento IN_QUEUE encontrado para este agente/setor/cliente."
     );
     return;
   }
@@ -713,6 +778,7 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     busyReminderCount: 0,
     lastActiveAt: Date.now(),
     protocolo: proximo.protocolo ?? undefined,
+    idcliente: proximo.idcliente,
   };
 
   sessionsByCitizen.set(citizenNumber, novaSession);
@@ -958,7 +1024,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     ", dep=",
     session.departmentId ? session.departmentId : "undefined",
     ", agente=",
-    session.agentNumber ? session.agentNumber : "undefined"
+    session.agentNumber ? session.agentNumber : "undefined",
+    ", idcliente=",
+    session.idcliente
   );
 
   const citizenMeta = mapCitizenCommandMetadata(
@@ -1038,11 +1106,13 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     if (session.agentNumber) {
       const normalized = normalizePhone(session.agentNumber);
       const last8 = normalized.slice(-8);
+      const idcliente = session.idcliente ?? (await getDefaultClienteId());
 
       const queueAhead = await repo
         .createQueryBuilder("a")
         .leftJoin("a.departamento", "d")
         .where("a.status = :status", { status: "IN_QUEUE" as AtendimentoStatus })
+        .andWhere("a.idcliente = :idcliente", { idcliente })
         .andWhere("a.id <> :id", { id: session.atendimentoId })
         .andWhere(
           "(" +
@@ -1137,7 +1207,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     if (onlyDigits === "1") {
       const novoAtendimento = await criarNovoAtendimentoParaOutroSetor(
         session.citizenNumber,
-        session.citizenName
+        session.citizenName,
+        session.idcliente
       );
 
       session.atendimentoId = novoAtendimento.id;
@@ -1148,6 +1219,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.agentName = undefined;
       session.busyReminderCount = 0;
       session.protocolo = undefined;
+      session.idcliente = novoAtendimento.idcliente;
 
       const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
@@ -1274,7 +1346,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     );
 
     session.departmentId = departamento.id;
-    // AJUSTE: nome pode ser null no entity, aqui normalizamos pra string | undefined
     session.departmentName = departamento.nome ?? undefined;
     session.agentNumber = departamento.responsavelNumero || undefined;
     session.agentName = departamento.responsavelNome || "Responsável";
@@ -1300,8 +1371,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       return;
     }
 
+    const idcliente = session.idcliente ?? (await getDefaultClienteId());
     const { busy, queueCount } = await getAgentBusyAndQueueCount(
-      session.agentNumber
+      session.agentNumber,
+      idcliente
     );
 
     console.log(
@@ -1310,7 +1383,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       ", queueCount=",
       queueCount,
       "para agente=",
-      session.agentNumber
+      session.agentNumber,
+      "idcliente=",
+      idcliente
     );
 
     if (busy) {
@@ -1376,7 +1451,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     await sendNovoAtendimentoTemplateToAgent({
       to: agenteEnvio,
-      // AJUSTE: tipo do param em whatsappService é string
       departamentoNome: departamento.nome ?? "Setor",
       cidadaoNome: session.citizenName ?? "Cidadão",
       telefoneCidadao: session.citizenNumber,
@@ -1638,7 +1712,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       }
 
       session.departmentId = novoDep.id;
-      // AJUSTE: nome pode ser null no entity
       session.departmentName = novoDep.nome ?? undefined;
       session.agentNumber = novoDep.responsavelNumero || undefined;
       session.agentName = novoDep.responsavelNome || "Responsável";
