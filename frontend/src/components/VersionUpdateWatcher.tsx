@@ -45,7 +45,7 @@ export default function VersionUpdateWatcher() {
 
         const last = localStorage.getItem(VERSION_STORAGE_KEY);
 
-        // Primeira vez: grava e não mostra banner
+        // Primeira vez: grava e não mostra modal
         if (!last) {
           localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
           return;
@@ -71,7 +71,7 @@ export default function VersionUpdateWatcher() {
       localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_BUILD_ID);
       localStorage.removeItem(VERSION_SNOOZE_KEY);
 
-      // opcional: limpar sessão para garantir login novo
+      // limpa sessão para garantir que volte pro login
       localStorage.removeItem("atende_token");
       localStorage.removeItem("atende_usuario");
     } catch {
@@ -90,38 +90,49 @@ export default function VersionUpdateWatcher() {
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-[9500] flex items-end justify-center pointer-events-none">
-      <div className="mb-4 pointer-events-auto">
-        <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-5 max-w-sm w-[320px]">
-          <div className="flex items-start gap-3">
-            <div className="mt-1 h-8 w-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 text-sm font-bold">
-              !
+    <div className="fixed inset-0 z-[9500] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+      <div className="w-full max-w-md px-4">
+        <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 p-6">
+          <div className="flex items-start gap-4">
+            <div className="mt-1 h-10 w-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 text-lg font-bold">
+              ↑
             </div>
+
             <div className="flex-1">
-              <h2 className="text-sm font-semibold text-slate-900">
-                Nova versão disponível
+              <h2 className="text-base font-semibold text-slate-900">
+                Nova versão do painel disponível
               </h2>
-              <p className="mt-1 text-xs text-slate-600">
-                Foi detectada uma nova versão do painel{" "}
-                <strong>Atende Cidadão</strong>.
+
+              <p className="mt-2 text-sm text-slate-600">
+                Uma nova versão do <strong>Atende Cidadão</strong> foi instalada
+                neste dispositivo.
               </p>
-              <p className="mt-2 text-[10px] text-slate-500">
+
+              <p className="mt-2 text-xs text-slate-500">
+                Ao atualizar, o sistema será recarregado e você será
+                redirecionado para a tela de login para acessar novamente.
+                Recomendamos concluir atendimentos em andamento antes de
+                atualizar.
+              </p>
+
+              <p className="mt-3 text-[11px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
                 {info}
               </p>
-              <div className="mt-3 flex justify-end gap-2">
+
+              <div className="mt-4 flex flex-col sm:flex-row justify-end gap-2">
                 <button
                   type="button"
                   onClick={handleLembrarDepois}
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-50"
+                  className="px-4 py-2 rounded-full border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition"
                 >
                   Lembrar depois
                 </button>
                 <button
                   type="button"
                   onClick={handleUpdateNow}
-                  className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-[11px] font-semibold text-white"
+                  className="px-5 py-2 rounded-full bg-emerald-500 hover:bg-emerald-600 text-xs font-semibold text-white transition"
                 >
-                  Atualizar agora
+                  Atualizar e voltar ao login
                 </button>
               </div>
             </div>
