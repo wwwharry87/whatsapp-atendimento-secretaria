@@ -156,13 +156,8 @@ export default function Layout() {
       <div className="flex-1 flex flex-col">
         {/* Topbar */}
         <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6">
-          <div className="text-sm text-slate-500">
-            <span>
-              Cliente:{" "}
-              <span className="font-semibold text-slate-700">
-                {nomeCliente}
-              </span>
-            </span>
+          <div className="text-sm text-slate-700 font-semibold truncate">
+            {nomeCliente}
           </div>
 
           <div className="flex items-center gap-3">
