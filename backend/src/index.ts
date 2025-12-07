@@ -33,12 +33,14 @@ app.use("/webhook", webhookRoutes);
 app.use("/media", mediaRoutes);
 app.use("/auth", authRoutes);
 
-// Rotas protegidas – exigem token
+// Rotas protegidas – exigem token JWT
 app.use("/atendimentos", authMiddleware, atendimentosRoutes);
-app.use("/painel", authMiddleware, painelRoutes);
 app.use("/departamentos", authMiddleware, departamentosRoutes);
 app.use("/usuarios", authMiddleware, usuariosRoutes);
 app.use("/horarios", authMiddleware, horariosRoutes);
+
+// Rotas do painel/dashboard (resumo de atendimentos, últimos casos, etc.)
+app.use("/dashboard", authMiddleware, painelRoutes);
 
 app.get("/", (req, res) => {
   res.json({

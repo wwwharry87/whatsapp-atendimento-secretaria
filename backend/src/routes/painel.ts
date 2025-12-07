@@ -53,9 +53,11 @@ async function carregarResumos() {
         : null;
 
     const tempoPrimeiraResposta =
-      a.tempoPrimeiraRespostaSegundos ??
-      a.tempo_primeira_resposta_segundos ??
-      null;
+      typeof a.tempoPrimeiraRespostaSegundos === "number"
+        ? a.tempoPrimeiraRespostaSegundos
+        : typeof a.tempo_primeira_resposta_segundos === "number"
+        ? a.tempo_primeira_resposta_segundos
+        : null;
 
     return {
       id: a.id,
@@ -66,7 +68,7 @@ async function carregarResumos() {
       agente_nome: a.agenteNome ?? a.agente_nome ?? null,
       status: a.status,
       criado_em: toIsoString(criadoEm)!,
-      encerrado_em: encerradoEm ? toIsoString(encerradoEm) : null,
+      encerrado_em: encerradoEm ? toIsoString(encerradoEm)! : null,
       foi_resolvido: foiResolvido,
       nota_satisfacao: notaSatisfacao,
       tempo_primeira_resposta_segundos: tempoPrimeiraResposta,
@@ -76,7 +78,7 @@ async function carregarResumos() {
 
 /**
  * GET /atendimentos
- * Lista de atendimentos em formato de resumo.
+ * Lista todos os atendimentos em formato de resumo.
  */
 router.get("/atendimentos", async (req: Request, res: Response) => {
   try {
@@ -91,103 +93,91 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
 /**
  * GET /dashboard/resumo-atendimentos
  * Mesmo formato de /atendimentos, para o DashboardPage.tsx.
+ *
+ * OBS: no index.ts, esse router é montado em "/dashboard",
+ * então o caminho completo é:
+ *   GET /dashboard/resumo-atendimentos
  */
 router.get(
-  "/dashboard/resumo-atendimentos",
+  "/resumo-atendimentos",
   async (req: Request, res: Response) => {
     try {
       const resumos = await carregarResumos();
       res.json(resumos);
     } catch (err) {
-      console.error("Erro ao montar resumo do dashboard:", err);
+      console.error("Erro ao carregar resumo para dashboard:", err);
       res
         .status(500)
-        .json({ error: "Erro ao montar resumo do dashboard" });
+        .json({ error: "Erro ao carregar resumo de atendimentos" });
     }
   }
 );
 
 /**
- * GET /atendimentos/:id
- * Cabeçalho do atendimento (dados gerais).
- */
-router.get('/atendimentos/:id', async (req: Request, res: Response) => {
-  try {
-    const id = String(req.params.id);
-    const repo = AppDataSource.getRepository(Atendimento);
-
-    const atendimento = await repo.findOne({
-      where: { id },
-      relations: ["departamento"],
-    });
-
-    if (!atendimento) {
-      return res.status(404).json({ error: "Atendimento não encontrado" });
-    }
-
-    const anyA: any = atendimento;
-    const criadoEm = anyA.criadoEm ?? anyA.criado_em;
-    const encerradoEm = anyA.encerradoEm ?? anyA.encerrado_em ?? null;
-
-    const foiResolvido =
-      typeof anyA.foiResolvido === "boolean"
-        ? anyA.foiResolvido
-        : typeof anyA.foi_resolvido === "boolean"
-        ? anyA.foi_resolvido
-        : null;
-
-    const notaSatisfacao =
-      typeof anyA.notaSatisfacao === "number"
-        ? anyA.notaSatisfacao
-        : typeof anyA.nota_satisfacao === "number"
-        ? anyA.nota_satisfacao
-        : null;
-
-    res.json({
-      id: anyA.id,
-      protocolo: anyA.protocolo ?? null,
-      cidadao_nome: anyA.cidadaoNome ?? anyA.cidadao_nome ?? null,
-      cidadao_numero: anyA.cidadaoNumero ?? anyA.cidadao_numero ?? "",
-      departamento_nome: atendimento.departamento
-        ? atendimento.departamento.nome
-        : null,
-      agente_nome: anyA.agenteNome ?? anyA.agente_nome ?? null,
-      status: anyA.status,
-      criado_em: toIsoString(criadoEm)!,
-      encerrado_em: encerradoEm ? toIsoString(encerradoEm) : null,
-      foi_resolvido: foiResolvido,
-      nota_satisfacao: notaSatisfacao,
-    });
-  } catch (err) {
-    console.error("Erro ao buscar cabeçalho do atendimento:", err);
-    res.status(500).json({ error: "Erro ao buscar atendimento" });
-  }
-});
-
-/**
  * GET /atendimentos/:id/mensagens
- * Histórico de mensagens do atendimento (usado no AtendimentoDetalhePage.tsx).
- * Agora já devolvendo comando_codigo e comando_descricao.
+ * Retorna a linha do tempo de mensagens de um atendimento, com metadados.
  */
 router.get(
   "/atendimentos/:id/mensagens",
   async (req: Request, res: Response) => {
     try {
-      const id = String(req.params.id);
-      const repo = AppDataSource.getRepository(Mensagem);
+      const { id } = req.params;
 
-      const mensagens = await repo.find({
-        where: { atendimentoId: id },
-        order: { criadoEm: "ASC" },
+      const repoAt = AppDataSource.getRepository(Atendimento);
+      const repoMsg = AppDataSource.getRepository(Mensagem);
+
+      const atendimento = await repoAt.findOne({
+        where: { id },
+        relations: ["departamento"],
       });
 
-      const data = mensagens.map((m: any) => {
-        const tipo = m.tipo || "TEXT";
-        const texto = m.conteudoTexto ?? null;
-        const mediaId = m.whatsappMediaId ?? null;
-        const mediaMime = m.mimeType ?? null;
+      if (!atendimento) {
+        return res.status(404).json({ error: "Atendimento não encontrado" });
+      }
 
-        // Direção e autor (CIDADÃO / AGENTE / SISTEMA)
+      const mensagens = await repoMsg
+        .createQueryBuilder("m")
+        .where("m.atendimento_id = :id", { id })
+        .orderBy("m.criado_em", "ASC")
+        .getMany();
+
+      const anyA: any = atendimento;
+
+      const criadoEm = anyA.criadoEm ?? anyA.criado_em;
+      const encerradoEm = anyA.encerradoEm ?? anyA.encerrado_em ?? null;
+
+      const foiResolvido =
+        typeof anyA.foiResolvido === "boolean"
+          ? anyA.foiResolvido
+          : typeof anyA.foi_resolvido === "boolean"
+          ? anyA.foi_resolvido
+          : null;
+
+      const tempoPrimeiraResposta =
+        typeof anyA.tempoPrimeiraRespostaSegundos === "number"
+          ? anyA.tempoPrimeiraRespostaSegundos
+          : typeof anyA.tempo_primeira_resposta_segundos === "number"
+          ? anyA.tempo_primeira_resposta_segundos
+          : null;
+
+      const notaSatisfacao =
+        typeof anyA.notaSatisfacao === "number"
+          ? anyA.notaSatisfacao
+          : typeof anyA.nota_satisfacao === "number"
+          ? anyA.nota_satisfacao
+          : null;
+
+      const dataMensagens = mensagens.map((m: any) => {
+        const criadoEmMsg = m.criadoEm ?? m.criado_em;
+
+        const tipo = m.tipo || "TEXT";
+        const texto = m.conteudoTexto ?? m.conteudo_texto ?? null;
+        const mediaId = m.whatsappMediaId ?? m.whatsapp_media_id ?? null;
+        const mediaUrl = m.mediaUrl ?? m.media_url ?? null;
+        const mimeType = m.mimeType ?? m.mime_type ?? null;
+        const fileName = m.fileName ?? m.file_name ?? null;
+        const fileSize = m.fileSize ?? m.file_size ?? null;
+
         const direcao = String(m.direcao || "").toUpperCase();
         let autor = "CIDADÃO";
 
@@ -202,7 +192,6 @@ router.get(
           autor = "SISTEMA";
         }
 
-        // Metadados de comando
         const comandoCodigo =
           m.comandoCodigo ??
           m.comando_codigo ??
@@ -213,23 +202,45 @@ router.get(
           m.comando_descricao ??
           null;
 
-        const criadoEm = m.criadoEm ?? m.criado_em;
+        const criadoEmIso = toIsoString(criadoEmMsg)!;
 
         return {
           id: m.id,
+          atendimento_id: id,
           tipo,
           texto,
-          autor,
-          direction: direcao || null,
           media_id: mediaId,
-          media_mime: mediaMime,
+          media_url: mediaUrl,
+          mime_type: mimeType,
+          file_name: fileName,
+          file_size: fileSize,
+          direcao,
+          autor,
           comando_codigo: comandoCodigo,
           comando_descricao: comandoDescricao,
-          criado_em: toIsoString(criadoEm)!,
+          criado_em: criadoEmIso,
         };
       });
 
-      res.json(data);
+      res.json({
+        atendimento: {
+          id: anyA.id,
+          protocolo: anyA.protocolo ?? null,
+          cidadao_nome: anyA.cidadaoNome ?? anyA.cidadao_nome ?? null,
+          cidadao_numero: anyA.cidadaoNumero ?? anyA.cidadao_numero ?? "",
+          departamento_nome: atendimento.departamento
+            ? atendimento.departamento.nome
+            : null,
+          agente_nome: anyA.agenteNome ?? anyA.agente_nome ?? null,
+          status: anyA.status,
+          criado_em: toIsoString(criadoEm)!,
+          encerrado_em: encerradoEm ? toIsoString(encerradoEm)! : null,
+          foi_resolvido: foiResolvido,
+          nota_satisfacao: notaSatisfacao,
+          tempo_primeira_resposta_segundos: tempoPrimeiraResposta,
+        },
+        mensagens: dataMensagens,
+      });
     } catch (err) {
       console.error("Erro ao buscar mensagens do atendimento:", err);
       res
