@@ -9,6 +9,7 @@ import webhookRoutes from "./routes/webhook";
 import mediaRoutes from "./routes/media";
 import atendimentosRoutes from "./routes/atendimentos";
 import authRoutes from "./routes/auth";
+
 import painelRoutes from "./routes/painel";
 import departamentosRoutes from "./routes/departamentos";
 import usuariosRoutes from "./routes/usuarios";
@@ -33,15 +34,44 @@ app.use("/webhook", webhookRoutes);
 app.use("/media", mediaRoutes);
 app.use("/auth", authRoutes);
 
-// Rotas protegidas – exigem token JWT
-app.use("/atendimentos", authMiddleware, atendimentosRoutes);
+// ===============================
+// ROTAS DO PAINEL / DASHBOARD
+// ===============================
+//
+// Aqui estão as rotas que o frontend usa diretamente:
+// - GET /dashboard/resumo-atendimentos   (DashboardPage)
+// - GET /atendimentos                    (AtendimentosPage)
+// - GET /atendimentos/:id                (AtendimentoDetalhePage)
+// - GET /atendimentos/:id/mensagens      (AtendimentoDetalhePage)
+//
+// O mesmo router (painelRoutes) é montado em dois prefixos:
+//
+// 1) /dashboard  -> para chamadas tipo /dashboard/resumo-atendimentos
+// 2) /           -> para chamadas tipo /atendimentos, /atendimentos/:id, etc.
+//
+app.use("/dashboard", authMiddleware, painelRoutes);
+app.use("/", authMiddleware, painelRoutes);
+
+// ===============================
+// ROTAS DE CONFIGURAÇÃO
+// ===============================
 app.use("/departamentos", authMiddleware, departamentosRoutes);
 app.use("/usuarios", authMiddleware, usuariosRoutes);
 app.use("/horarios", authMiddleware, horariosRoutes);
 
-// Rotas do painel/dashboard (resumo de atendimentos, últimos casos, etc.)
-app.use("/dashboard", authMiddleware, painelRoutes);
+// ===============================
+// ROTAS AVANÇADAS DE ATENDIMENTOS (API)
+// ===============================
+//
+// Essas são rotas mais "técnicas" (filtros/paginação detalhada, etc),
+// definidas em src/routes/atendimentos.ts. Para não conflitar com o
+// que o painel usa, deixamos sob /api/atendimentos.
+//
+app.use("/api/atendimentos", authMiddleware, atendimentosRoutes);
 
+// ===============================
+// ROTA RAIZ
+// ===============================
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
