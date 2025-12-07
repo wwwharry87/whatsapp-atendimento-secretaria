@@ -32,7 +32,7 @@ export class Usuario {
   @Column({ type: "varchar", length: 150 })
   nome!: string;
 
-  @Column({ type: "varchar", length: 200, unique: true })
+  @Column({ type: "varchar", length: 150, unique: true })
   email!: string;
 
   @Column({ type: "varchar", length: 30, nullable: true })
