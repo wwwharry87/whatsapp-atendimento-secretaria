@@ -8,6 +8,9 @@ import "dayjs/locale/pt-br";
 
 dayjs.locale("pt-br");
 
+// ----------------------
+// Helpers de data / status
+// ----------------------
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
   return dayjs(value).format("DD/MM/YYYY HH:mm");
@@ -54,7 +57,9 @@ function getStatusChipClasses(status?: string | null) {
   }
 }
 
-
+// ----------------------
+// Componente principal
+// ----------------------
 export default function AtendimentoDetalhePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -73,12 +78,25 @@ export default function AtendimentoDetalhePage() {
         setLoading(true);
 
         const [cabResp, msgResp] = await Promise.all([
-          api.get(`/atendimentos/${id}`),
+          api.get<AtendimentoResumo>(`/atendimentos/${id}`),
           api.get(`/atendimentos/${id}/mensagens`),
         ]);
 
+        // Cabeçalho vem direto
         setAtendimento(cabResp.data);
-        setMensagens(msgResp.data);
+
+        // A rota de mensagens hoje devolve:
+        //   { atendimento: {...}, mensagens: [...] }
+        // mas pode, no futuro, devolver só um array.
+        const raw = msgResp.data as any;
+
+        const lista: MensagemAtendimento[] = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.mensagens)
+          ? raw.mensagens
+          : [];
+
+        setMensagens(lista);
       } catch (err) {
         console.error("Erro ao carregar detalhes do atendimento:", err);
       } finally {
@@ -98,6 +116,9 @@ export default function AtendimentoDetalhePage() {
     return `${nome}${protocolo}`;
   }, [atendimento]);
 
+  // ----------------------
+  // Helpers de mensagens
+  // ----------------------
   function normalizarAutor(autor?: string | null) {
     if (!autor) return "";
     return autor.toUpperCase();
@@ -120,9 +141,18 @@ export default function AtendimentoDetalhePage() {
 
   function getMediaUrl(msg: MensagemAtendimento) {
     if (!msg.media_id) return null;
-    return `${
-      import.meta.env.VITE_API_BASE_URL || ""
-    }/api/media/${msg.media_id}`;
+
+    // Usa a mesma baseURL configurada no axios api
+    const baseFromApi = api.defaults.baseURL as string | undefined;
+    const baseFromEnv = import.meta.env.VITE_API_BASE_URL as
+      | string
+      | undefined;
+
+    const base = baseFromApi || baseFromEnv || "";
+    const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
+
+    // No backend a rota é /media/:mediaId
+    return `${normalizedBase}/media/${msg.media_id}`;
   }
 
   function getRotuloAutor(msg: MensagemAtendimento) {
@@ -147,16 +177,16 @@ export default function AtendimentoDetalhePage() {
     const descricao = msg.comando_descricao || undefined;
 
     if (descricao && codigo) {
-      // ex.: "Opção 4 – cidadão escolheu o setor X"
-      return `${descricao}`;
+      return descricao;
     }
-
     if (descricao) return descricao;
     if (codigo) return `Comando interpretado pelo sistema: ${codigo}`;
-
     return null;
   }
 
+  // ----------------------
+  // Render
+  // ----------------------
   return (
     <div className="flex flex-col h-full gap-4">
       {/* Cabeçalho */}
@@ -173,43 +203,38 @@ export default function AtendimentoDetalhePage() {
             <p className="text-xs text-slate-500 mt-1 flex flex-wrap gap-1 items-center">
               <span>
                 Departamento:{" "}
-                <span className="font-medium">
-                  {atendimento.departamento_nome || "Não informado"}
-                </span>
+                {atendimento.departamento_nome || "Não informado"}
               </span>
-              <span>·</span>
-              <span>Início: {formatDateTime(atendimento.criado_em)}</span>
-              <span>·</span>
-              <span className="flex items-center gap-1">
-                Status:
-                <span
-                  className={
-                    "inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] " +
-                    getStatusChipClasses(atendimento.status)
-                  }
-                >
-                  {getStatusLabel(atendimento.status)}
-                </span>
+              <span className="mx-1">•</span>
+              <span>
+                Criado em: {formatDateTime(atendimento.criado_em)}{" "}
+                {atendimento.encerrado_em &&
+                  ` · Encerrado em: ${formatDateTime(
+                    atendimento.encerrado_em
+                  )}`}
               </span>
             </p>
           )}
         </div>
+
+        {atendimento && (
+          <div
+            className={
+              "inline-flex items-center px-2.5 py-1 rounded-full border text-xs font-medium " +
+              getStatusChipClasses(atendimento.status)
+            }
+          >
+            {getStatusLabel(atendimento.status)}
+          </div>
+        )}
       </div>
 
-      {/* Corpo */}
-      <div className="flex-1 rounded-2xl bg-white border border-slate-200 flex overflow-hidden">
-        {/* Coluna de mensagens */}
-        <div className="flex-1 flex flex-col bg-slate-50">
-          <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-500 flex justify-between bg-white">
-            <span>Histórico de mensagens do WhatsApp</span>
-            {atendimento && (
-              <span>
-                Cidadão:{" "}
-                <span className="font-semibold">
-                  {atendimento.cidadao_nome || atendimento.cidadao_numero}
-                </span>
-              </span>
-            )}
+      {/* Conteúdo principal: chat + resumo lateral */}
+      <div className="flex-1 flex gap-4 overflow-hidden">
+        {/* Coluna do chat */}
+        <div className="flex-1 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="border-b border-slate-100 px-4 py-2 text-xs text-slate-500">
+            Linha do tempo de mensagens
           </div>
 
           <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2">
@@ -293,7 +318,6 @@ export default function AtendimentoDetalhePage() {
                           <audio
                             controls
                             className="mt-1 max-w-full"
-                            preload="metadata"
                           >
                             <source src={mediaUrl} />
                             Seu navegador não suporta áudio.
@@ -331,23 +355,7 @@ export default function AtendimentoDetalhePage() {
                             </a>
                           )}
 
-                        {/* Fallback para tipos desconhecidos com texto */}
-                        {!sistema &&
-                          ![
-                            "TEXT",
-                            "AUDIO",
-                            "IMAGE",
-                            "VIDEO",
-                            "DOCUMENT",
-                          ].includes((msg.tipo || "").toUpperCase()) &&
-                          msg.texto && (
-                            <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
-                              {msg.texto}
-                            </p>
-                          )}
-
-                        {/* Interpretação do comando (nota, encerramento, etc.) */}
-                        {!sistema && descricaoComando && (
+                        {descricaoComando && (
                           <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
                             <div className="flex items-start gap-1">
                               <span>💡</span>
@@ -372,11 +380,12 @@ export default function AtendimentoDetalhePage() {
           </div>
         </div>
 
-        {/* Coluna lateral de resumo */}
-        <aside className="w-64 border-l border-slate-200 p-4 text-xs text-slate-600 space-y-2 bg-white">
-          <h2 className="text-xs font-semibold text-slate-800 mb-2">
+        {/* Coluna lateral com resumo do atendimento */}
+        <aside className="w-72 shrink-0 bg-white rounded-xl border border-slate-200 shadow-sm p-4 text-sm space-y-2">
+          <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
             Resumo do atendimento
           </h2>
+
           {atendimento ? (
             <>
               <p>
@@ -400,12 +409,12 @@ export default function AtendimentoDetalhePage() {
                 {formatDateTime(atendimento.criado_em)}
               </p>
               <p>
-                <span className="font-semibold">Encerrado em:</span>{" "}
+                <span className="font-semibold">Encerrado:</span>{" "}
                 {formatDateTime(atendimento.encerrado_em)}
               </p>
               <p>
-                <span className="font-semibold">Resolvido?</span>{" "}
-                {atendimento.foi_resolvido == null
+                <span className="font-semibold">Foi resolvido?</span>{" "}
+                {atendimento.foi_resolvido === null
                   ? "-"
                   : atendimento.foi_resolvido
                   ? "Sim"
