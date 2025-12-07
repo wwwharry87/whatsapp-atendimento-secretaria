@@ -1,3 +1,4 @@
+// src/routes/atendimentos.ts
 import { Router, Request, Response } from "express";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento } from "../entities/Atendimento";
@@ -6,16 +7,13 @@ import { AtendimentoEvento } from "../entities/AtendimentoEvento";
 
 const router = Router();
 
-/**
- * Helper para pegar idcliente do usuário autenticado (JWT / middleware)
- * Caso não exista, retorna undefined e as consultas não filtram por cliente.
- */
-function getUserClientId(req: Request): number | undefined {
-  const user = (req as any).user;
-  if (!user) return undefined;
-  if (user.idcliente) return Number(user.idcliente);
-  if (user.clienteId) return Number(user.clienteId);
-  return undefined;
+// Helper para pegar o idcliente do usuário autenticado
+function getIdClienteFromReq(req: Request): number | null {
+  const user: any = (req as any).user;
+  if (!user || typeof user.idcliente !== "number") {
+    return null;
+  }
+  return user.idcliente;
 }
 
 /**
@@ -32,6 +30,13 @@ function getUserClientId(req: Request): number | undefined {
  */
 router.get("/atendimentos", async (req: Request, res: Response) => {
   try {
+    const idcliente = getIdClienteFromReq(req);
+    if (!idcliente) {
+      return res
+        .status(401)
+        .json({ error: "Usuário sem idcliente associado." });
+    }
+
     const repo = AppDataSource.getRepository(Atendimento);
     const {
       page = "1",
@@ -49,15 +54,10 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
     const qb = repo
       .createQueryBuilder("a")
       .leftJoinAndSelect("a.departamento", "d")
+      .where("a.idcliente = :idcliente", { idcliente })
       .orderBy("a.criado_em", "DESC")
       .skip((pageNum - 1) * pageSize)
       .take(pageSize);
-
-    // 🔹 Multi-cliente: filtra por idcliente se tiver user logado
-    const idcliente = getUserClientId(req);
-    if (idcliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente });
-    }
 
     if (status) {
       qb.andWhere("a.status = :status", { status });
@@ -107,34 +107,20 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
  */
 router.get("/atendimentos/:id", async (req: Request, res: Response) => {
   try {
+    const idcliente = getIdClienteFromReq(req);
+    if (!idcliente) {
+      return res
+        .status(401)
+        .json({ error: "Usuário sem idcliente associado." });
+    }
+
     const repo = AppDataSource.getRepository(Atendimento);
     const { id } = req.params;
-    const idcliente = getUserClientId(req);
 
-    let atendimento: Atendimento | null = null;
-
-    if (idcliente) {
-      atendimento = await repo.findOne({
-        where: { id, idcliente },
-        relations: ["departamento"],
-      });
-    } else {
-      atendimento = await repo.findOne({
-        where: { id },
-        relations: ["departamento"],
-      });
-    }
-
-    // 🔁 Fallback: se não encontrou com idcliente, tenta sem filtro (para registros antigos)
-    if (!atendimento && idcliente) {
-      console.warn(
-        `[ATENDIMENTOS/:id] Atendimento ${id} não encontrado com idcliente=${idcliente}, tentando sem filtro de cliente.`
-      );
-      atendimento = await repo.findOne({
-        where: { id },
-        relations: ["departamento"],
-      });
-    }
+    const atendimento = await repo.findOne({
+      where: { id, idcliente },
+      relations: ["departamento"],
+    });
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado" });
@@ -155,33 +141,20 @@ router.get(
   "/atendimentos/protocolo/:protocolo",
   async (req: Request, res: Response) => {
     try {
+      const idcliente = getIdClienteFromReq(req);
+      if (!idcliente) {
+        return res
+          .status(401)
+          .json({ error: "Usuário sem idcliente associado." });
+      }
+
       const repo = AppDataSource.getRepository(Atendimento);
       const { protocolo } = req.params;
-      const idcliente = getUserClientId(req);
 
-      let atendimento: Atendimento | null = null;
-
-      if (idcliente) {
-        atendimento = await repo.findOne({
-          where: { protocolo, idcliente },
-          relations: ["departamento"],
-        });
-      } else {
-        atendimento = await repo.findOne({
-          where: { protocolo },
-          relations: ["departamento"],
-        });
-      }
-
-      if (!atendimento && idcliente) {
-        console.warn(
-          `[ATENDIMENTOS/protocolo] Atendimento com protocolo=${protocolo} não encontrado com idcliente=${idcliente}, tentando sem filtro.`
-        );
-        atendimento = await repo.findOne({
-          where: { protocolo },
-          relations: ["departamento"],
-        });
-      }
+      const atendimento = await repo.findOne({
+        where: { protocolo, idcliente },
+        relations: ["departamento"],
+      });
 
       if (!atendimento) {
         return res.status(404).json({ error: "Atendimento não encontrado" });
@@ -198,43 +171,30 @@ router.get(
 );
 
 /**
+ * GET /atendimentos/:id/mensagens
  * Lista mensagens de um atendimento em ordem cronológica
- * no formato esperado pelo painel (texto, autor, media, comando, etc.)
+ * no formato esperado pelo painel
  */
 router.get(
   "/atendimentos/:id/mensagens",
   async (req: Request, res: Response) => {
     try {
+      const idcliente = getIdClienteFromReq(req);
+      if (!idcliente) {
+        return res
+          .status(401)
+          .json({ error: "Usuário sem idcliente associado." });
+      }
+
       const { id } = req.params;
 
       const repoAt = AppDataSource.getRepository(Atendimento);
       const repoMsg = AppDataSource.getRepository(Mensagem);
 
-      const idcliente = getUserClientId(req);
-
-      let atendimento: Atendimento | null = null;
-
-      if (idcliente) {
-        atendimento = await repoAt.findOne({
-          where: { id, idcliente },
-          relations: ["departamento"],
-        });
-      } else {
-        atendimento = await repoAt.findOne({
-          where: { id },
-          relations: ["departamento"],
-        });
-      }
-
-      if (!atendimento && idcliente) {
-        console.warn(
-          `[ATENDIMENTOS/:id/mensagens] Atendimento ${id} não encontrado com idcliente=${idcliente}, tentando sem filtro.`
-        );
-        atendimento = await repoAt.findOne({
-          where: { id },
-          relations: ["departamento"],
-        });
-      }
+      const atendimento = await repoAt.findOne({
+        where: { id, idcliente },
+        relations: ["departamento"],
+      });
 
       if (!atendimento) {
         return res.status(404).json({ error: "Atendimento não encontrado" });
@@ -246,11 +206,13 @@ router.get(
       });
 
       const resposta = mensagens.map((m) => {
+        // autor base para o painel (CIDADÃO, SISTEMA ou AGENTE)
         let autorBase: string | null = null;
 
         if (m.direcao === "CITIZEN") {
           autorBase = "CIDADÃO";
         } else if (m.direcao === "AGENT") {
+          // se quiser, pode colocar o nome do agente aqui no futuro
           autorBase = "AGENTE";
         } else {
           autorBase = "SISTEMA";
@@ -266,7 +228,7 @@ router.get(
           media_mime: m.mimeType ?? null,
           criado_em: m.criadoEm,
 
-          // 🔹 novos campos – IMPORTANTES PRO PAINEL
+          // campos extras usados pelo painel
           comando_codigo: (m as any).comandoCodigo ?? null,
           comando_descricao: (m as any).comandoDescricao ?? null,
         };
@@ -288,8 +250,24 @@ router.get(
  */
 router.get("/atendimentos/:id/eventos", async (req: Request, res: Response) => {
   try {
+    const idcliente = getIdClienteFromReq(req);
+    if (!idcliente) {
+      return res
+        .status(401)
+        .json({ error: "Usuário sem idcliente associado." });
+    }
+
     const { id } = req.params;
+    const repoAt = AppDataSource.getRepository(Atendimento);
     const repoEvt = AppDataSource.getRepository(AtendimentoEvento);
+
+    const atendimento = await repoAt.findOne({
+      where: { id, idcliente },
+    });
+
+    if (!atendimento) {
+      return res.status(404).json({ error: "Atendimento não encontrado" });
+    }
 
     const eventos = await repoEvt.find({
       where: { atendimentoId: id },
@@ -304,85 +282,70 @@ router.get("/atendimentos/:id/eventos", async (req: Request, res: Response) => {
 });
 
 /**
- * GET /dashboard/resumo
+ * GET /dashboard/resumo-atendimentos
  * Indicadores básicos para painel
  * Query:
  *  - dataInicio (YYYY-MM-DD)
  *  - dataFim (YYYY-MM-DD)
  */
-router.get("/dashboard/resumo", async (req: Request, res: Response) => {
-  try {
-    const repo = AppDataSource.getRepository(Atendimento);
-    const { dataInicio, dataFim } = req.query as Record<string, string>;
-    const idcliente = getUserClientId(req);
+router.get(
+  "/dashboard/resumo-atendimentos",
+  async (req: Request, res: Response) => {
+    try {
+      const idcliente = getIdClienteFromReq(req);
+      if (!idcliente) {
+        return res
+          .status(401)
+          .json({ error: "Usuário sem idcliente associado." });
+      }
 
-    const qbBase = repo.createQueryBuilder("a");
+      const repo = AppDataSource.getRepository(Atendimento);
+      const { dataInicio, dataFim } = req.query as Record<string, string>;
 
-    if (idcliente) {
-      qbBase.andWhere("a.idcliente = :idcliente", { idcliente });
-    }
-
-    if (dataInicio) {
-      qbBase.andWhere("a.criado_em >= :dataInicio", { dataInicio });
-    }
-    if (dataFim) {
-      qbBase.andWhere("a.criado_em <= :dataFim", {
-        dataFim: `${dataFim} 23:59:59`,
+      const qb = repo.createQueryBuilder("a").where("a.idcliente = :idcliente", {
+        idcliente,
       });
-    }
 
-    const total = await qbBase.getCount();
+      if (dataInicio) {
+        qb.andWhere("a.criado_em >= :dataInicio", { dataInicio });
+      }
+      if (dataFim) {
+        qb.andWhere("a.criado_em <= :dataFim", {
+          dataFim: `${dataFim} 23:59:59`,
+        });
+      }
 
-    const qbStatus = repo.createQueryBuilder("a");
-    if (idcliente) {
-      qbStatus.andWhere("a.idcliente = :idcliente", { idcliente });
-    }
-    if (dataInicio) {
-      qbStatus.andWhere("a.criado_em >= :dataInicio", { dataInicio });
-    }
-    if (dataFim) {
-      qbStatus.andWhere("a.criado_em <= :dataFim", {
-        dataFim: `${dataFim} 23:59:59`,
+      const total = await qb.getCount();
+
+      const porStatus = await repo
+        .createQueryBuilder("a")
+        .select("a.status", "status")
+        .addSelect("COUNT(*)", "quantidade")
+        .where("a.idcliente = :idcliente", { idcliente })
+        .groupBy("a.status")
+        .getRawMany();
+
+      const porDepartamento = await repo
+        .createQueryBuilder("a")
+        .leftJoin("a.departamento", "d")
+        .select("COALESCE(d.nome, 'Sem setor')", "departamento")
+        .addSelect("COUNT(*)", "quantidade")
+        .where("a.idcliente = :idcliente", { idcliente })
+        .groupBy("d.nome")
+        .getRawMany();
+
+      res.json({
+        totalAtendimentos: total,
+        porStatus,
+        porDepartamento,
       });
+    } catch (err: any) {
+      console.error("Erro ao montar resumo do dashboard:", err);
+      res
+        .status(500)
+        .json({ error: "Erro ao montar resumo do dashboard" });
     }
-
-    const porStatus = await qbStatus
-      .select("a.status", "status")
-      .addSelect("COUNT(*)", "quantidade")
-      .groupBy("a.status")
-      .getRawMany();
-
-    const qbDep = repo
-      .createQueryBuilder("a")
-      .leftJoin("a.departamento", "d");
-
-    if (idcliente) {
-      qbDep.andWhere("a.idcliente = :idcliente", { idcliente });
-    }
-    if (dataInicio) {
-      qbDep.andWhere("a.criado_em >= :dataInicio", { dataInicio });
-    }
-    if (dataFim) {
-      qbDep.andWhere("a.criado_em <= :dataFim", {
-        dataFim: `${dataFim} 23:59:59`,
-      });
-    }
-
-    const porDepartamento = await qbDep
-      .select("COALESCE(d.nome, 'Sem setor')", "departamento")
-      .addSelect("COUNT(*)", "quantidade")
-      .groupBy("d.nome")
-      .getRawMany();
-
-    res.json({
-      totalAtendimentos: total,
-      porStatus,
-      porDepartamento,
-    });
-  } catch (err: any) {
-    console.error("Erro ao montar resumo do dashboard:", err);
-    res.status(500).json({ error: "Erro ao montar resumo do dashboard" });
   }
-});
+);
 
 export default router;
