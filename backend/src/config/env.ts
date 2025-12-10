@@ -4,7 +4,7 @@ dotenv.config();
 export const env = {
   port: Number(process.env.PORT || 3000),
   whatsapp: {
-    apiVersion: process.env.WHATSAPP_API_VERSION || "v21.0",
+    apiVersion: process.env.WHATSAPP_API_VERSION || "v24.0",
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || "",
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || "",
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || "verify_token_teste"
@@ -15,5 +15,14 @@ export const env = {
     username: process.env.DB_USERNAME || "postgres",
     password: process.env.DB_PASSWORD || "postgres",
     database: process.env.DB_DATABASE || "whatsapp_atendimento"
-  }
+  },
+  DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY || "",
+  DEEPSEEK_API_URL:
+    process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions",
+  DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+  IA_HABILITADA: process.env.IA_HABILITADA === "true",
 };
+  
+  
+
+

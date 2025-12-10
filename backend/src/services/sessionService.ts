@@ -20,6 +20,7 @@ import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { salvarMensagem } from "./messageService";
 import { MensagemTipo } from "../entities/Mensagem";
 import { Cliente } from "../entities/Cliente";
+import { gerarRespostaIA, iaEstaHabilitada } from "./iaService";
 
 export type SessionStatus =
   | "ASK_NAME"
@@ -105,6 +106,41 @@ function getSaudacaoPorHorario(): string {
     if (hora >= 4 && hora < 12) return "Bom dia";
     if (hora >= 12 && hora < 18) return "Boa tarde";
     return "Boa noite";
+  }
+}
+
+/**
+ * Regra padrão de horário de atendimento humano:
+ *   - Segunda a Sexta
+ *   - Das 08:00 às 18:00 (fuso America/Sao_Paulo)
+ *
+ * Fora disso, consideramos "fora do horário" e a IA assume o pré-atendimento.
+ * Depois podemos refinar para ler da tabela HorarioAtendimento.
+ */
+function isOutOfBusinessHours(): boolean {
+  try {
+    const agoraBR = new Date(
+      new Date().toLocaleString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+      })
+    );
+    const diaSemana = agoraBR.getDay(); // 0 domingo, 6 sábado
+    const hora = agoraBR.getHours();
+
+    // sábado (6) ou domingo (0)
+    if (diaSemana === 0 || diaSemana === 6) return true;
+
+    // antes das 8h ou após 18h
+    if (hora < 8 || hora >= 18) return true;
+
+    return false;
+  } catch {
+    const now = new Date();
+    const diaSemana = now.getDay();
+    const hora = now.getHours();
+    if (diaSemana === 0 || diaSemana === 6) return true;
+    if (hora < 8 || hora >= 18) return true;
+    return false;
   }
 }
 
@@ -1051,6 +1087,75 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     comandoCodigo: citizenMeta?.comandoCodigo ?? null,
     comandoDescricao: citizenMeta?.comandoDescricao ?? null,
   });
+
+  // ---------- IA DeepSeek: pré-atendimento fora do horário ----------
+  // Regra atual:
+  // - Só entra quando:
+  //   - IA está habilitada
+  //   - Está fora do horário de atendimento padrão
+  //   - E o fluxo ainda está em ASK_NAME ou ASK_DEPARTMENT
+  //
+  // Nesses casos:
+  //   1) IA responde o cidadão
+  //   2) Cidadão é convidado a deixar recado (LEAVE_MESSAGE_DECISION)
+  //   3) Não chama agente humano nem fila
+  const foraHorario = isOutOfBusinessHours();
+  const podeUsarIAForaHorario =
+    session.status === "ASK_NAME" || session.status === "ASK_DEPARTMENT";
+
+  if (foraHorario && iaEstaHabilitada() && podeUsarIAForaHorario) {
+    console.log(
+      "[IA] Fora do horário de atendimento humano. Acionando IA para pré-atendimento..."
+    );
+
+    const textoBaseIA =
+      trimmed ||
+      (tipo === "AUDIO"
+        ? "O cidadão enviou um áudio descrevendo a situação."
+        : "O cidadão entrou em contato fora do horário de atendimento.");
+
+    const contexto = [
+      session.citizenName
+        ? `Nome informado do cidadão: ${session.citizenName}.`
+        : "Nome do cidadão ainda não informado.",
+      session.departmentName
+        ? `Setor mencionado/selecionado: ${session.departmentName}.`
+        : "O setor ainda não foi selecionado.",
+      "Situação: atendimento fora do horário padrão de funcionamento. Nenhum atendente humano está disponível agora.",
+      "Objetivo: orientar o cidadão, explicar que é fora do horário e sugerir que ele deixe um recado para ser respondido no próximo expediente.",
+    ].join(" ");
+
+    const ia = await gerarRespostaIA(
+      textoBaseIA,
+      "whatsapp_cidadao",
+      contexto
+    );
+
+    if (ia.sucesso && ia.resposta) {
+      await sendTextMessage(session.citizenNumber, ia.resposta);
+    } else {
+      console.log(
+        "[IA] Falha ao obter resposta da IA fora do horário. Erro:",
+        ia.erro
+      );
+      await sendTextMessage(
+        session.citizenNumber,
+        "No momento estamos fora do horário de atendimento humano. Mesmo assim, você pode deixar sua mensagem aqui que ela será analisada no próximo expediente."
+      );
+    }
+
+    session.status = "LEAVE_MESSAGE_DECISION";
+
+    await sendTextMessage(
+      session.citizenNumber,
+      `No momento estamos fora do horário de atendimento da equipe.\n\n` +
+        `Deseja deixar um recado detalhado para que possamos responder no próximo expediente?\n` +
+        `1 - Sim, deixar recado\n` +
+        `2 - Não, encerrar`
+    );
+
+    return;
+  }
 
   // ---------- Fluxo: cidadão decide se deixa recado ou encerra ----------
 
