@@ -1196,13 +1196,50 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   }
 
   if (session.status === "LEAVE_MESSAGE") {
+    // Se tiver texto e a IA estiver habilitada, deixa ela responder também
+    if (iaEstaHabilitada() && trimmed) {
+      console.log(
+        "[IA] Respondendo mensagem em modo LEAVE_MESSAGE (recado offline)..."
+      );
+  
+      const contexto = [
+        session.citizenName
+          ? `Nome do cidadão: ${session.citizenName}.`
+          : "Nome do cidadão não informado.",
+        session.departmentName
+          ? `Setor responsável: ${session.departmentName}.`
+          : "Setor ainda não definido.",
+        "Contexto: o atendimento está em modo de recado (LEAVE_MESSAGE).",
+        "Os atendentes humanos só irão analisar essa mensagem depois.",
+        "Objetivo: responder de forma acolhedora, orientar o cidadão e, se fizer sentido, explicar que a resposta definitiva dependerá da equipe humana.",
+      ].join(" ");
+  
+      const ia = await gerarRespostaIA(
+        trimmed,
+        "whatsapp_cidadao",
+        contexto
+      );
+  
+      if (ia.sucesso && ia.resposta) {
+        await sendTextMessage(session.citizenNumber, ia.resposta);
+      } else {
+        console.log(
+          "[IA] Falha ao responder em LEAVE_MESSAGE. Erro:",
+          ia.erro
+        );
+      }
+    }
+  
+    // Mensagem padrão de confirmação de recado
     await sendTextMessage(
       session.citizenNumber,
-      "Recebido ✅. Se tiver mais informações, pode enviar. Encerraremos automaticamente em breve."
+      "Recebido ✅. Sua mensagem ficará registrada e nossa equipe vai analisar no próximo atendimento. Se quiser, pode enviar mais detalhes."
     );
+  
     scheduleLeaveMessageAutoClose(session);
     return;
   }
+  
 
   // ---------- Fluxo: Fila (IN_QUEUE) ----------
 
