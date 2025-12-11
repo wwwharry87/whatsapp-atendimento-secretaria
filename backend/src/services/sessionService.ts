@@ -1245,6 +1245,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "- Mencionar o órgão (cliente) quando fizer sentido.",
       "- Dar orientações gerais sobre o tipo de dúvida, sem prometer nada específico.",
       "- No final, incentive o cidadão a decidir se quer deixar um recado detalhado ou encerrar por enquanto.",
+      "- Use o nome do cidadão, se existir, no máximo UMA vez na primeira frase.",
+      "- Evite repetir listas grandes de exemplos (como matrícula, merenda, transporte escolar, etc.); se precisar, cite no máximo 1 ou 2 exemplos.",
       "Responda em até 3 parágrafos curtos.",
     ];
 
@@ -1425,8 +1427,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     const clienteNome = await getClienteNome(session.idcliente);
     const orgInfo = buildOrgInfo(clienteNome);
 
-    // ACK mais humano: primeira mensagem é mais completa, as demais são curtinhas
-    let ackBase: string;
+    // ACK mais humano:
+    // - primeira mensagem: confirma e explica que será analisado
+    // - demais: NÃO manda mais "Entendi, Nome"; deixa só a resposta da IA
+    let ackBase = "";
     if (!session.leaveMessageAckSent) {
       const orgFrase = clienteNome
         ? `nossa equipe da *${clienteNome}*`
@@ -1439,12 +1443,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         `Seu recado foi registrado e ${orgFrase} vai analisar no próximo atendimento.`;
       session.leaveMessageAckSent = true;
     } else {
-      ackBase = session.citizenName
-        ? `Entendi, ${session.citizenName}.`
-        : "Entendi. 👍";
+      ackBase = ""; // depois da primeira vez, não repetimos ACK
     }
 
-    let textoFinal = ackBase;
+    let textoFinal = ackBase || "";
 
     if (iaEstaHabilitada() && trimmed) {
       console.log(
@@ -1463,13 +1465,19 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         "Contexto: o atendimento está em modo de recado (LEAVE_MESSAGE), fora ou dentro do horário, mas sem atendimento humano imediato.",
         "Os atendentes humanos irão ler essa mensagem no próximo expediente e responder pelo canal oficial.",
         "Objetivo da IA: acolher o cidadão, dar orientação inicial e, se possível, sugerir caminhos gerais.",
-        "Importante: responda em no máximo 3 parágrafos curtos, sem despedidas longas e sem prometer algo que depende do órgão (como emprego, benefício, vaga etc.).",
+        "Importante (estilo de resposta):",
+        "- Responda em no máximo 2 ou 3 parágrafos curtos.",
+        "- Use o nome do cidadão, se existir, no máximo UMA vez na primeira frase. Não repita o nome em todas as frases.",
+        "- Evite começar com frases como 'Olá, [nome]' ou 'Entendi, [nome]'; a plataforma já envia mensagens de confirmação separadas.",
+        "- Evite repetir em todas as respostas que a mensagem foi registrada ou será analisada no próximo expediente; isso já foi informado em outra mensagem.",
+        "- Evite listas longas com muitos exemplos (como matrícula, transporte, merenda, calendário, etc.); se precisar, cite no máximo 1 ou 2 exemplos mais relevantes.",
+        "- Não faça despedidas muito formais; mantenha um tom simples e direto.",
       ];
 
       if (session.leaveMessageAckSent) {
         contextoParts.push(
-          "Atenção: o cidadão já foi informado em outra mensagem que o recado está registrado e será analisado no próximo expediente.",
-          "Portanto, EVITE repetir frases como 'sua mensagem ficará registrada' ou 'nossa equipe vai analisar no próximo atendimento' em todas as respostas.",
+          "O cidadão já foi informado em outra mensagem que o recado está registrado e será analisado no próximo expediente.",
+          "Portanto, NÃO repita frases como 'sua mensagem ficará registrada' ou 'nossa equipe vai analisar no próximo atendimento' em todas as respostas.",
           "Responda de forma mais direta e humana ao conteúdo da mensagem, como se fosse uma orientação rápida."
         );
       }
@@ -1479,7 +1487,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
           "Neste canal você atende exclusivamente assuntos de EDUCAÇÃO.",
           "Não use a palavra 'prefeitura'. Use 'Secretaria Municipal de Educação', 'Secretaria de Educação' ou 'SEMED'.",
           "Não mencione saúde, tributos, obras ou outros temas fora da educação.",
-          "Se quiser dar exemplos, cite apenas matrícula escolar, merenda, transporte escolar, lotação de professores, calendário letivo, etc."
+          "Se quiser dar exemplos, fale de matrícula escolar, merenda, transporte escolar, lotação de professores, calendário letivo, etc."
         );
       } else if (orgInfo.tipo === "SAUDE") {
         contextoParts.push(
@@ -1519,7 +1527,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
 
       if (ia.sucesso && ia.resposta) {
-        textoFinal = `${ackBase}\n\n${ia.resposta}`;
+        textoFinal = ackBase
+          ? `${ackBase}\n\n${ia.resposta}`
+          : ia.resposta;
 
         await salvarMensagem({
           atendimentoId: session.atendimentoId,
@@ -1545,7 +1555,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       }
     }
 
-    await sendTextMessage(session.citizenNumber, textoFinal);
+    if (textoFinal.trim()) {
+      await sendTextMessage(session.citizenNumber, textoFinal);
+    }
 
     scheduleLeaveMessageAutoClose(session);
     return;
