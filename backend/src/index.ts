@@ -34,8 +34,15 @@ app.use(
 // ROTAS PÚBLICAS
 // ===============================
 app.use("/webhook", webhookRoutes);
-app.use("/media", mediaRoutes);
 app.use("/auth", authRoutes);
+
+// (se quiser deixar o healthcheck público, mantém aqui)
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    message: "API Atende Cidadão rodando.",
+  });
+});
 
 // ===============================
 // ROTAS DO PAINEL / DASHBOARD
@@ -58,8 +65,12 @@ app.use("/", authMiddleware, painelRoutes);
 app.use("/departamentos", authMiddleware, departamentosRoutes);
 app.use("/usuarios", authMiddleware, usuariosRoutes);
 app.use("/horarios", authMiddleware, horariosRoutes);
-app.use("/recados",authMiddleware,recadosRoutes)
+app.use("/recados", authMiddleware, recadosRoutes);
 
+// ===============================
+// ROTAS DE MÍDIA (upload / download) – PRECISAM DO idcliente
+// ===============================
+app.use("/media", authMiddleware, mediaRoutes);
 
 // ===============================
 // ROTAS AVANÇADAS DE ATENDIMENTOS (API técnica)
@@ -68,16 +79,6 @@ app.use("/recados",authMiddleware,recadosRoutes)
 // Exemplo: GET /api/atendimentos/atendimentos?status=ACTIVE
 //
 app.use("/api/atendimentos", authMiddleware, atendimentosRoutes);
-
-// ===============================
-// ROTA RAIZ (healthcheck simples)
-// ===============================
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "API Atende Cidadão rodando.",
-  });
-});
 
 async function start() {
   try {
