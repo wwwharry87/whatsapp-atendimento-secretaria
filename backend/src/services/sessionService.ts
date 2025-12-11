@@ -906,6 +906,50 @@ async function fecharAtendimentoComProtocolo(
   return protocolo;
 }
 
+// ====================== PROTOCOLO EM MODO RECADO ======================
+
+async function ensureProtocolForSession(session: Session): Promise<string> {
+  const repo = AppDataSource.getRepository(Atendimento);
+
+  let protocolo = session.protocolo ?? null;
+
+  try {
+    const atendimento = await repo.findOne({
+      where: { id: session.atendimentoId },
+    });
+
+    if (atendimento?.protocolo) {
+      protocolo = atendimento.protocolo;
+    }
+  } catch (err) {
+    console.log(
+      "[PROTOCOLO] Erro ao buscar atendimento para garantir protocolo.",
+      err
+    );
+  }
+
+  if (!protocolo) {
+    protocolo = generateProtocol(session.atendimentoId);
+    console.log(
+      "[PROTOCOLO] Gerando protocolo em modo recado para atendimento=",
+      session.atendimentoId,
+      "protocolo=",
+      protocolo
+    );
+    try {
+      await repo.update(session.atendimentoId, { protocolo });
+    } catch (err) {
+      console.log(
+        "[PROTOCOLO] Erro ao salvar protocolo gerado em modo recado.",
+        err
+      );
+    }
+  }
+
+  session.protocolo = protocolo;
+  return protocolo;
+}
+
 // ====================== FILA (QUEUE) ======================
 
 async function getAgentBusyAndQueueCount(
@@ -1092,7 +1136,7 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
         `Telefone: ${novaSession.citizenNumber}\n\n` +
         `Digite:\n` +
         `1 - Atender agora\n` +
-        `2 - Informar que está ocupado`
+        `2 - Continuar ocupado`
     );
     scheduleBusyReminder(novaSession);
   }
@@ -1287,10 +1331,14 @@ async function encaminharRecadoParaAgente(opts: {
   const nomeCidadao = session.citizenName ?? session.citizenNumber;
   const nomeSetor = session.departmentName ?? "Setor";
 
+  // Garante que o atendimento já tenha um protocolo associado
+  const protocolo = await ensureProtocolForSession(session);
+
   const prefixoCabecalho =
     `📩 *Novo recado do cidadão* (modo recado)\n\n` +
     `Setor: *${nomeSetor}*\n` +
-    `Cidadão: *${nomeCidadao}*\n\n`;
+    `Cidadão: *${nomeCidadao}*\n` +
+    `Protocolo: *${protocolo}*\n\n`;
 
   const t = lowerTipo(tipo);
 
@@ -1838,11 +1886,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         ? `nossa equipe da *${clienteNome}*`
         : "nossa equipe responsável";
 
+      const protocolo = await ensureProtocolForSession(session);
+
       ackBase =
         `Recebido ✅${
           session.citizenName ? `, ${session.citizenName}` : ""
         }.\n` +
-        `Seu recado foi registrado e ${orgFrase} vai analisar no próximo atendimento.`;
+        `Seu recado foi registrado e ${orgFrase} vai analisar no próximo atendimento.\n` +
+        `Protocolo: *${protocolo}*.\n` +
+        `Guarde este número para acompanhar sua solicitação.`;
       session.leaveMessageAckSent = true;
     } else {
       ackBase = ""; // depois da primeira vez, não repetimos ACK
