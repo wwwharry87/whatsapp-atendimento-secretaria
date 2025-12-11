@@ -51,6 +51,8 @@ export type Session = {
   idcliente?: number;
   /** se já mandamos o ACK de recado no modo LEAVE_MESSAGE */
   leaveMessageAckSent?: boolean;
+  /** se já oferecemos falar de protocolo nesta sessão */
+  protocolHintSent?: boolean;
 };
 
 const sessionsByCitizen = new Map<string, Session>();
@@ -629,6 +631,7 @@ async function recoverAgentSession(
     protocolo: atendimento.protocolo ?? undefined,
     idcliente: atendimento.idcliente,
     leaveMessageAckSent: false,
+    protocolHintSent: false,
   };
 
   const citizenKey = normalizePhone(session.citizenNumber);
@@ -690,6 +693,7 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     protocolo: atendimento.protocolo ?? undefined,
     idcliente: atendimento.idcliente,
     leaveMessageAckSent: false,
+    protocolHintSent: false,
   };
 
   console.log(
@@ -934,6 +938,7 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     protocolo: proximo.protocolo ?? undefined,
     idcliente: proximo.idcliente,
     leaveMessageAckSent: false,
+    protocolHintSent: false,
   };
 
   sessionsByCitizen.set(citizenNumber, novaSession);
@@ -1138,6 +1143,166 @@ async function iniciarPesquisaSatisfacao(session: Session, protocolo: string) {
   );
 }
 
+// ====================== CONSULTA DE PROTOCOLO ======================
+
+function extractProtocolCode(texto: string): string | null {
+  if (!texto) return null;
+  const match = texto.toUpperCase().match(/ATD-\d{8}-[A-Z0-9]{6}/);
+  return match ? match[0] : null;
+}
+
+function formatDateTimeBr(value: any): string | null {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return null;
+
+  try {
+    return d.toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return d.toLocaleString("pt-BR");
+  }
+}
+
+function mapStatusToDescricao(status?: string | null): string {
+  if (!status) return "em andamento";
+  const s = status.toUpperCase();
+
+  switch (s) {
+    case "ASK_NAME":
+      return "aguardando a identificação do cidadão";
+    case "ASK_DEPARTMENT":
+      return "aguardando escolha do setor responsável";
+    case "WAITING_AGENT_CONFIRMATION":
+      return "aguardando o responsável do setor iniciar o atendimento";
+    case "ACTIVE":
+      return "em atendimento com a equipe";
+    case "IN_QUEUE":
+      return "aguardando na fila de atendimento";
+    case "LEAVE_MESSAGE_DECISION":
+    case "LEAVE_MESSAGE":
+      return "com recado registrado, aguardando análise do setor";
+    case "ASK_SATISFACTION_RESOLUTION":
+    case "ASK_SATISFACTION_RATING":
+    case "ASK_ANOTHER_DEPARTMENT":
+      return "atendimento finalizado, em pesquisa de satisfação";
+    case "FINISHED":
+      return "encerrado";
+    default:
+      return "em andamento";
+  }
+}
+
+async function tentarTratarMensagemComoConsultaProtocolo(
+  session: Session,
+  texto: string
+): Promise<boolean> {
+  const trimmed = (texto || "").trim();
+  if (!trimmed) return false;
+
+  const lower = trimmed.toLowerCase();
+  const hasWordProtocolo = lower.includes("protocolo");
+  const codigo = extractProtocolCode(trimmed);
+
+  // Se falou "protocolo" mas ainda não mandou o número: orienta
+  if (!codigo && hasWordProtocolo) {
+    await sendTextMessage(
+      session.citizenNumber,
+      "Entendi, você quer falar sobre um protocolo. 🙂\n" +
+        "Por favor, me envie o *número completo* do protocolo, no formato parecido com:\n" +
+        "*ATD-20251210-ABC123*."
+    );
+    return true;
+  }
+
+  // Não tem cara de consulta de protocolo
+  if (!codigo) return false;
+
+  const idcliente = session.idcliente ?? (await getDefaultClienteId());
+  const repo = AppDataSource.getRepository(Atendimento);
+
+  const atendimento = await repo.findOne({
+    where: { protocolo: codigo, idcliente },
+    relations: ["departamento"],
+  });
+
+  if (!atendimento) {
+    await sendTextMessage(
+      session.citizenNumber,
+      `Não encontrei nenhum atendimento com o protocolo *${codigo}* neste canal.\n` +
+        `Confira se digitou certinho ou se o protocolo foi gerado por outro setor/sistema.`
+    );
+    return true;
+  }
+
+  const numeroAtend = normalizePhone(atendimento.cidadaoNumero);
+  const numeroSessao = normalizePhone(session.citizenNumber);
+
+  if (numeroAtend !== numeroSessao) {
+    await sendTextMessage(
+      session.citizenNumber,
+      `Encontrei um atendimento com o protocolo *${codigo}*, mas ele não está vinculado a este número de telefone.\n` +
+        `Por segurança, só consigo informar detalhes de protocolos cadastrados neste contato.`
+    );
+    return true;
+  }
+
+  const anyAtd: any = atendimento;
+  const statusDescricao = mapStatusToDescricao(anyAtd.status);
+  const depNome = atendimento.departamento?.nome ?? null;
+  const criadoEmStr = formatDateTimeBr(anyAtd.criadoEm);
+  const ultimaAtualizacaoStr = formatDateTimeBr(anyAtd.atualizadoEm);
+  const encerradoEmStr = formatDateTimeBr(anyAtd.encerradoEm);
+
+  const linhas: string[] = [];
+  linhas.push(`📄 *Andamento do protocolo ${codigo}*`);
+
+  if (depNome) {
+    linhas.push(`• Setor responsável: *${depNome}*`);
+  }
+
+  linhas.push(`• Situação: ${statusDescricao}`);
+
+  if (criadoEmStr) {
+    linhas.push(`• Abertura: ${criadoEmStr}`);
+  }
+
+  if (ultimaAtualizacaoStr) {
+    linhas.push(`• Última movimentação: ${ultimaAtualizacaoStr}`);
+  }
+
+  if (encerradoEmStr) {
+    linhas.push(`• Encerrado em: ${encerradoEmStr}`);
+  }
+
+  if (typeof anyAtd.foiResolvido === "boolean") {
+    if (anyAtd.foiResolvido) {
+      linhas.push("• Marcação da equipe: atendimento *resolvido*.");
+    } else {
+      linhas.push("• Marcação da equipe: atendimento *não resolvido*.");
+    }
+  }
+
+  if (typeof anyAtd.notaSatisfacao === "number") {
+    linhas.push(
+      `• Nota de satisfação registrada: *${anyAtd.notaSatisfacao}/5*.`
+    );
+  }
+
+  linhas.push(
+    "\nSe quiser, pode me enviar uma mensagem explicando o que precisa sobre esse protocolo."
+  );
+
+  await sendTextMessage(session.citizenNumber, linhas.join("\n"));
+  return true;
+}
+
 // ====================== CIDADÃO ======================
 
 export async function handleCitizenMessage(msg: IncomingMessage) {
@@ -1206,6 +1371,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     comandoCodigo: citizenMeta?.comandoCodigo ?? null,
     comandoDescricao: citizenMeta?.comandoDescricao ?? null,
   });
+
+  // ---------- PRIMEIRO: tentar tratar como consulta de PROTOCOLO ----------
+  const handledByProtocol = await tentarTratarMensagemComoConsultaProtocolo(
+    session,
+    text || ""
+  );
+  if (handledByProtocol) {
+    return;
+  }
 
   // ---------- IA: pré-atendimento fora do horário ----------
 
@@ -1656,12 +1830,12 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.status = "ASK_ANOTHER_DEPARTMENT";
 
     await sendTextMessage(
-      session.citizenNumber,
-      "Agradecemos sua avaliação! 🌟\n\n" +
-        "Deseja falar com *outro setor*?\n" +
-        "1 - Sim, abrir atendimento em outro setor\n" +
-        "2 - Não, encerrar por aqui"
-    );
+        session.citizenNumber,
+        "Agradecemos sua avaliação! 🌟\n\n" +
+          "Deseja falar com *outro setor*?\n" +
+          "1 - Sim, abrir atendimento em outro setor\n" +
+          "2 - Não, encerrar por aqui"
+      );
     return;
   }
 
@@ -1685,6 +1859,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.protocolo = undefined;
       session.idcliente = novoAtendimento.idcliente;
       session.leaveMessageAckSent = false;
+      session.protocolHintSent = false;
 
       const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
@@ -1739,6 +1914,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
       session.citizenName = trimmed;
       session.status = "ASK_DEPARTMENT";
+      session.protocolHintSent = false;
 
       await atualizarAtendimento(session, {
         cidadaoNome: session.citizenName,
@@ -1772,6 +1948,30 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     if (isNaN(numero)) {
       const menuComRodape = await montarMenuDepartamentos();
 
+      // 👉 Cidadão já conhecido (tem nome) e ainda não oferecemos falar de protocolo
+      if (session.citizenName && !session.protocolHintSent) {
+        session.protocolHintSent = true;
+
+        const saudacao = getSaudacaoPorHorario();
+        const menuSemRodape = await montarMenuDepartamentos(true);
+
+        const textoMenu =
+          `Percebi que você já falou com a gente outras vezes, *${session.citizenName}*.\n` +
+          `Se quiser, você pode *falar sobre algum protocolo já registrado* me enviando o número dele (por exemplo: ATD-20251210-ABC123).\n\n` +
+          `Se preferir abrir um *novo atendimento*, é só escolher o setor na lista abaixo:\n\n` +
+          menuSemRodape;
+
+        await sendMenuComNomeTemplate({
+          to: session.citizenNumber,
+          saudacao,
+          citizenName: session.citizenName,
+          menuTexto: textoMenu,
+        });
+
+        return;
+      }
+
+      // Se ele só mandou um "oi" e já tem nome, reforçamos o menu normal (sem repetir protocolo)
       if (session.citizenName && greetingMessage) {
         const saudacao = getSaudacaoPorHorario();
         const menuSemRodape = await montarMenuDepartamentos(true);
@@ -2183,6 +2383,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       session.status = "WAITING_AGENT_CONFIRMATION";
       session.busyReminderCount = 0;
       session.leaveMessageAckSent = false;
+      session.protocolHintSent = false;
 
       await atualizarAtendimento(session, {
         departamentoId: novoDep.id,
