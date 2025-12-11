@@ -58,6 +58,52 @@ function getStatusChipClasses(status?: string | null) {
 }
 
 // ----------------------
+// Helpers de autor/direção
+// ----------------------
+function normalizarAutor(autor?: string | null) {
+  if (!autor) return "";
+  return autor.toUpperCase();
+}
+
+/**
+ * Usa primeiro o campo direction ("CITIZEN" | "AGENT" | "IA"),
+ * e só cai pro autor em texto como fallback (pra mensagens antigas).
+ */
+function normalizarDirecao(msg: MensagemAtendimento) {
+  const dir = (msg.direction || "").toString().toUpperCase().trim();
+
+  if (dir === "CITIZEN" || dir === "CIDADAO" || dir === "CIDADÃO") {
+    return "CIDADAO";
+  }
+  if (dir === "AGENT" || dir === "AGENTE") {
+    return "AGENTE";
+  }
+  if (dir === "IA" || dir === "BOT") {
+    return "IA";
+  }
+
+  // Fallback usando o autor
+  const a = normalizarAutor(msg.autor);
+  if (a.includes("CIDAD")) return "CIDADAO";
+  if (a.includes("SIST")) return "SISTEMA";
+  if (a.includes("IA") || a.includes("BOT")) return "IA";
+
+  return "AGENTE";
+}
+
+function isCidadao(msg: MensagemAtendimento) {
+  return normalizarDirecao(msg) === "CIDADAO";
+}
+
+function isSistema(msg: MensagemAtendimento) {
+  return normalizarDirecao(msg) === "SISTEMA";
+}
+
+function isIA(msg: MensagemAtendimento) {
+  return normalizarDirecao(msg) === "IA";
+}
+
+// ----------------------
 // Componente principal
 // ----------------------
 export default function AtendimentoDetalhePage() {
@@ -82,12 +128,8 @@ export default function AtendimentoDetalhePage() {
           api.get(`/atendimentos/${id}/mensagens`),
         ]);
 
-        // Cabeçalho vem direto
         setAtendimento(cabResp.data);
 
-        // A rota de mensagens hoje devolve:
-        //   { atendimento: {...}, mensagens: [...] }
-        // mas pode, no futuro, devolver só um array.
         const raw = msgResp.data as any;
 
         const lista: MensagemAtendimento[] = Array.isArray(raw)
@@ -116,33 +158,24 @@ export default function AtendimentoDetalhePage() {
     return `${nome}${protocolo}`;
   }, [atendimento]);
 
+  // Ordena cronologicamente (só por segurança)
+  const mensagensOrdenadas = useMemo(
+    () =>
+      [...mensagens].sort(
+        (a, b) =>
+          new Date(a.criado_em).getTime() -
+          new Date(b.criado_em).getTime()
+      ),
+    [mensagens]
+  );
+
   // ----------------------
   // Helpers de mensagens
   // ----------------------
-  function normalizarAutor(autor?: string | null) {
-    if (!autor) return "";
-    return autor.toUpperCase();
-  }
-
-  function isCidadao(msg: MensagemAtendimento) {
-    const a = normalizarAutor(msg.autor);
-    return a.includes("CIDAD");
-  }
-
-  function isSistema(msg: MensagemAtendimento) {
-    const a = normalizarAutor(msg.autor);
-    return a.includes("SIST");
-  }
-
-  function isAgente(msg: MensagemAtendimento) {
-    const a = normalizarAutor(msg.autor);
-    return !isCidadao(msg) && !isSistema(msg);
-  }
 
   function getMediaUrl(msg: MensagemAtendimento) {
     if (!msg.media_id) return null;
 
-    // Usa a mesma baseURL configurada no axios api
     const baseFromApi = api.defaults.baseURL as string | undefined;
     const baseFromEnv = import.meta.env.VITE_API_BASE_URL as
       | string
@@ -151,20 +184,25 @@ export default function AtendimentoDetalhePage() {
     const base = baseFromApi || baseFromEnv || "";
     const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
 
-    // No backend a rota é /media/:mediaId
     return `${normalizedBase}/media/${msg.media_id}`;
   }
 
   function getRotuloAutor(msg: MensagemAtendimento) {
     if (!atendimento) return "Autor não identificado";
 
-    if (isCidadao(msg)) {
+    const direcao = normalizarDirecao(msg);
+
+    if (direcao === "CIDADAO") {
       const nome =
         atendimento.cidadao_nome || atendimento.cidadao_numero || "Cidadão";
       return `CIDADÃO – ${nome}`;
     }
 
-    if (isSistema(msg)) {
+    if (direcao === "IA") {
+      return "IA – Atende Cidadão";
+    }
+
+    if (direcao === "SISTEMA") {
       return "SISTEMA";
     }
 
@@ -233,8 +271,22 @@ export default function AtendimentoDetalhePage() {
       <div className="flex-1 flex gap-4 overflow-hidden">
         {/* Coluna do chat */}
         <div className="flex-1 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="border-b border-slate-100 px-4 py-2 text-xs text-slate-500">
-            Linha do tempo de mensagens
+          <div className="border-b border-slate-100 px-4 py-2 text-xs text-slate-500 flex items-center justify-between">
+            <span>Linha do tempo de mensagens</span>
+            <div className="flex items-center gap-2 text-[10px]">
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-full bg-white border border-slate-300" />
+                Cidadão
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-full bg-emerald-200 border border-emerald-300" />
+                Agente
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-full bg-violet-200 border border-violet-300" />
+                IA
+              </span>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2">
@@ -244,20 +296,21 @@ export default function AtendimentoDetalhePage() {
               </p>
             )}
 
-            {!loading && mensagens.length === 0 && (
+            {!loading && mensagensOrdenadas.length === 0 && (
               <p className="text-xs text-slate-500 px-2">
                 Nenhuma mensagem registrada neste atendimento.
               </p>
             )}
 
             {!loading &&
-              mensagens.map((msg) => {
+              mensagensOrdenadas.map((msg) => {
                 const mediaUrl = getMediaUrl(msg);
                 const cidadao = isCidadao(msg);
                 const sistema = isSistema(msg);
+                const ia = isIA(msg);
                 const descricaoComando = getDescricaoComando(msg);
 
-                // alinhamento/cores
+                // alinhamento/cores padrão = AGENTE
                 let wrapperAlign = "items-end";
                 let rowJustify = "justify-end";
                 let bubbleClasses =
@@ -280,15 +333,25 @@ export default function AtendimentoDetalhePage() {
                   metaAlign = "text-center";
                 }
 
+                if (ia) {
+                  wrapperAlign = "items-center";
+                  rowJustify = "justify-center";
+                  bubbleClasses =
+                    "bg-violet-50 text-violet-900 rounded-2xl border border-violet-100";
+                  metaAlign = "text-center";
+                }
+
                 return (
                   <div
                     key={msg.id}
                     className={`flex flex-col ${wrapperAlign} w-full`}
                   >
-                    {/* Rótulo de quem falou */}
+                    {/* Rótulo de quem falou (esconde pro SISTEMA) */}
                     {!sistema && (
                       <div
-                        className={`flex ${rowJustify} w-full px-1 mb-0.5 text-[10px] text-slate-500`}
+                        className={`flex ${
+                          ia ? "justify-center" : rowJustify
+                        } w-full px-1 mb-0.5 text-[10px] text-slate-500`}
                       >
                         <span className="max-w-[80%] truncate">
                           {getRotuloAutor(msg)}
@@ -301,6 +364,14 @@ export default function AtendimentoDetalhePage() {
                       <div
                         className={`max-w-[80%] px-3 py-2 shadow-sm ${bubbleClasses}`}
                       >
+                        {/* Etiqueta IA */}
+                        {ia && (
+                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 flex items-center justify-center gap-1">
+                            <span>🤖</span>
+                            <span>Atende Cidadão (IA)</span>
+                          </div>
+                        )}
+
                         {/* Conteúdo principal */}
                         {sistema && (
                           <span className="whitespace-pre-wrap">
@@ -315,10 +386,7 @@ export default function AtendimentoDetalhePage() {
                         )}
 
                         {!sistema && msg.tipo === "AUDIO" && mediaUrl && (
-                          <audio
-                            controls
-                            className="mt-1 max-w-full"
-                          >
+                          <audio controls className="mt-1 max-w-full">
                             <source src={mediaUrl} />
                             Seu navegador não suporta áudio.
                           </audio>

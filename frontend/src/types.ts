@@ -1,5 +1,14 @@
 // frontend/src/types.ts
 
+// ======= DEPARTAMENTOS =======
+
+export type DepartamentoAgente = {
+  id?: number;
+  nome: string;
+  numero: string; // número do WhatsApp
+  principal?: boolean;
+};
+
 export type Departamento = {
   id: number;
   nome: string;
@@ -7,7 +16,12 @@ export type Departamento = {
   responsavel_numero: string | null;
   criado_em: string;
   atualizado_em: string;
+
+  // novos: agentes adicionais do setor (opcional)
+  agentes?: DepartamentoAgente[];
 };
+
+// ======= USUÁRIOS =======
 
 export type UsuarioPerfil = "ADMIN" | "GESTOR" | "ATENDENTE";
 
@@ -22,6 +36,8 @@ export type Usuario = {
   atualizado_em?: string;
 };
 
+// ======= HORÁRIOS DE ATENDIMENTO =======
+
 export type HorarioAtendimento = {
   id: number;
   departamento_id: number | null;
@@ -30,6 +46,8 @@ export type HorarioAtendimento = {
   fim: string; // "HH:mm"
   ativo: boolean;
 };
+
+// ======= ATENDIMENTOS =======
 
 export type AtendimentoStatus =
   | "ASK_NAME"
@@ -59,13 +77,25 @@ export type AtendimentoResumo = {
   tempo_primeira_resposta_segundos?: number | null;
 };
 
+// ======= MENSAGENS DO ATENDIMENTO =======
+
 export type MensagemAtendimento = {
   id: string;
+
+  // tipo da mensagem
   tipo: "TEXT" | "AUDIO" | "IMAGE" | "VIDEO" | "DOCUMENT" | string;
+
+  // texto principal (se tiver)
   texto: string | null;
 
-  autor: string | null; // CIDADÃO / SISTEMA / nome do agente
-  direction?: string | null;
+  // ex.: "CIDADÃO", "SISTEMA", nome do agente etc.
+  autor: string | null;
+
+  // direção padronizada vinda do backend:
+  // "CITIZEN" | "AGENT" | "IA"
+  // (mantive string | null pra não quebrar nada antigo)
+  direction?: "CITIZEN" | "AGENT" | "IA" | string | null;
+
   media_id: string | null;
   media_mime: string | null;
   criado_em: string;
