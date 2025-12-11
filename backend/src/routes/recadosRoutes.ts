@@ -9,6 +9,17 @@ import { sendTextMessage } from "../services/whatsappService";
 const router = Router();
 
 /**
+ * Helper para pegar idcliente do usuário autenticado (se existir)
+ */
+function getRequestClienteId(req: Request): number | undefined {
+  const user = (req as any).user;
+  if (user && typeof user.idcliente === "number") {
+    return user.idcliente;
+  }
+  return undefined;
+}
+
+/**
  * GET /recados
  *
  * Lista recados em formato resumido para o painel.
@@ -33,10 +44,7 @@ router.get("/", async (req: Request, res: Response) => {
     const page = req.query.page ? Number(req.query.page) : 1;
     const perPage = req.query.perPage ? Number(req.query.perPage) : 20;
 
-    let statuses: AtendimentoStatus[] = [
-      "LEAVE_MESSAGE",
-      "LEAVE_MESSAGE_DECISION",
-    ];
+    let statuses: AtendimentoStatus[] = ["LEAVE_MESSAGE", "LEAVE_MESSAGE_DECISION"];
 
     if (statusParam === "encerrados") {
       statuses = ["FINISHED"];
@@ -44,19 +52,16 @@ router.get("/", async (req: Request, res: Response) => {
       statuses = ["LEAVE_MESSAGE", "LEAVE_MESSAGE_DECISION", "FINISHED"];
     }
 
-    const where: any = {
-      status: In(statuses),
-    };
-
-    if (departamentoId) {
-      where.departamentoId = departamentoId;
-    }
-
-    // filtro simples por nome / telefone / protocolo
     const qb = repoAtendimento
       .createQueryBuilder("a")
       .leftJoinAndSelect("a.departamento", "d")
       .where("a.status IN (:...statuses)", { statuses });
+
+    // Multi-tenant: se tiver idcliente no token, filtra
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
 
     if (departamentoId) {
       qb.andWhere("a.departamento_id = :departamentoId", { departamentoId });
@@ -70,10 +75,7 @@ router.get("/", async (req: Request, res: Response) => {
       );
     }
 
-    // 🔧 AQUI era o problema: usar o nome da PROPRIEDADE da entidade (criadoEm),
-    // não o nome da coluna em snake_case (criado_em)
-    qb
-      .orderBy("a.criadoEm", "DESC")
+    qb.orderBy("a.criadoEm", "DESC")
       .skip((page - 1) * perPage)
       .take(perPage);
 
@@ -116,10 +118,17 @@ router.get("/:id", async (req: Request, res: Response) => {
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
 
-    const atendimento = await repoAtendimento.findOne({
-      where: { id },
-      relations: ["departamento"],
-    });
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .leftJoinAndSelect("a.departamento", "d")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado." });
@@ -191,7 +200,17 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
 
-    const atendimento = await repoAtendimento.findOne({ where: { id } });
+    // Busca o atendimento, garantindo (se possível) o mesmo idcliente do usuário logado
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado." });
@@ -208,8 +227,9 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
     // envia mensagem via WhatsApp
     await sendTextMessage(numeroCidadao, mensagem);
 
-    // registra mensagem no histórico
+    // registra mensagem no histórico (AGORA COM idcliente)
     const msgEntity = repoMensagem.create({
+      idcliente: atendimento.idcliente, // 👈 IMPORTANTE: multi-tenant
       atendimentoId: atendimento.id,
       direcao: "AGENT" as any,
       tipo: "TEXT" as any,
@@ -265,10 +285,16 @@ router.patch("/:id/transferir", async (req: Request, res: Response) => {
 
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
 
-    const atendimento = await repoAtendimento.findOne({
-      where: { id },
-      relations: ["departamento"],
-    });
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado." });
