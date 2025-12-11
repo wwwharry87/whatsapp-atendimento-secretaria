@@ -1,222 +1,318 @@
 // src/routes/usuarios.ts
 import { Router, Request, Response } from "express";
-import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { AppDataSource } from "../database/data-source";
-import { Usuario } from "../entities/Usuario";
+import { Usuario, PerfilUsuario } from "../entities/Usuario";
+import { Cliente } from "../entities/Cliente";
+import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
 
 const router = Router();
 
-/**
- * Hash simples de senha com SHA-256
- */
-function hashPassword(raw: string): string {
-  return crypto.createHash("sha256").update(raw).digest("hex");
+// ====== Helpers de cliente (mesmo padrão do sessionService) ======
+let defaultClienteIdCache: number | null = null;
+
+async function getDefaultClienteId(): Promise<number> {
+  if (defaultClienteIdCache !== null) return defaultClienteIdCache;
+
+  const repo = AppDataSource.getRepository(Cliente);
+  let cliente: Cliente | null = null;
+
+  try {
+    cliente = await repo.findOne({
+      where: { ativo: true as any },
+      order: { id: "ASC" as any },
+    });
+  } catch (err) {
+    console.log(
+      "[USUARIOS] Erro ao buscar cliente ativo (talvez coluna não exista ainda).",
+      err
+    );
+  }
+
+  if (!cliente) {
+    cliente = await repo.findOne({
+      order: { id: "ASC" as any },
+    });
+  }
+
+  if (!cliente) {
+    throw new Error(
+      "Nenhum cliente encontrado na tabela 'clientes'. Cadastre pelo menos um registro."
+    );
+  }
+
+  defaultClienteIdCache = cliente.id;
+  return defaultClienteIdCache;
 }
 
-/**
- * Helper pra pegar idcliente:
- * - tenta pegar do header X-Id-Cliente
- * - se não tiver, usa DEFAULT_CLIENTE_ID ou 1
- */
-function getIdClienteFromRequest(req: Request): number {
-  const headerVal = (req.headers["x-id-cliente"] || "").toString();
-  if (headerVal && !Number.isNaN(Number(headerVal))) {
-    return Number(headerVal);
-  }
-  const envVal = process.env.DEFAULT_CLIENTE_ID;
-  if (envVal && !Number.isNaN(Number(envVal))) {
-    return Number(envVal);
-  }
-  return 1; // fallback
+// ====== Helpers gerais ======
+
+function normalizarTelefone(telefone?: string | null): string | null {
+  if (!telefone) return null;
+  const limpo = telefone.replace(/\D/g, "");
+  return limpo || null;
 }
 
-/**
- * GET /usuarios
- * Lista usuários do cliente.
- */
+function validarEmail(email?: string | null): boolean {
+  if (!email) return true; // se não informar, não vamos travar aqui (pode ser opcional)
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return re.test(email.trim());
+}
+
+type UsuarioCreateBody = {
+  nome: string;
+  telefone?: string;
+  email?: string;
+  senha?: string; // opcional na tela
+  perfil?: PerfilUsuario;
+  ativo?: boolean;
+  departamentosIds?: number[]; // opcional – vínculo com setores
+};
+
+type UsuarioUpdateBody = {
+  nome?: string;
+  telefone?: string;
+  email?: string;
+  senha?: string; // se enviado, troca a senha
+  perfil?: PerfilUsuario;
+  ativo?: boolean;
+  departamentosIds?: number[];
+};
+
+// ====== LISTAR USUÁRIOS ======
+
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const idcliente = getIdClienteFromRequest(req);
-
+    const idcliente = await getDefaultClienteId();
     const repo = AppDataSource.getRepository(Usuario);
+
     const usuarios = await repo.find({
-      where: { idcliente },
-      order: { nome: "ASC" },
+      where: { idcliente: idcliente as any },
+      order: { criadoEm: "ASC" as any },
+      relations: ["cliente"],
     });
 
     return res.json(
       usuarios.map((u) => ({
         id: u.id,
         nome: u.nome,
-        email: u.email,
         telefone: u.telefone,
-        perfil: (u as any).perfil ?? "ATENDENTE",
-        // alias pra não quebrar nada legado que ainda use "tipo"
-        tipo: (u as any).perfil ?? "ATENDENTE",
+        email: u.email,
+        perfil: u.perfil,
         ativo: u.ativo,
-        idcliente: (u as any).idcliente ?? idcliente,
+        idcliente: u.idcliente,
+        criadoEm: u.criadoEm,
+        atualizadoEm: u.atualizadoEm,
       }))
     );
   } catch (err) {
     console.error("[USUARIOS] Erro ao listar:", err);
-    return res
-      .status(500)
-      .json({ error: "Erro ao listar usuários. Verifique o servidor." });
+    return res.status(500).json({ message: "Erro ao listar usuários." });
   }
 });
 
-/**
- * POST /usuarios
- * Cria um novo usuário para o cliente.
- */
+// ====== CRIAR USUÁRIO ======
+
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const idcliente = getIdClienteFromRequest(req);
+    const {
+      nome,
+      telefone,
+      email,
+      senha,
+      perfil,
+      ativo,
+      departamentosIds,
+    } = req.body as UsuarioCreateBody;
 
-    const { nome, email, telefone, perfil, senha } = req.body as {
-      nome: string;
-      email: string;
-      telefone?: string;
-      perfil?: string;
-      senha?: string;
-    };
-
-    if (!nome || !email) {
+    if (!nome || nome.trim().length < 3) {
       return res
         .status(400)
-        .json({ error: "Nome e e-mail são obrigatórios." });
+        .json({ message: "Nome do usuário deve ter pelo menos 3 caracteres." });
     }
 
+    if (email && !validarEmail(email)) {
+      return res.status(400).json({ message: "E-mail inválido." });
+    }
+
+    const idcliente = await getDefaultClienteId();
     const repo = AppDataSource.getRepository(Usuario);
+    const udRepo = AppDataSource.getRepository(UsuarioDepartamento);
 
-    const emailLower = email.toLowerCase();
+    // Se não informar senha pela tela, usaremos uma padrão por enquanto
+    // (você pode depois trocar isso por senha aleatória, etc.)
+    const senhaEmTexto =
+      (senha && senha.trim()) || "123456"; // <<< senha padrão TEMPORÁRIA
+    const senhaHash = await bcrypt.hash(senhaEmTexto, 10);
 
-    const existente = await repo.findOne({
-      where: { email: emailLower, idcliente },
+    const usuario = repo.create({
+      nome: nome.trim().toUpperCase(),
+      telefone: normalizarTelefone(telefone),
+      email: email ? email.trim().toLowerCase() : null,
+      senhaHash,
+      perfil: (perfil ?? "ATENDENTE") as PerfilUsuario,
+      ativo: ativo !== false, // default true
+      idcliente,
     });
 
-    if (existente) {
-      return res
-        .status(400)
-        .json({ error: "Já existe um usuário com este e-mail." });
+    await repo.save(usuario);
+
+    // Vincular aos departamentos, se foi enviado
+    if (Array.isArray(departamentosIds) && departamentosIds.length > 0) {
+      const vinculos: UsuarioDepartamento[] = departamentosIds.map((depId) =>
+        udRepo.create({
+          usuarioId: usuario.id,
+          departamentoId: depId,
+          idcliente,
+          principal: false,
+        })
+      );
+
+      await udRepo.save(vinculos);
     }
 
-    // 🔒 força via unknown pra evitar o erro TS2352
-    const usuario = repo.create({
-      idcliente,
-      nome,
-      email: emailLower,
-      telefone: telefone || null,
-      perfil: (perfil as any) || "ATENDENTE",
-      senhaHash: senha ? hashPassword(senha) : null,
-      ativo: true,
-    } as any) as unknown as Usuario;
-
-    await repo.save(usuario);
+    console.log(
+      "[USUARIOS] Usuário criado com sucesso:",
+      usuario.id,
+      "idcliente=",
+      idcliente
+    );
 
     return res.status(201).json({
       id: usuario.id,
       nome: usuario.nome,
-      email: usuario.email,
       telefone: usuario.telefone,
-      perfil: (usuario as any).perfil ?? "ATENDENTE",
-      tipo: (usuario as any).perfil ?? "ATENDENTE",
+      email: usuario.email,
+      perfil: usuario.perfil,
       ativo: usuario.ativo,
-      idcliente: (usuario as any).idcliente ?? idcliente,
+      idcliente: usuario.idcliente,
+      // se quiser, pode retornar a senha temporária pra exibir na tela:
+      senhaTemporaria: senha ? undefined : senhaEmTexto,
     });
   } catch (err) {
     console.error("[USUARIOS] Erro ao criar:", err);
-    return res.status(500).json({ error: "Erro ao criar usuário." });
+    return res.status(500).json({ message: "Erro ao criar usuário." });
   }
 });
 
-/**
- * PUT /usuarios/:id
- * Atualiza dados básicos (nome, email, telefone, perfil, senha, ativo).
- */
+// ====== ATUALIZAR USUÁRIO ======
+
 router.put("/:id", async (req: Request, res: Response) => {
   try {
-    const idcliente = getIdClienteFromRequest(req);
     const { id } = req.params;
-
-    const { nome, email, telefone, perfil, senha, ativo } = req.body as {
-      nome?: string;
-      email?: string;
-      telefone?: string;
-      perfil?: string;
-      senha?: string;
-      ativo?: boolean;
-    };
+    const {
+      nome,
+      telefone,
+      email,
+      senha,
+      perfil,
+      ativo,
+      departamentosIds,
+    } = req.body as UsuarioUpdateBody;
 
     const repo = AppDataSource.getRepository(Usuario);
+    const udRepo = AppDataSource.getRepository(UsuarioDepartamento);
 
-    const encontrado = (await repo.findOne({
-      where: { id, idcliente },
-    })) as Usuario | null;
+    const usuario = await repo.findOne({ where: { id } });
 
-    if (!encontrado) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
+    if (!usuario) {
+      return res.status(404).json({ message: "Usuário não encontrado." });
     }
 
-    const usuario: Usuario = encontrado;
+    if (nome && nome.trim().length < 3) {
+      return res
+        .status(400)
+        .json({ message: "Nome do usuário deve ter pelo menos 3 caracteres." });
+    }
 
-    if (nome) usuario.nome = nome;
-    if (email) usuario.email = email.toLowerCase();
-    if (telefone !== undefined) usuario.telefone = telefone || null;
+    if (email && !validarEmail(email)) {
+      return res.status(400).json({ message: "E-mail inválido." });
+    }
+
+    if (nome) usuario.nome = nome.trim().toUpperCase();
+    if (telefone !== undefined) {
+      usuario.telefone = normalizarTelefone(telefone) ?? "";
+    }
+    if (email !== undefined) {
+      usuario.email = email ? email.trim().toLowerCase() : null;
+    }
     if (perfil) {
-      (usuario as any).perfil = perfil;
+      usuario.perfil = perfil;
     }
     if (typeof ativo === "boolean") {
       usuario.ativo = ativo;
     }
-    if (senha) {
-      usuario.senhaHash = hashPassword(senha);
+
+    if (senha && senha.trim()) {
+      const novaHash = await bcrypt.hash(senha.trim(), 10);
+      usuario.senhaHash = novaHash;
     }
 
     await repo.save(usuario);
+
+    // Atualizar vínculos com departamentos, se veio no corpo
+    if (Array.isArray(departamentosIds)) {
+      const idcliente = usuario.idcliente;
+
+      // apaga vínculos antigos deste usuário
+      await udRepo.delete({ usuarioId: usuario.id, idcliente: idcliente as any });
+
+      if (departamentosIds.length > 0) {
+        const novosVinculos: UsuarioDepartamento[] = departamentosIds.map(
+          (depId) =>
+            udRepo.create({
+              usuarioId: usuario.id,
+              departamentoId: depId,
+              idcliente,
+              principal: false,
+            })
+        );
+        await udRepo.save(novosVinculos);
+      }
+    }
+
+    console.log("[USUARIOS] Usuário atualizado:", usuario.id);
 
     return res.json({
       id: usuario.id,
       nome: usuario.nome,
-      email: usuario.email,
       telefone: usuario.telefone,
-      perfil: (usuario as any).perfil ?? "ATENDENTE",
-      tipo: (usuario as any).perfil ?? "ATENDENTE",
+      email: usuario.email,
+      perfil: usuario.perfil,
       ativo: usuario.ativo,
-      idcliente: (usuario as any).idcliente ?? idcliente,
+      idcliente: usuario.idcliente,
     });
   } catch (err) {
     console.error("[USUARIOS] Erro ao atualizar:", err);
-    return res.status(500).json({ error: "Erro ao atualizar usuário." });
+    return res.status(500).json({ message: "Erro ao atualizar usuário." });
   }
 });
 
-/**
- * DELETE /usuarios/:id
- * Em vez de apagar, marca como inativo.
- */
-router.delete("/:id", async (req: Request, res: Response) => {
+// ====== DESATIVAR / REATIVAR RÁPIDO (opcional) ======
+
+router.patch("/:id/status", async (req: Request, res: Response) => {
   try {
-    const idcliente = getIdClienteFromRequest(req);
     const { id } = req.params;
+    const { ativo } = req.body as { ativo: boolean };
 
     const repo = AppDataSource.getRepository(Usuario);
-    const encontrado = (await repo.findOne({
-      where: { id, idcliente },
-    })) as Usuario | null;
 
-    if (!encontrado) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
+    const usuario = await repo.findOne({ where: { id } });
+
+    if (!usuario) {
+      return res.status(404).json({ message: "Usuário não encontrado." });
     }
 
-    const usuario: Usuario = encontrado;
-    usuario.ativo = false;
+    usuario.ativo = ativo;
     await repo.save(usuario);
 
-    return res.status(204).send();
+    return res.json({
+      id: usuario.id,
+      ativo: usuario.ativo,
+    });
   } catch (err) {
-    console.error("[USUARIOS] Erro ao inativar:", err);
-    return res.status(500).json({ error: "Erro ao inativar usuário." });
+    console.error("[USUARIOS] Erro ao alterar status:", err);
+    return res.status(500).json({ message: "Erro ao alterar status." });
   }
 });
 
