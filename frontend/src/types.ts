@@ -104,3 +104,51 @@ export type MensagemAtendimento = {
   comando_codigo?: string | null;
   comando_descricao?: string | null;
 };
+
+// ======= RECADOS (MODO LEAVE_MESSAGE) =======
+
+// Reaproveita o mesmo status dos atendimentos
+export type RecadoStatus = AtendimentoStatus;
+
+// Item que vem da rota GET /recados
+export type RecadoListItem = {
+  id: string;
+  protocolo: string | null;
+  cidadaoNome: string | null;
+  cidadaoNumero: string;
+  departamentoId: number | null;
+  departamentoNome: string | null;
+  status: RecadoStatus;
+  criadoEm: string;
+  atualizadoEm: string | null;
+  encerradoEm: string | null;
+};
+
+// Mensagem no contexto do recado (rota GET /recados/:id)
+export type RecadoMensagem = {
+  id: string;
+  direcao: "CITIZEN" | "AGENT" | "IA" | string;
+  tipo: string;
+  conteudoTexto: string | null;
+  criadoEm: string;
+  remetenteNumero: string | null;
+};
+
+// Detalhe de um recado específico
+export type RecadoDetalhe = {
+  id: string;
+  protocolo: string | null;
+  cidadaoNome: string | null;
+  cidadaoNumero: string;
+  departamentoId: number | null;
+  departamentoNome: string | null;
+  status: RecadoStatus;
+  criadoEm: string;
+  atualizadoEm: string | null;
+  encerradoEm: string | null;
+  agenteNome: string | null;
+  agenteNumero: string | null;
+  foiResolvido: boolean | null;
+  notaSatisfacao: number | null;
+  mensagens: RecadoMensagem[];
+};

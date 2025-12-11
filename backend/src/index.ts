@@ -14,6 +14,7 @@ import painelRoutes from "./routes/painel";
 import departamentosRoutes from "./routes/departamentos";
 import usuariosRoutes from "./routes/usuarios";
 import horariosRoutes from "./routes/horarios";
+import recadosRoutes from "./routes/recadosRoutes";
 
 import { authMiddleware } from "./middlewares/authMiddleware";
 
@@ -57,6 +58,8 @@ app.use("/", authMiddleware, painelRoutes);
 app.use("/departamentos", authMiddleware, departamentosRoutes);
 app.use("/usuarios", authMiddleware, usuariosRoutes);
 app.use("/horarios", authMiddleware, horariosRoutes);
+app.use("/recados",authMiddleware,recadosRoutes)
+
 
 // ===============================
 // ROTAS AVANÇADAS DE ATENDIMENTOS (API técnica)

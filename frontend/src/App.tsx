@@ -5,10 +5,13 @@ import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import AtendimentosPage from "./pages/AtendimentosPage";
 import AtendimentoDetalhePage from "./pages/AtendimentoDetalhePage";
+import RecadosPage from "./pages/RecadosPage";
+import RecadoDetalhePage from "./pages/RecadoDetalhePage";
 import DepartamentosPage from "./pages/DepartamentosPage";
 import HorariosPage from "./pages/HorariosPage";
 import UsuariosPage from "./pages/UsuariosPage";
 import VersionUpdateWatcher from "./components/VersionUpdateWatcher";
+import { ImOpt } from "react-icons/im";
 
 export default function App() {
   return (
@@ -21,6 +24,8 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="atendimentos" element={<AtendimentosPage />} />
           <Route path="atendimentos/:id" element={<AtendimentoDetalhePage />} />
+          <Route path="/recados" element={<RecadosPage />} />
+          <Route path="/recados/:id" element={<RecadoDetalhePage />} />
           <Route path="departamentos" element={<DepartamentosPage />} />
           <Route path="horarios" element={<HorariosPage />} />
           <Route path="usuarios" element={<UsuariosPage />} />
