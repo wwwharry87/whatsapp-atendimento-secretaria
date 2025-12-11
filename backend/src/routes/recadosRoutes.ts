@@ -33,7 +33,10 @@ router.get("/", async (req: Request, res: Response) => {
     const page = req.query.page ? Number(req.query.page) : 1;
     const perPage = req.query.perPage ? Number(req.query.perPage) : 20;
 
-    let statuses: AtendimentoStatus[] = ["LEAVE_MESSAGE", "LEAVE_MESSAGE_DECISION"];
+    let statuses: AtendimentoStatus[] = [
+      "LEAVE_MESSAGE",
+      "LEAVE_MESSAGE_DECISION",
+    ];
 
     if (statusParam === "encerrados") {
       statuses = ["FINISHED"];
@@ -67,7 +70,10 @@ router.get("/", async (req: Request, res: Response) => {
       );
     }
 
-    qb.orderBy("a.criado_em", "DESC")
+    // 🔧 AQUI era o problema: usar o nome da PROPRIEDADE da entidade (criadoEm),
+    // não o nome da coluna em snake_case (criado_em)
+    qb
+      .orderBy("a.criadoEm", "DESC")
       .skip((page - 1) * perPage)
       .take(perPage);
 
