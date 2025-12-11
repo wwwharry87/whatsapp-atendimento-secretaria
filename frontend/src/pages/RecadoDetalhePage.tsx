@@ -3,11 +3,10 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import {
-    RecadoListItem,
-    RecadoStatus,
-    RecadoDetalhe,
-    RecadoMensagem,
-  } from "../types";
+  RecadoStatus,
+  RecadoDetalhe,
+  RecadoMensagem,
+} from "../types";
 
 function formatarDataBr(valor?: string | null) {
   if (!valor) return "-";
@@ -45,6 +44,7 @@ export default function RecadoDetalhePage() {
   const [loading, setLoading] = useState(false);
   const [resposta, setResposta] = useState("");
   const [enviando, setEnviando] = useState(false);
+  const [concluindo, setConcluindo] = useState(false);
 
   async function carregar() {
     if (!id) return;
@@ -88,6 +88,30 @@ export default function RecadoDetalhePage() {
     }
   }
 
+  async function handleConcluir() {
+    if (!id) return;
+
+    const confirmar = window.confirm(
+      "Deseja realmente marcar este recado/atendimento como concluído? " +
+        "Após a conclusão, o cidadão ainda verá as mensagens, mas o recado será considerado encerrado no painel."
+    );
+    if (!confirmar) return;
+
+    try {
+      setConcluindo(true);
+      await api.patch(`/recados/${id}/concluir`, {
+        // se quiser, depois podemos enviar foiResolvido / notaSatisfacao daqui
+      });
+      await carregar();
+      alert("Recado/atendimento marcado como concluído.");
+    } catch (err) {
+      console.error("Erro ao concluir recado:", err);
+      alert("Erro ao concluir recado.");
+    } finally {
+      setConcluindo(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
@@ -103,19 +127,34 @@ export default function RecadoDetalhePage() {
             Detalhe do Recado
           </h1>
         </div>
-        {recado?.status && (
-          <span
-            className={`text-xs px-2 py-1 rounded-full border ${
-              recado.status === "LEAVE_MESSAGE"
-                ? "border-amber-400 bg-amber-50 text-amber-700"
-                : recado.status === "FINISHED"
-                ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                : "border-slate-300 bg-slate-50 text-slate-700"
-            }`}
-          >
-            {statusLabel(recado.status)}
-          </span>
-        )}
+
+        <div className="flex items-center gap-3">
+          {recado?.status && (
+            <span
+              className={`text-xs px-2 py-1 rounded-full border ${
+                recado.status === "LEAVE_MESSAGE"
+                  ? "border-amber-400 bg-amber-50 text-amber-700"
+                  : recado.status === "FINISHED"
+                  ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                  : "border-slate-300 bg-slate-50 text-slate-700"
+              }`}
+            >
+              {statusLabel(recado.status)}
+            </span>
+          )}
+
+          {/* Botão concluir aparece apenas se NÃO estiver encerrado */}
+          {recado && recado.status !== "FINISHED" && (
+            <button
+              type="button"
+              onClick={handleConcluir}
+              disabled={concluindo}
+              className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {concluindo ? "Concluindo..." : "Concluir recado"}
+            </button>
+          )}
+        </div>
       </header>
 
       <main className="flex-1 px-6 py-4 max-w-5xl w-full mx-auto flex flex-col gap-4">
