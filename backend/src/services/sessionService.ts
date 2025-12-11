@@ -1116,8 +1116,17 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   // ---------- IA DeepSeek: pré-atendimento fora do horário ----------
 
   const foraHorario = isOutOfBusinessHours();
+
+  /**
+   * Fora do horário, só usamos IA se:
+   *  - Já soubermos o nome do cidadão (mesmo em ASK_NAME), OU
+   *  - Já estivermos em ASK_DEPARTMENT.
+   *
+   * No primeiro contato (sem nome ainda), seguimos o fluxo normal de pedir nome.
+   */
   const podeUsarIAForaHorario =
-    session.status === "ASK_NAME" || session.status === "ASK_DEPARTMENT";
+    (session.status === "ASK_NAME" && !!session.citizenName) ||
+    session.status === "ASK_DEPARTMENT";
 
   if (foraHorario && iaEstaHabilitada() && podeUsarIAForaHorario) {
     console.log(
@@ -1149,8 +1158,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "- Se apresentar de forma breve (1 frase).",
       "- Mencionar o cliente (prefeitura/órgão) quando fizer sentido.",
       "- Dar orientações gerais sobre o tipo de dúvida, sem prometer nada específico.",
-      "- No final, peça para ele responder com 1 ou 2, assim:",
-      '  \"Responda com:\\n1 - Deixar um recado detalhado\\n2 - Não, encerrar por enquanto\".',
+      "- No final, incentive o cidadão a decidir se quer deixar um recado detalhado ou encerrar por enquanto.",
       "Responda em até 3 parágrafos curtos.",
     ].join(" ");
 
@@ -1162,6 +1170,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
 
       if (ia.sucesso && ia.resposta) {
+        // IA responde o contexto e o sistema adiciona o menu padrão 1/2 uma única vez
         const textoIa =
           ia.resposta.trim() +
           "\n\nResponda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar";
@@ -1173,7 +1182,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
           atendimentoId: session.atendimentoId,
           direcao: "IA" as any,
           tipo: "TEXT" as MensagemTipo,
-          conteudoTexto: ia.resposta,
+          conteudoTexto: textoIa,
           whatsappMessageId: undefined,
           whatsappMediaId: undefined,
           mediaUrl: undefined,
