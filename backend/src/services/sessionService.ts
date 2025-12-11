@@ -49,6 +49,8 @@ export type Session = {
   protocolo?: string;
   /** id do cliente (tabela clientes.id) */
   idcliente?: number;
+  /** se já mandamos o ACK de recado no modo LEAVE_MESSAGE */
+  leaveMessageAckSent?: boolean;
 };
 
 const sessionsByCitizen = new Map<string, Session>();
@@ -158,9 +160,15 @@ function isGreeting(text: string): boolean {
   );
 }
 
-// ====================== TIPO DE ÓRGÃO / CLIENTE (prefeitura, escola, saúde etc.) ======================
+// ====================== TIPO DE ÓRGÃO / CLIENTE ======================
 
-type OrgTipo = "PREFEITURA" | "EDUCACAO" | "SAUDE" | "ASSISTENCIA" | "ESCOLA" | "OUTRO";
+type OrgTipo =
+  | "PREFEITURA"
+  | "EDUCACAO"
+  | "SAUDE"
+  | "ASSISTENCIA"
+  | "ESCOLA"
+  | "OUTRO";
 
 type OrgInfo = {
   tipo: OrgTipo;
@@ -168,11 +176,6 @@ type OrgInfo = {
   escopoFrase: string;
 };
 
-/**
- * Analisa o nome do cliente (tabela clientes.nome) e tenta entender
- * que tipo de órgão é: prefeitura, secretaria de educação, saúde, assistência,
- * escola/unidade ou genérico.
- */
 function buildOrgInfo(clienteNome?: string | null): OrgInfo {
   if (!clienteNome) {
     return {
@@ -185,7 +188,6 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
 
   const lower = clienteNome.toLowerCase();
 
-  // PREFEITURA
   if (
     lower.includes("prefeitura") ||
     lower.includes("município de") ||
@@ -200,7 +202,6 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
     };
   }
 
-  // EDUCAÇÃO / SEMED
   if (
     lower.includes("educação") ||
     lower.includes("educacao") ||
@@ -215,7 +216,6 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
     };
   }
 
-  // SAÚDE
   if (
     lower.includes("saúde") ||
     lower.includes("saude") ||
@@ -231,7 +231,6 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
     };
   }
 
-  // ASSISTÊNCIA SOCIAL
   if (
     lower.includes("assistência social") ||
     lower.includes("assistencia social") ||
@@ -248,7 +247,6 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
     };
   }
 
-  // ESCOLA / CRECHE / UNIDADE
   if (
     lower.includes("escola ") ||
     lower.includes("creche ") ||
@@ -264,7 +262,6 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
     };
   }
 
-  // GENÉRICO / OUTROS ÓRGÃOS
   return {
     tipo: "OUTRO",
     displayName: clienteNome,
@@ -284,10 +281,6 @@ function buildMeta(codigo: string, descricao: string): CommandMeta {
   return { comandoCodigo: codigo, comandoDescricao: descricao };
 }
 
-/**
- * Interpreta comandos enviados pelo CIDADÃO
- * e gera um texto amigável para aparecer no frontend.
- */
 function mapCitizenCommandMetadata(
   session: Session,
   trimmed: string,
@@ -377,10 +370,6 @@ function mapCitizenCommandMetadata(
   }
 }
 
-/**
- * Interpreta comandos enviados pelo AGENTE
- * e gera um texto amigável para aparecer no frontend.
- */
 function mapAgentCommandMetadata(
   session: Session,
   trimmed: string,
@@ -435,12 +424,6 @@ function mapAgentCommandMetadata(
 
 let defaultClienteIdCache: number | null = null;
 
-/**
- * Recupera o id do cliente padrão.
- *
- * 1) Primeiro tenta pegar um cliente com `ativo = true`
- * 2) Se der erro (coluna não existe) ou não tiver, pega o primeiro da tabela
- */
 async function getDefaultClienteId(): Promise<number> {
   if (defaultClienteIdCache !== null) {
     return defaultClienteIdCache;
@@ -478,10 +461,6 @@ async function getDefaultClienteId(): Promise<number> {
   return defaultClienteIdCache;
 }
 
-/**
- * Recupera o nome do cliente (prefeitura/órgão) a partir do id,
- * caindo no cliente padrão se não tiver id na sessão.
- */
 async function getClienteNome(idcliente?: number): Promise<string | null> {
   const repo = AppDataSource.getRepository(Cliente);
 
@@ -596,9 +575,6 @@ async function carregarAtendimentoAberto(
   return atendimento;
 }
 
-/**
- * Recupera sessão de AGENTE direto do banco caso o mapa em memória tenha se perdido.
- */
 async function recoverAgentSession(
   agentNumberRaw: string
 ): Promise<Session | undefined> {
@@ -652,6 +628,7 @@ async function recoverAgentSession(
     lastActiveAt: Date.now(),
     protocolo: atendimento.protocolo ?? undefined,
     idcliente: atendimento.idcliente,
+    leaveMessageAckSent: false,
   };
 
   const citizenKey = normalizePhone(session.citizenNumber);
@@ -712,6 +689,7 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     lastActiveAt: Date.now(),
     protocolo: atendimento.protocolo ?? undefined,
     idcliente: atendimento.idcliente,
+    leaveMessageAckSent: false,
   };
 
   console.log(
@@ -955,6 +933,7 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     lastActiveAt: Date.now(),
     protocolo: proximo.protocolo ?? undefined,
     idcliente: proximo.idcliente,
+    leaveMessageAckSent: false,
   };
 
   sessionsByCitizen.set(citizenNumber, novaSession);
@@ -1229,13 +1208,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   });
 
   // ---------- IA: pré-atendimento fora do horário ----------
-  //
-  // Regra:
-  //   - IA habilitada
-  //   - Fora do horário de atendimento
-  //   - Fluxo em ASK_NAME (já com nome) ou ASK_DEPARTMENT
-  //
-  // No primeiro contato (sem nome ainda), seguimos o fluxo normal de pedir nome.
 
   const foraHorario = isOutOfBusinessHours();
   const podeUsarIAForaHorario =
@@ -1276,8 +1248,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "Responda em até 3 parágrafos curtos.",
     ];
 
-    // Regras específicas para cada tipo de órgão
-
     if (orgInfo.tipo === "EDUCACAO") {
       contextoParts.push(
         "Muito importante: neste canal você atende exclusivamente assuntos de EDUCAÇÃO.",
@@ -1300,7 +1270,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     } else if (orgInfo.tipo === "ESCOLA") {
       contextoParts.push(
         "Neste canal você atende exclusivamente assuntos desta UNIDADE DE ENSINO (escola/creche).",
-        "Não use a palavra 'prefeitura'. Use sempre o nome da escola ou expressão como 'nossa escola' ou 'nossa unidade'.",
+        "Não use a palavra 'prefeitura'. Use sempre o nome da escola ou expressões como 'nossa escola' ou 'nossa unidade'.",
         "Se quiser dar exemplos, fale de matrícula, turmas, horários, reuniões, boletins, comunicação com responsáveis, etc."
       );
     } else if (orgInfo.tipo === "PREFEITURA") {
@@ -1330,7 +1300,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
         await sendTextMessage(session.citizenNumber, textoIa);
 
-        // Salva resposta da IA (texto exatamente enviado ao cidadão)
         await salvarMensagem({
           atendimentoId: session.atendimentoId,
           direcao: "IA" as any,
@@ -1362,7 +1331,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
     }
 
-    // Fallback se a IA falhar (sem saldo, erro de rede, etc.)
     const orgFrase = clienteNome
       ? `da equipe de *${clienteNome}*`
       : "da equipe";
@@ -1397,9 +1365,12 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     if (onlyDigits === "1") {
       session.status = "LEAVE_MESSAGE";
+      session.leaveMessageAckSent = false;
+
       await atualizarAtendimento(session, {
         status: "LEAVE_MESSAGE",
       });
+
       await sendTextMessage(
         session.citizenNumber,
         "Perfeito! 👍\nEscreva sua mensagem detalhada, envie fotos ou áudios.\nRegistraremos tudo."
@@ -1426,22 +1397,55 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- Fluxo: Modo recado (LEAVE_MESSAGE) com IA + nome do cliente ----------
+  // ---------- Fluxo: Modo recado (LEAVE_MESSAGE) ----------
 
   if (session.status === "LEAVE_MESSAGE") {
+    // Se o cidadão pedir para encerrar explicitamente, encerra de verdade
+    if (
+      trimmedLower.includes("encerrar") ||
+      trimmedLower.includes("finalizar") ||
+      trimmedLower.includes("pode encerrar") ||
+      trimmedLower.includes("pode finalizar") ||
+      trimmedLower === "sair"
+    ) {
+      const protocolo = await fecharAtendimentoComProtocolo(session);
+
+      await sendTextMessage(
+        session.citizenNumber,
+        `Tudo bem${
+          session.citizenName ? `, ${session.citizenName}` : ""
+        }. 👍\nSeu recado já está registrado.\nProtocolo: *${protocolo}*.\nSe precisar de algo depois, é só mandar mensagem.`
+      );
+
+      await ativarProximoDaFila(session);
+      sessionsByCitizen.delete(citizenKey);
+      return;
+    }
+
     const clienteNome = await getClienteNome(session.idcliente);
     const orgInfo = buildOrgInfo(clienteNome);
 
-    const orgFrase = clienteNome
-      ? `nossa equipe da *${clienteNome}*`
-      : "nossa equipe";
+    // ACK mais humano: primeira mensagem é mais completa, as demais são curtinhas
+    let ackBase: string;
+    if (!session.leaveMessageAckSent) {
+      const orgFrase = clienteNome
+        ? `nossa equipe da *${clienteNome}*`
+        : "nossa equipe responsável";
 
-    const ackBase =
-      `Recebido ✅. Sua mensagem ficará registrada e ${orgFrase} vai analisar no próximo atendimento.`;
+      ackBase =
+        `Recebido ✅${
+          session.citizenName ? `, ${session.citizenName}` : ""
+        }.\n` +
+        `Seu recado foi registrado e ${orgFrase} vai analisar no próximo atendimento.`;
+      session.leaveMessageAckSent = true;
+    } else {
+      ackBase = session.citizenName
+        ? `Entendi, ${session.citizenName}.`
+        : "Entendi. 👍";
+    }
 
     let textoFinal = ackBase;
 
-    // Se tiver texto e a IA estiver habilitada, deixa ela ajudar
     if (iaEstaHabilitada() && trimmed) {
       console.log(
         "[IA] Respondendo mensagem em modo LEAVE_MESSAGE (recado offline)..."
@@ -1461,6 +1465,14 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         "Objetivo da IA: acolher o cidadão, dar orientação inicial e, se possível, sugerir caminhos gerais.",
         "Importante: responda em no máximo 3 parágrafos curtos, sem despedidas longas e sem prometer algo que depende do órgão (como emprego, benefício, vaga etc.).",
       ];
+
+      if (session.leaveMessageAckSent) {
+        contextoParts.push(
+          "Atenção: o cidadão já foi informado em outra mensagem que o recado está registrado e será analisado no próximo expediente.",
+          "Portanto, EVITE repetir frases como 'sua mensagem ficará registrada' ou 'nossa equipe vai analisar no próximo atendimento' em todas as respostas.",
+          "Responda de forma mais direta e humana ao conteúdo da mensagem, como se fosse uma orientação rápida."
+        );
+      }
 
       if (orgInfo.tipo === "EDUCACAO") {
         contextoParts.push(
@@ -1507,10 +1519,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
 
       if (ia.sucesso && ia.resposta) {
-        // texto final = ACK + resposta da IA
         textoFinal = `${ackBase}\n\n${ia.resposta}`;
 
-        // Salvar mensagem da IA no banco
         await salvarMensagem({
           atendimentoId: session.atendimentoId,
           direcao: "IA" as any,
@@ -1535,7 +1545,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       }
     }
 
-    // Envia UMA mensagem só pro cidadão
     await sendTextMessage(session.citizenNumber, textoFinal);
 
     scheduleLeaveMessageAutoClose(session);
@@ -1583,7 +1592,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- Fluxo: Pesquisa de satisfação - resolvido? ----------
+  // ---------- Pesquisa de satisfação - resolvido? ----------
 
   if (session.status === "ASK_SATISFACTION_RESOLUTION") {
     if (onlyDigits === "1" || onlyDigits === "2") {
@@ -1615,7 +1624,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- Fluxo: Pesquisa de satisfação - nota ----------
+  // ---------- Pesquisa de satisfação - nota ----------
 
   if (session.status === "ASK_SATISFACTION_RATING") {
     const nota = parseInt(onlyDigits, 10);
@@ -1644,7 +1653,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- Fluxo: Cidadão decidir falar com outro setor após encerramento ----------
+  // ---------- Outro departamento após encerramento ----------
 
   if (session.status === "ASK_ANOTHER_DEPARTMENT") {
     if (onlyDigits === "1") {
@@ -1663,6 +1672,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.busyReminderCount = 0;
       session.protocolo = undefined;
       session.idcliente = novoAtendimento.idcliente;
+      session.leaveMessageAckSent = false;
 
       const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
@@ -1694,7 +1704,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- Fluxo: Nome do cidadão (ASK_NAME) ----------
+  // ---------- Nome do cidadão ----------
 
   if (session.status === "ASK_NAME") {
     console.log(
@@ -1736,7 +1746,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     }
   }
 
-  // ---------- Fluxo: Escolha de departamento ----------
+  // ---------- Escolha de departamento ----------
 
   if (session.status === "ASK_DEPARTMENT") {
     console.log(
@@ -1912,7 +1922,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- Fluxo: Atendimento ativo (CIDADÃO → AGENTE) ----------
+  // ---------- Atendimento ativo (CIDADÃO → AGENTE) ----------
 
   if (session.status === "ACTIVE") {
     if (
@@ -2160,6 +2170,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       session.agentName = novoDep.responsavelNome || "Responsável";
       session.status = "WAITING_AGENT_CONFIRMATION";
       session.busyReminderCount = 0;
+      session.leaveMessageAckSent = false;
 
       await atualizarAtendimento(session, {
         departamentoId: novoDep.id,
