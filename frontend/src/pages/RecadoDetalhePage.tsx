@@ -1,11 +1,11 @@
 // src/pages/RecadoDetalhePage.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, ChangeEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import {
+  RecadoStatus,
   RecadoDetalhe,
   RecadoMensagem,
-  RecadoStatus,
 } from "../types";
 
 function formatarDataBr(valor?: string | null) {
@@ -46,12 +46,13 @@ export default function RecadoDetalhePage() {
   const [resposta, setResposta] = useState("");
   const [enviando, setEnviando] = useState(false);
 
-  const [arquivo, setArquivo] = useState<File | null>(null);
-  const [enviandoAnexo, setEnviandoAnexo] = useState(false);
+  const [fileToUpload, setFileToUpload] = useState<File | null>(null);
+  const [filePreviewName, setFilePreviewName] = useState<string | null>(null);
 
   const [concluindo, setConcluindo] = useState(false);
 
-  const isEncerrado = recado?.status === "FINISHED";
+  const podeResponder =
+    !!recado && recado.status !== "FINISHED";
 
   async function carregar() {
     if (!id) return;
@@ -72,19 +73,76 @@ export default function RecadoDetalhePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] || null;
+    setFileToUpload(file);
+    setFilePreviewName(file ? file.name : null);
+  }
+
   async function handleResponder(e: React.FormEvent) {
     e.preventDefault();
-    if (!id || !resposta.trim() || isEncerrado) return;
+    if (!id) return;
+
+    const texto = resposta.trim();
+    if (!texto && !fileToUpload) {
+      // nada pra enviar
+      return;
+    }
 
     try {
       setEnviando(true);
+
+      let mediaPayload:
+        | {
+            mediaId?: string;
+            mimeType?: string;
+            fileName?: string;
+            fileSize?: number;
+            mediaUrl?: string;
+            tipoMidia?: "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO";
+            tipo?: string;
+          }
+        | null = null;
+
+      // 1) Se tiver arquivo, faz upload AGORA
+      if (fileToUpload) {
+        const formData = new FormData();
+        formData.append("file", fileToUpload);
+
+        const uploadResp = await api.post("/media/upload", formData, {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        });
+
+        mediaPayload = uploadResp.data;
+      }
+
+      // 2) Envia recado (texto + anexo junto)
       await api.post(`/recados/${id}/responder`, {
-        mensagem: resposta,
+        mensagem: texto || undefined,
         agenteNome: recado?.agenteNome || undefined,
         agenteNumero: recado?.agenteNumero || undefined,
+        tipoMidia:
+          mediaPayload?.tipoMidia ||
+          (mediaPayload?.tipo as
+            | "TEXT"
+            | "IMAGE"
+            | "DOCUMENT"
+            | "AUDIO"
+            | "VIDEO"
+            | undefined),
+        mediaId: mediaPayload?.mediaId,
+        mimeType: mediaPayload?.mimeType,
+        fileName: mediaPayload?.fileName,
+        fileSize: mediaPayload?.fileSize,
+        mediaUrl: mediaPayload?.mediaUrl,
       });
 
       setResposta("");
+      setFileToUpload(null);
+      setFilePreviewName(null);
+
       await carregar();
     } catch (err) {
       console.error("Erro ao responder recado:", err);
@@ -94,66 +152,13 @@ export default function RecadoDetalhePage() {
     }
   }
 
-  async function handleEnviarAnexo() {
-    if (!id || !arquivo || isEncerrado) return;
-
-    try {
-      setEnviandoAnexo(true);
-
-      // 1) Upload do arquivo para o backend (rota de mídia já existente)
-      const formData = new FormData();
-      formData.append("file", arquivo);
-
-      const uploadResp = await api.post("/media/upload", formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      const media = uploadResp.data;
-
-      const mimeType: string = media.mimeType || arquivo.type || "application/octet-stream";
-      let tipoMidia: "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO" = "DOCUMENT";
-
-      if (mimeType.startsWith("image/")) tipoMidia = "IMAGE";
-      else if (mimeType.startsWith("audio/")) tipoMidia = "AUDIO";
-      else if (mimeType.startsWith("video/")) tipoMidia = "VIDEO";
-      else tipoMidia = "DOCUMENT";
-
-      // 2) Registra e envia resposta de recado com mídia
-      await api.post(`/recados/${id}/responder`, {
-        mensagem: resposta?.trim() || undefined, // opcional: observação
-        tipoMidia,
-        mediaId: media.mediaId || media.id, // depende de como o /media/upload responde
-        mimeType,
-        fileName: media.fileName || arquivo.name,
-        fileSize: media.fileSize || arquivo.size,
-        mediaUrl: media.url, // se o backend retornar
-        agenteNome: recado?.agenteNome || undefined,
-        agenteNumero: recado?.agenteNumero || undefined,
-      });
-
-      setArquivo(null);
-      setResposta("");
-      await carregar();
-    } catch (err) {
-      console.error("Erro ao enviar anexo:", err);
-      alert("Erro ao enviar anexo.");
-    } finally {
-      setEnviandoAnexo(false);
-    }
-  }
-
   async function handleConcluir() {
-    if (!id || !recado) return;
-    const confirmar = window.confirm(
-      "Deseja marcar este recado como CONCLUÍDO? Após isso não será possível enviar novas respostas."
-    );
-    if (!confirmar) return;
+    if (!id) return;
+    if (!window.confirm("Marcar este recado como concluído?")) return;
 
     try {
       setConcluindo(true);
-      await api.patch(`/recados/${id}/concluir`);
+      await api.patch(`/recados/${id}/concluir`, {});
       await carregar();
     } catch (err) {
       console.error("Erro ao concluir recado:", err);
@@ -165,7 +170,7 @@ export default function RecadoDetalhePage() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between gap-4">
+      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -194,7 +199,7 @@ export default function RecadoDetalhePage() {
             </span>
           )}
 
-          {recado && !isEncerrado && (
+          {recado && recado.status !== "FINISHED" && (
             <button
               type="button"
               onClick={handleConcluir}
@@ -283,13 +288,6 @@ export default function RecadoDetalhePage() {
                   )}
                 </div>
               )}
-
-              {isEncerrado && (
-                <div className="mt-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-                  Este recado foi marcado como <strong>concluído</strong>. Não
-                  é possível enviar novas respostas.
-                </div>
-              )}
             </section>
 
             {/* Timeline de mensagens */}
@@ -337,13 +335,24 @@ export default function RecadoDetalhePage() {
                             {formatarDataBr(m.criadoEm)}
                           </span>
                         </div>
+
+                        {m.tipo && m.tipo !== "TEXT" && (
+                          <div className="text-[11px] text-slate-500 mb-1">
+                            Anexo: <strong>{m.tipo}</strong>
+                          </div>
+                        )}
+
                         {m.conteudoTexto ? (
                           <p className="whitespace-pre-wrap text-slate-800">
                             {m.conteudoTexto}
                           </p>
+                        ) : !m.tipo || m.tipo === "TEXT" ? (
+                          <p className="italic text-slate-500">
+                            (mensagem sem texto)
+                          </p>
                         ) : (
                           <p className="italic text-slate-500">
-                            (mensagem sem texto – mídia ou outro tipo)
+                            (mensagem com anexo, sem texto)
                           </p>
                         )}
                       </div>
@@ -355,62 +364,45 @@ export default function RecadoDetalhePage() {
               {/* Responder */}
               <form
                 onSubmit={handleResponder}
-                className="mt-4 border-t border-slate-200 pt-3 flex flex-col gap-3"
+                className="mt-4 border-t border-slate-200 pt-3 flex flex-col gap-2"
               >
                 <label className="text-xs font-semibold text-slate-700">
                   Responder ao cidadão (via WhatsApp)
                 </label>
-
                 <textarea
-                  className={`border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y ${
-                    isEncerrado ? "bg-slate-100 cursor-not-allowed" : ""
-                  }`}
-                  placeholder={
-                    isEncerrado
-                      ? "Recado concluído. Não é possível enviar novas respostas."
-                      : "Digite aqui a resposta que será enviada para o WhatsApp do cidadão..."
-                  }
+                  className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y"
+                  placeholder="Digite aqui a resposta que será enviada para o WhatsApp do cidadão..."
                   value={resposta}
                   onChange={(e) => setResposta(e.target.value)}
-                  disabled={isEncerrado}
+                  disabled={!podeResponder || enviando}
                 />
 
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs font-medium text-slate-700">
-                      Anexar arquivo:
-                    </label>
+                {/* Anexo */}
+                <div className="flex items-center justify-between gap-3 mt-1">
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+                    <span className="px-2 py-1 rounded-lg border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100">
+                      Escolher arquivo
+                    </span>
                     <input
                       type="file"
-                      disabled={isEncerrado}
-                      onChange={(e) =>
-                        setArquivo(e.target.files?.[0] || null)
-                      }
-                      className="text-xs"
+                      className="hidden"
+                      onChange={handleFileChange}
+                      disabled={!podeResponder || enviando}
                     />
-                    {arquivo && (
-                      <span className="text-[10px] text-slate-500">
-                        {arquivo.name}
+                    {filePreviewName && (
+                      <span className="text-[11px] text-slate-500 truncate max-w-[220px]">
+                        {filePreviewName}
                       </span>
                     )}
-                  </div>
+                  </label>
 
-                  <div className="flex gap-2 justify-end">
-                    <button
-                      type="button"
-                      onClick={handleEnviarAnexo}
-                      disabled={
-                        isEncerrado || !arquivo || enviandoAnexo
-                      }
-                      className="px-4 py-2 text-xs rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {enviandoAnexo ? "Enviando anexo..." : "Enviar anexo"}
-                    </button>
-
+                  <div className="flex justify-end">
                     <button
                       type="submit"
                       disabled={
-                        isEncerrado || enviando || !resposta.trim()
+                        enviando ||
+                        !podeResponder ||
+                        (!resposta.trim() && !fileToUpload)
                       }
                       className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
