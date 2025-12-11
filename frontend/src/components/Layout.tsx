@@ -89,6 +89,21 @@ export default function Layout() {
             Atendimentos
           </NavLink>
 
+          {/* NOVO: Recados (modo LEAVE_MESSAGE) */}
+          <NavLink
+            to="/recados"
+            className={({ isActive }) =>
+              [
+                "block rounded-lg px-3 py-2 transition",
+                isActive
+                  ? "bg-emerald-100 text-emerald-900 border border-emerald-200"
+                  : "text-slate-700 hover:bg-slate-100",
+              ].join(" ")
+            }
+          >
+            Recados
+          </NavLink>
+
           <NavLink
             to="/departamentos"
             className={({ isActive }) =>
