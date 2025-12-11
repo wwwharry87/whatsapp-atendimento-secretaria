@@ -1120,6 +1120,22 @@ function scheduleLeaveMessageAutoClose(session: Session) {
         `Guarde este número para acompanhar sua solicitação.`
     );
 
+    // ⚠️ NOVO: avisar o agente responsável que houve recado encerrado com protocolo
+    if (current.agentNumber) {
+      const agenteEnvio = normalizePhone(current.agentNumber);
+      const nomeCidadao = current.citizenName ?? current.citizenNumber;
+      const nomeSetor = current.departmentName ?? "Setor";
+
+      await sendTextMessage(
+        agenteEnvio,
+        `📩 *Novo recado encerrado (modo recado)*\n\n` +
+          `Setor: *${nomeSetor}*\n` +
+          `Cidadão: *${nomeCidadao}*\n` +
+          `Protocolo: *${protocolo}*.\n\n` +
+          `Os detalhes completos estão disponíveis no painel do Atende Cidadão.`
+      );
+    }
+
     await ativarProximoDaFila(current);
 
     sessionsByCitizen.delete(citizenKey);
@@ -1249,6 +1265,64 @@ function scheduleBusyReminder(session: Session) {
 
     scheduleBusyReminder(current);
   }, 2 * 60 * 1000);
+}
+
+// ====================== ENCAMINHAMENTO DE RECADO PARA O AGENTE ======================
+
+async function encaminharRecadoParaAgente(opts: {
+  session: Session;
+  tipo: MensagemTipo;
+  texto: string;
+  mediaId?: string;
+}) {
+  const { session, tipo, texto, mediaId } = opts;
+
+  if (!session.agentNumber) {
+    return;
+  }
+
+  const agenteEnvio = normalizePhone(session.agentNumber);
+  if (!agenteEnvio) return;
+
+  const nomeCidadao = session.citizenName ?? session.citizenNumber;
+  const nomeSetor = session.departmentName ?? "Setor";
+
+  const prefixoCabecalho =
+    `📩 *Novo recado do cidadão* (modo recado)\n\n` +
+    `Setor: *${nomeSetor}*\n` +
+    `Cidadão: *${nomeCidadao}*\n\n`;
+
+  const t = lowerTipo(tipo);
+
+  if (t === "text") {
+    const corpo =
+      prefixoCabecalho +
+      (texto
+        ? `Mensagem:\n${texto}`
+        : "Mensagem de texto recebida em modo recado.");
+    await sendTextMessage(agenteEnvio, corpo);
+    return;
+  }
+
+  // mídia (áudio, imagem, vídeo, documento)
+  const corpoMidia =
+    prefixoCabecalho +
+    `O cidadão enviou um *${t}* em modo recado.` +
+    (texto ? `\n\nMensagem complementar:\n${texto}` : "");
+
+  await sendTextMessage(agenteEnvio, corpoMidia);
+
+  if (mediaId) {
+    if (t === "audio") {
+      await sendAudioMessageById(agenteEnvio, mediaId);
+    } else if (t === "image") {
+      await sendImageMessageById(agenteEnvio, mediaId);
+    } else if (t === "document") {
+      await sendDocumentMessageById(agenteEnvio, mediaId);
+    } else if (t === "video") {
+      await sendVideoMessageById(agenteEnvio, mediaId);
+    }
+  }
 }
 
 // ====================== PESQUISA DE SATISFAÇÃO ======================
@@ -1722,6 +1796,22 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         }. 👍\nSeu recado já está registrado.\nProtocolo: *${protocolo}*.\nSe precisar de algo depois, é só mandar mensagem.`
       );
 
+      // ⚠️ NOVO: avisar o agente que o recado foi encerrado manualmente pelo cidadão
+      if (session.agentNumber) {
+        const agenteEnvio = normalizePhone(session.agentNumber);
+        const nomeCidadao = session.citizenName ?? session.citizenNumber;
+        const nomeSetor = session.departmentName ?? "Setor";
+
+        await sendTextMessage(
+          agenteEnvio,
+          `📩 *Recado encerrado pelo cidadão*\n\n` +
+            `Setor: *${nomeSetor}*\n` +
+            `Cidadão: *${nomeCidadao}*\n` +
+            `Protocolo: *${protocolo}*.\n\n` +
+            `O atendimento foi encerrado em modo recado. Consulte os detalhes no painel do Atende Cidadão.`
+        );
+      }
+
       await ativarProximoDaFila(session);
       sessionsByCitizen.delete(citizenKey);
       return;
@@ -1729,6 +1819,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     const clienteNome = await getClienteNome(session.idcliente);
     const orgInfo = buildOrgInfo(clienteNome);
+
+    // ⚠️ NOVO: sempre que o cidadão manda um recado (texto/áudio/imagem/etc.),
+    // encaminhamos para o agente responsável, se existir.
+    await encaminharRecadoParaAgente({
+      session,
+      tipo,
+      texto: text || "",
+      mediaId,
+    });
 
     // ACK mais humano:
     // - primeira mensagem: confirma e explica que será analisado

@@ -178,7 +178,6 @@ router.get(
           media_id: m.whatsappMediaId ?? null,
           media_mime: m.mimeType ?? null,
           criado_em: m.criadoEm,
-
           comando_codigo: (m as any).comandoCodigo ?? null,
           comando_descricao: (m as any).comandoDescricao ?? null,
         };
@@ -330,37 +329,50 @@ router.get("/dashboard/resumo", async (req: Request, res: Response) => {
     const { dataInicio, dataFim } = req.query as Record<string, string>;
     const idcliente = getUserClientId(req);
 
-    const qb = repo.createQueryBuilder("a");
+    // 🔹 Filtro base reutilizável
+    const baseWhere: string[] = [];
+    const baseParams: any = {};
 
     if (idcliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente });
+      baseWhere.push("a.idcliente = :idcliente");
+      baseParams.idcliente = idcliente;
     }
 
     if (dataInicio) {
-      qb.andWhere("a.criado_em >= :dataInicio", { dataInicio });
+      baseWhere.push("a.criado_em >= :dataInicio");
+      baseParams.dataInicio = dataInicio;
     }
+
     if (dataFim) {
-      qb.andWhere("a.criado_em <= :dataFim", {
-        dataFim: `${dataFim} 23:59:59`,
-      });
+      baseWhere.push("a.criado_em <= :dataFim");
+      baseParams.dataFim = `${dataFim} 23:59:59`;
     }
 
-    const total = await qb.getCount();
+    const whereClause =
+      baseWhere.length > 0 ? baseWhere.join(" AND ") : "1=1";
 
+    // ✅ Total no período
+    const total = await repo
+      .createQueryBuilder("a")
+      .where(whereClause, baseParams)
+      .getCount();
+
+    // ✅ Agrupado por status no mesmo período
     const porStatus = await repo
       .createQueryBuilder("a")
       .select("a.status", "status")
       .addSelect("COUNT(*)", "quantidade")
-      .where(idcliente ? "a.idcliente = :idcliente" : "1=1", { idcliente })
+      .where(whereClause, baseParams)
       .groupBy("a.status")
       .getRawMany();
 
+    // ✅ Agrupado por departamento no mesmo período
     const porDepartamento = await repo
       .createQueryBuilder("a")
       .leftJoin("a.departamento", "d")
       .select("COALESCE(d.nome, 'Sem setor')", "departamento")
       .addSelect("COUNT(*)", "quantidade")
-      .where(idcliente ? "a.idcliente = :idcliente" : "1=1", { idcliente })
+      .where(whereClause, baseParams)
       .groupBy("d.nome")
       .getRawMany();
 
