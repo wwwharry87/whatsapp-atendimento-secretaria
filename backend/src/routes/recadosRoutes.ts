@@ -15,21 +15,46 @@ import {
 const router = Router();
 
 /**
- * Helper para obter idcliente a partir do atendimento
- * (multi-tenant seguro).
+ * Helper para pegar idcliente do usuário autenticado (se existir)
  */
-function getIdCliente(req: Request, atendimento: Atendimento): number {
-  const id =
-    (atendimento as any).idcliente ??
-    (req as any).idcliente ??
-    (req as any).clienteId ??
-    (req as any).cliente_id;
+function getRequestClienteId(req: Request): number | undefined {
+  const user = (req as any).user;
+  if (user && typeof user.idcliente === "number") {
+    return user.idcliente;
+  }
+  return undefined;
+}
 
-  if (!id) {
-    throw new Error("idcliente não encontrado no atendimento/req");
+/**
+ * Gera protocolo no padrão ATD-YYYYMMDD-XXXXXX
+ * (cópia simples da lógica do sessionService)
+ */
+function generateProtocol(atendimentoId: string): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const short = atendimentoId.replace(/-/g, "").slice(0, 6).toUpperCase();
+  return `ATD-${yyyy}${mm}${dd}-${short}`;
+}
+
+/**
+ * Garante que o atendimento tenha protocolo.
+ * Se não tiver, gera e salva, retornando o valor.
+ */
+async function ensureProtocolo(
+  atendimento: Atendimento
+): Promise<string | null> {
+  const repoAtendimento = AppDataSource.getRepository(Atendimento);
+  let protocolo = atendimento.protocolo || null;
+
+  if (!protocolo) {
+    protocolo = generateProtocol(atendimento.id);
+    await repoAtendimento.update(atendimento.id, { protocolo });
+    (atendimento as any).protocolo = protocolo;
   }
 
-  return id;
+  return protocolo;
 }
 
 /**
@@ -70,13 +95,10 @@ router.get("/", async (req: Request, res: Response) => {
       .leftJoinAndSelect("a.departamento", "d")
       .where("a.status IN (:...statuses)", { statuses });
 
-    // filtra por cliente (multi-tenant) se o authMiddleware setar
-    const idclienteReq =
-      (req as any).idcliente ??
-      (req as any).clienteId ??
-      (req as any).cliente_id;
-    if (idclienteReq) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente: idclienteReq });
+    // Multi-tenant: filtra pelo idcliente do token, se existir
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
     }
 
     if (departamentoId) {
@@ -91,7 +113,7 @@ router.get("/", async (req: Request, res: Response) => {
       );
     }
 
-    qb.orderBy("a.criado_em", "DESC")
+    qb.orderBy("a.criadoEm", "DESC")
       .skip((page - 1) * perPage)
       .take(perPage);
 
@@ -100,14 +122,14 @@ router.get("/", async (req: Request, res: Response) => {
     const data = items.map((a) => ({
       id: a.id,
       protocolo: a.protocolo || null,
-      cidadaoNome: (a as any).cidadaoNome,
-      cidadaoNumero: (a as any).cidadaoNumero,
-      departamentoId: (a as any).departamentoId,
+      cidadaoNome: a.cidadaoNome,
+      cidadaoNumero: a.cidadaoNumero,
+      departamentoId: a.departamentoId,
       departamentoNome: a.departamento ? a.departamento.nome : null,
       status: a.status,
-      criadoEm: (a as any).criadoEm,
-      atualizadoEm: (a as any).atualizadoEm ?? null,
-      encerradoEm: (a as any).encerradoEm ?? null,
+      criadoEm: a.criadoEm,
+      atualizadoEm: (a as any).atualizadoEm,
+      encerradoEm: (a as any).encerradoEm,
     }));
 
     res.json({
@@ -134,10 +156,17 @@ router.get("/:id", async (req: Request, res: Response) => {
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
 
-    const atendimento = await repoAtendimento.findOne({
-      where: { id },
-      relations: ["departamento"],
-    });
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .leftJoinAndSelect("a.departamento", "d")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado." });
@@ -151,16 +180,16 @@ router.get("/:id", async (req: Request, res: Response) => {
     const detalhe = {
       id: atendimento.id,
       protocolo: atendimento.protocolo || null,
-      cidadaoNome: (atendimento as any).cidadaoNome,
-      cidadaoNumero: (atendimento as any).cidadaoNumero,
-      departamentoId: (atendimento as any).departamentoId,
+      cidadaoNome: atendimento.cidadaoNome,
+      cidadaoNumero: atendimento.cidadaoNumero,
+      departamentoId: atendimento.departamentoId,
       departamentoNome: atendimento.departamento
         ? atendimento.departamento.nome
         : null,
       status: atendimento.status,
-      criadoEm: (atendimento as any).criadoEm,
-      atualizadoEm: (atendimento as any).atualizadoEm ?? null,
-      encerradoEm: (atendimento as any).encerradoEm ?? null,
+      criadoEm: atendimento.criadoEm,
+      atualizadoEm: (atendimento as any).atualizadoEm,
+      encerradoEm: (atendimento as any).encerradoEm,
       agenteNome: (atendimento as any).agenteNome || null,
       agenteNumero: (atendimento as any).agenteNumero || null,
       foiResolvido: (atendimento as any).foiResolvido ?? null,
@@ -168,8 +197,8 @@ router.get("/:id", async (req: Request, res: Response) => {
       mensagens: mensagens.map((m) => ({
         id: m.id,
         direcao: (m as any).direcao,
-        tipo: (m as any).tipo,
-        conteudoTexto: (m as any).conteudoTexto,
+        tipo: m.tipo,
+        conteudoTexto: m.conteudoTexto,
         criadoEm: (m as any).criadoEm,
         remetenteNumero: (m as any).remetenteNumero,
       })),
@@ -186,6 +215,7 @@ router.get("/:id", async (req: Request, res: Response) => {
  * POST /recados/:id/responder
  *
  * Responde ao cidadão a partir do painel (modo recado).
+ *
  * Body:
  *  - mensagem?: string
  *  - agenteNome?: string
@@ -196,6 +226,12 @@ router.get("/:id", async (req: Request, res: Response) => {
  *  - fileName?: string
  *  - fileSize?: number
  *  - mediaUrl?: string
+ *
+ * Comportamento:
+ *  - Garante que o atendimento tenha protocolo;
+ *  - Envia primeiro um aviso ao cidadão citando o protocolo;
+ *  - Depois envia o texto do agente (se tiver) e/ou a mídia;
+ *  - Grava a mensagem no histórico com idcliente.
  */
 router.post("/:id/responder", async (req: Request, res: Response) => {
   try {
@@ -233,13 +269,23 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
 
-    const atendimento = await repoAtendimento.findOne({ where: { id } });
+    // Busca o atendimento, garantindo (se possível) o mesmo idcliente do usuário logado
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado." });
     }
 
-    const numeroCidadao = (atendimento as any).cidadaoNumero;
+    const numeroCidadao = atendimento.cidadaoNumero;
     if (!numeroCidadao) {
       return res.status(400).json({
         error:
@@ -247,9 +293,32 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       });
     }
 
-    const idcliente = getIdCliente(req, atendimento);
+    const idcliente = atendimento.idcliente || reqIdCliente;
+    if (!idcliente) {
+      return res.status(500).json({
+        error:
+          "Atendimento não possui idcliente definido. Não é possível registrar a mensagem.",
+      });
+    }
 
-    // Decide tipo de mensagem
+    // Garante que exista protocolo para vincular o recado
+    const protocolo = await ensureProtocolo(atendimento);
+
+    // 1) Mensagem de aviso ANTES do recado
+    let aviso = "";
+    if (protocolo) {
+      aviso =
+        `📄 Você recebeu um recado referente ao protocolo *${protocolo}*.\n` +
+        "Essa é uma atualização enviada pela equipe responsável. Você pode responder esta mensagem normalmente caso tenha dúvidas ou queira complementar informações, até que o atendimento seja marcado como concluído.";
+    } else {
+      aviso =
+        "📄 Você recebeu um recado da equipe responsável pelo seu atendimento.\n" +
+        "Você pode responder esta mensagem normalmente caso tenha dúvidas ou queira complementar informações, até que o atendimento seja marcado como concluído.";
+    }
+
+    await sendTextMessage(numeroCidadao, aviso);
+
+    // 2) Define tipo de mídia (se houver)
     let tipoMensagem: "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO" =
       "TEXT";
 
@@ -266,10 +335,17 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       }
     }
 
-    // 1) Envia para o WhatsApp
+    // 3) Mensagem do agente (texto, se existir)
+    if (mensagem && mensagem.trim()) {
+      const corpoAgente = agenteNome
+        ? `🧑‍💼 *${agenteNome}*:\n${mensagem.trim()}`
+        : mensagem.trim();
 
+      await sendTextMessage(numeroCidadao, corpoAgente);
+    }
+
+    // 4) Envio da mídia (se existir)
     if (mediaId) {
-      // envio de mídia
       if (tipoMensagem === "IMAGE") {
         await sendImageMessageById(numeroCidadao, mediaId);
       } else if (tipoMensagem === "AUDIO") {
@@ -280,19 +356,11 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
         // DOCUMENT ou fallback
         await sendDocumentMessageById(numeroCidadao, mediaId);
       }
-
-      // Se também veio texto, podemos mandar em seguida como texto simples
-      if (mensagem && mensagem.trim()) {
-        await sendTextMessage(numeroCidadao, mensagem.trim());
-      }
-    } else if (mensagem && mensagem.trim()) {
-      // apenas texto
-      await sendTextMessage(numeroCidadao, mensagem.trim());
     }
 
-    // 2) Registra mensagem no histórico (Mensagens)
+    // 5) Registra mensagem no histórico (AGORA COM idcliente e suporte a mídia)
     const msgEntity = repoMensagem.create({
-      idcliente,
+      idcliente, // multi-tenant
       atendimentoId: atendimento.id,
       direcao: "AGENT" as any,
       tipo: tipoMensagem as any,
@@ -302,22 +370,21 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       mimeType: mimeType || null,
       fileName: fileName || null,
       fileSize: fileSize ?? null,
-      remetenteNumero:
-        agenteNumero || (atendimento as any).agenteNumero || "PAINEL",
+      remetenteNumero: agenteNumero || atendimento.agenteNumero || "PAINEL",
       comandoCodigo: null,
       comandoDescricao: mediaId
-        ? "Resposta (mídia) enviada pelo painel de recados (modo recado)."
-        : "Resposta enviada pelo painel de recados (modo recado).",
+        ? "Recado (mídia) enviado pelo painel de recados (modo recado)."
+        : "Recado enviado pelo painel de recados (modo recado).",
     } as any);
 
     await repoMensagem.save(msgEntity);
 
-    // 3) Atualiza nome/número do agente se veio do painel
+    // Atualiza nome/número do agente se veio do painel
     const atualizacoes: Partial<Atendimento> = {};
-    if (agenteNome && !(atendimento as any).agenteNome) {
+    if (agenteNome && !atendimento.agenteNome) {
       (atualizacoes as any).agenteNome = agenteNome;
     }
-    if (agenteNumero && !(atendimento as any).agenteNumero) {
+    if (agenteNumero && !atendimento.agenteNumero) {
       (atualizacoes as any).agenteNumero = agenteNumero;
     }
 
@@ -327,49 +394,12 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
 
     res.json({
       ok: true,
-      message: "Resposta enviada ao cidadão com sucesso.",
+      message: "Recado enviado ao cidadão com sucesso.",
+      protocolo,
     });
   } catch (err) {
     console.error("[RECADOS] Erro ao responder recado:", err);
     res.status(500).json({ error: "Erro ao responder recado." });
-  }
-});
-
-/**
- * PATCH /recados/:id/concluir
- *
- * Marca o recado (atendimento em modo recado) como FINISHED.
- * Após isso, o painel não deixará mais responder.
- */
-router.patch("/:id/concluir", async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-
-    const repoAtendimento = AppDataSource.getRepository(Atendimento);
-
-    const atendimento = await repoAtendimento.findOne({
-      where: { id },
-    });
-
-    if (!atendimento) {
-      return res.status(404).json({ error: "Atendimento não encontrado." });
-    }
-
-    // Ajusta status e data de encerramento
-    (atendimento as any).status = "FINISHED";
-    (atendimento as any).encerradoEm = new Date();
-
-    await repoAtendimento.save(atendimento);
-
-    res.json({
-      ok: true,
-      message: "Recado concluído com sucesso.",
-      status: atendimento.status,
-      encerradoEm: (atendimento as any).encerradoEm,
-    });
-  } catch (err) {
-    console.error("[RECADOS] Erro ao concluir recado:", err);
-    res.status(500).json({ error: "Erro ao concluir recado." });
   }
 });
 
@@ -393,10 +423,16 @@ router.patch("/:id/transferir", async (req: Request, res: Response) => {
 
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
 
-    const atendimento = await repoAtendimento.findOne({
-      where: { id },
-      relations: ["departamento"],
-    });
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
 
     if (!atendimento) {
       return res.status(404).json({ error: "Atendimento não encontrado." });
@@ -423,6 +459,70 @@ router.patch("/:id/transferir", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[RECADOS] Erro ao transferir recado:", err);
     res.status(500).json({ error: "Erro ao transferir recado." });
+  }
+});
+
+/**
+ * PATCH /recados/:id/concluir
+ *
+ * Marca o recado/atendimento como concluído, garantindo que exista protocolo.
+ * Body (opcional):
+ *   - foiResolvido?: boolean
+ *   - notaSatisfacao?: number
+ */
+router.patch("/:id/concluir", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { foiResolvido, notaSatisfacao } = req.body as {
+      foiResolvido?: boolean;
+      notaSatisfacao?: number;
+    };
+
+    const repoAtendimento = AppDataSource.getRepository(Atendimento);
+
+    const qb = repoAtendimento
+      .createQueryBuilder("a")
+      .where("a.id = :id", { id });
+
+    const reqIdCliente = getRequestClienteId(req);
+    if (reqIdCliente) {
+      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
+    }
+
+    const atendimento = await qb.getOne();
+
+    if (!atendimento) {
+      return res.status(404).json({ error: "Atendimento não encontrado." });
+    }
+
+    const protocolo = await ensureProtocolo(atendimento);
+
+    const atualizacoes: Partial<Atendimento> = {
+      status: "FINISHED" as AtendimentoStatus,
+      encerradoEm: new Date(),
+    };
+
+    if (typeof foiResolvido === "boolean") {
+      (atualizacoes as any).foiResolvido = foiResolvido;
+    }
+    if (
+      typeof notaSatisfacao === "number" &&
+      notaSatisfacao >= 1 &&
+      notaSatisfacao <= 5
+    ) {
+      (atualizacoes as any).notaSatisfacao = notaSatisfacao;
+    }
+
+    await repoAtendimento.update(atendimento.id, atualizacoes);
+
+    res.json({
+      ok: true,
+      message: "Recado/atendimento marcado como concluído.",
+      protocolo,
+    });
+  } catch (err) {
+    console.error("[RECADOS] Erro ao concluir recado:", err);
+    res.status(500).json({ error: "Erro ao concluir recado." });
   }
 });
 
