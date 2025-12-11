@@ -20,6 +20,7 @@ import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { salvarMensagem } from "./messageService";
 import { MensagemTipo } from "../entities/Mensagem";
 import { Cliente } from "../entities/Cliente";
+import { HorarioAtendimento } from "../entities/HorarioAtendimento";
 import { gerarRespostaIA, iaEstaHabilitada } from "./iaService";
 
 export type SessionStatus =
@@ -87,6 +88,35 @@ function lowerTipo(tipo: MensagemTipo): string {
 }
 
 /**
+ * Horário em São Paulo (usado em saudação e horários de atendimento)
+ */
+function getNowInSaoPaulo() {
+  try {
+    const agoraBR = new Date(
+      new Date().toLocaleString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+      })
+    );
+    const hora = agoraBR.getHours();
+    const minuto = agoraBR.getMinutes();
+    const minutosDia = hora * 60 + minuto;
+    const diaSemana = agoraBR.getDay(); // 0 = DOM, 6 = SAB
+    const mapDia = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"] as const;
+    const diaCodigo = mapDia[diaSemana] ?? "DOM";
+    return { agoraBR, hora, minuto, minutosDia, diaSemana, diaCodigo };
+  } catch {
+    const now = new Date();
+    const hora = now.getHours();
+    const minuto = now.getMinutes();
+    const minutosDia = hora * 60 + minuto;
+    const diaSemana = now.getDay();
+    const mapDia = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"] as const;
+    const diaCodigo = mapDia[diaSemana] ?? "DOM";
+    return { agoraBR: now, hora, minuto, minutosDia, diaSemana, diaCodigo };
+  }
+}
+
+/**
  * Saudação baseada no horário (fuso: America/Sao_Paulo)
  *
  * - 04:00 até 11:59 → Bom dia
@@ -94,51 +124,145 @@ function lowerTipo(tipo: MensagemTipo): string {
  * - 18:00 até 03:59 → Boa noite
  */
 function getSaudacaoPorHorario(): string {
-  try {
-    const agoraBR = new Date(
-      new Date().toLocaleString("pt-BR", {
-        timeZone: "America/Sao_Paulo",
-      })
-    );
-    const hora = agoraBR.getHours();
-
-    if (hora >= 4 && hora < 12) return "Bom dia";
-    if (hora >= 12 && hora < 18) return "Boa tarde";
-    return "Boa noite";
-  } catch {
-    const hora = new Date().getHours();
-    if (hora >= 4 && hora < 12) return "Bom dia";
-    if (hora >= 12 && hora < 18) return "Boa tarde";
-    return "Boa noite";
-  }
+  const { hora } = getNowInSaoPaulo();
+  if (hora >= 4 && hora < 12) return "Bom dia";
+  if (hora >= 12 && hora < 18) return "Boa tarde";
+  return "Boa noite";
 }
 
 /**
- * Regra padrão de horário de atendimento humano:
+ * Regra padrão de horário de atendimento humano (fallback):
  *   - Segunda a Sexta
  *   - Das 08:00 às 18:00 (fuso America/Sao_Paulo)
  */
 function isOutOfBusinessHours(): boolean {
+  const { diaSemana, hora } = getNowInSaoPaulo();
+
+  if (diaSemana === 0 || diaSemana === 6) return true;
+  if (hora < 8 || hora >= 18) return true;
+  return false;
+}
+
+/**
+ * Verifica horário de atendimento baseado na tabela horarios_atendimento.
+ *
+ * Regras:
+ *  - Usa idcliente da sessão (ou cliente default).
+ *  - Se houver horário específico para o departamento (departamentoId),
+ *    usa apenas esses registros.
+ *  - Caso contrário, usa o horário geral (departamento_id = null).
+ *  - Considera apenas registros ativos (ativo = true).
+ *  - Se não houver NENHUM horário configurado → considera 24x7 (NUNCA fora).
+ *  - Em caso de erro no banco → cai no fallback padrão (isOutOfBusinessHours).
+ */
+async function isOutOfBusinessHoursDB(params: {
+  idcliente?: number;
+  departamentoId?: number | null;
+}): Promise<boolean> {
+  const horarioRepo = AppDataSource.getRepository(HorarioAtendimento);
+  const { minutosDia, diaCodigo } = getNowInSaoPaulo();
+
   try {
-    const agoraBR = new Date(
-      new Date().toLocaleString("pt-BR", {
-        timeZone: "America/Sao_Paulo",
-      })
+    const effectiveClienteId =
+      params.idcliente ?? (await getDefaultClienteId());
+
+    let registros: HorarioAtendimento[] = [];
+
+    if (params.departamentoId != null) {
+      registros = await horarioRepo.find({
+        where: {
+          idcliente: effectiveClienteId as any,
+          departamentoId: params.departamentoId as any,
+          ativo: true as any,
+        },
+        order: { id: "ASC" as any },
+      });
+    }
+
+    if (!registros || registros.length === 0) {
+      registros = await horarioRepo.find({
+        where: {
+          idcliente: effectiveClienteId as any,
+          departamentoId: null as any,
+          ativo: true as any,
+        },
+        order: { id: "ASC" as any },
+      });
+    }
+
+    if (!registros || registros.length === 0) {
+      console.log(
+        "[HORARIO] Nenhum horário configurado para idcliente=",
+        effectiveClienteId,
+        "departamentoId=",
+        params.departamentoId,
+        ". Considerando 24x7 (dentro do horário)."
+      );
+      return false; // nunca fora
+    }
+
+    const ativosHoje = registros.filter((h) => {
+      if (!h.diasSemana) return false;
+      const dias = h.diasSemana
+        .split(",")
+        .map((d) => d.trim().toUpperCase())
+        .filter(Boolean);
+      return dias.includes(diaCodigo);
+    });
+
+    if (ativosHoje.length === 0) {
+      // Não atende neste dia da semana
+      return true;
+    }
+
+    const dentroDeAlgum = ativosHoje.some((h) => {
+      if (!h.inicio || !h.fim) return false;
+
+      const [hIni, mIni] = h.inicio.split(":").map((p) => parseInt(p, 10));
+      const [hFim, mFim] = h.fim.split(":").map((p) => parseInt(p, 10));
+
+      if (
+        Number.isNaN(hIni) ||
+        Number.isNaN(mIni) ||
+        Number.isNaN(hFim) ||
+        Number.isNaN(mFim)
+      ) {
+        return false;
+      }
+
+      const minIni = hIni * 60 + mIni;
+      const minFim = hFim * 60 + mFim;
+
+      // janela normal no mesmo dia
+      if (minFim > minIni) {
+        return minutosDia >= minIni && minutosDia < minFim;
+      }
+
+      // janela virando o dia (ex: 22:00–02:00)
+      return minutosDia >= minIni || minutosDia < minFim;
+    });
+
+    const fora = !dentroDeAlgum;
+    console.log(
+      "[HORARIO] Cálculo DB: idcliente=",
+      effectiveClienteId,
+      "departamentoId=",
+      params.departamentoId,
+      "dia=",
+      diaCodigo,
+      "minutosDia=",
+      minutosDia,
+      "fora?=",
+      fora
     );
-    const diaSemana = agoraBR.getDay(); // 0 domingo, 6 sábado
-    const hora = agoraBR.getHours();
 
-    if (diaSemana === 0 || diaSemana === 6) return true;
-    if (hora < 8 || hora >= 18) return true;
-
-    return false;
-  } catch {
-    const now = new Date();
-    const diaSemana = now.getDay();
-    const hora = now.getHours();
-    if (diaSemana === 0 || diaSemana === 6) return true;
-    if (hora < 8 || hora >= 18) return true;
-    return false;
+    return fora;
+  } catch (err) {
+    console.log(
+      "[HORARIO] Erro ao consultar horários no banco. Usando fallback padrão.",
+      err
+    );
+    return isOutOfBusinessHours();
   }
 }
 
@@ -1381,16 +1505,20 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ---------- IA: pré-atendimento fora do horário ----------
+  // ---------- IA: pré-atendimento fora do horário (horário do banco) ----------
 
-  const foraHorario = isOutOfBusinessHours();
+  const foraHorario = await isOutOfBusinessHoursDB({
+    idcliente: session.idcliente,
+    departamentoId: session.departmentId ?? null,
+  });
+
   const podeUsarIAForaHorario =
     (session.status === "ASK_NAME" && !!session.citizenName) ||
     session.status === "ASK_DEPARTMENT";
 
   if (foraHorario && iaEstaHabilitada() && podeUsarIAForaHorario) {
     console.log(
-      "[IA] Fora do horário de atendimento humano. Acionando IA para pré-atendimento..."
+      "[IA] Fora do horário de atendimento humano (via DB). Acionando IA para pré-atendimento..."
     );
 
     const textoBaseIA =
@@ -1399,8 +1527,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         ? "O cidadão enviou um áudio descrevendo a situação."
         : "O cidadão entrou em contato fora do horário de atendimento.");
 
-    const clienteNome = await getClienteNome(session.idcliente);
-    const orgInfo = buildOrgInfo(clienteNome);
+    const clienteNomeOrg = await getClienteNome(session.idcliente);
+    const orgInfo = buildOrgInfo(clienteNomeOrg);
 
     const contextoParts: string[] = [
       "Você é o *Atende Cidadão*, assistente virtual deste órgão público.",
@@ -1412,7 +1540,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.departmentName
         ? `Setor mencionado/selecionado: ${session.departmentName}.`
         : "O setor ainda não foi selecionado.",
-      "Situação: atendimento fora do horário padrão de funcionamento. Nenhum atendente humano está disponível agora.",
+      "Situação: atendimento fora do horário padrão de funcionamento configurado no sistema. Nenhum atendente humano está disponível agora.",
       "Objetivo: orientar o cidadão, explicar de forma simples que é fora do horário e sugerir que ele deixe um recado para ser respondido no próximo expediente.",
       "Você deve:",
       "- Se apresentar de forma breve (1 frase).",
@@ -1507,6 +1635,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
     }
 
+    const clienteNome = await getClienteNome(session.idcliente);
     const orgFrase = clienteNome
       ? `da equipe de *${clienteNome}*`
       : "da equipe";
@@ -1659,7 +1788,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       if (orgInfo.tipo === "EDUCACAO") {
         contextoParts.push(
           "Neste canal você atende exclusivamente assuntos de EDUCAÇÃO.",
-          "Não use a palavra 'prefeitura'. Use 'Secretaria Municipal de Educação', 'Secretaria de Educação' ou 'SEMED'.",
+          "Não use 'prefeitura'. Use 'Secretaria Municipal de Educação', 'Secretaria de Educação' ou 'SEMED'.",
           "Não mencione saúde, tributos, obras ou outros temas fora da educação.",
           "Se quiser dar exemplos, fale de matrícula escolar, merenda, transporte escolar, lotação de professores, calendário letivo, etc."
         );
@@ -1830,12 +1959,12 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.status = "ASK_ANOTHER_DEPARTMENT";
 
     await sendTextMessage(
-        session.citizenNumber,
-        "Agradecemos sua avaliação! 🌟\n\n" +
-          "Deseja falar com *outro setor*?\n" +
-          "1 - Sim, abrir atendimento em outro setor\n" +
-          "2 - Não, encerrar por aqui"
-      );
+      session.citizenNumber,
+      "Agradecemos sua avaliação! 🌟\n\n" +
+        "Deseja falar com *outro setor*?\n" +
+        "1 - Sim, abrir atendimento em outro setor\n" +
+        "2 - Não, encerrar por aqui"
+    );
     return;
   }
 

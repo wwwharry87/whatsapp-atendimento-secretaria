@@ -15,21 +15,56 @@ function mapEntityToDTO(h: HorarioAtendimento) {
       : [],
     inicio: h.inicio,
     fim: h.fim,
-    ativo: h.ativo
+    ativo: h.ativo,
   };
 }
 
 /**
+ * Identifica o idcliente a partir da requisição.
+ * Prioridade:
+ *  - header "x-id-cliente"
+ *  - query string "idcliente"
+ *  - body.idcliente
+ *  - DEFAULT_CLIENTE_ID ou 1
+ */
+function getIdClienteFromRequest(req: Request): number {
+  const headerVal = (req.headers["x-id-cliente"] || "").toString();
+  if (headerVal && !isNaN(Number(headerVal))) {
+    return Number(headerVal);
+  }
+
+  const queryVal = (req.query.idcliente || "").toString();
+  if (queryVal && !isNaN(Number(queryVal))) {
+    return Number(queryVal);
+  }
+
+  const bodyVal = (req.body?.idcliente || "").toString();
+  if (bodyVal && !isNaN(Number(bodyVal))) {
+    return Number(bodyVal);
+  }
+
+  const envVal = process.env.DEFAULT_CLIENTE_ID;
+  if (envVal && !isNaN(Number(envVal))) {
+    return Number(envVal);
+  }
+
+  return 1;
+}
+
+/**
  * GET /horarios
+ * Lista os horários de atendimento do cliente atual
  */
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const horarios = await repo.find({
-      order: {
-        departamentoId: "ASC",
-        id: "ASC"
-      }
-    });
+    const idcliente = getIdClienteFromRequest(req);
+
+    const horarios = await repo
+      .createQueryBuilder("h")
+      .where("h.idcliente = :idcliente", { idcliente })
+      .orderBy("h.departamentoId", "ASC")
+      .addOrderBy("h.id", "ASC")
+      .getMany();
 
     res.json(horarios.map(mapEntityToDTO));
   } catch (err) {
@@ -41,9 +76,12 @@ router.get("/", async (req: Request, res: Response) => {
 /**
  * POST /horarios/salvar-todos
  * O frontend envia { horarios: HorarioAtendimento[] }
+ * Estratégia: apaga os horários APENAS do cliente atual e recria.
  */
 router.post("/salvar-todos", async (req: Request, res: Response) => {
   try {
+    const idcliente = getIdClienteFromRequest(req);
+
     const { horarios } = req.body as {
       horarios: {
         id?: number;
@@ -61,18 +99,23 @@ router.post("/salvar-todos", async (req: Request, res: Response) => {
         .json({ error: "Campo 'horarios' deve ser um array." });
     }
 
-    // Estratégia simples: limpa tudo e recria
-    await repo.clear();
+    // Apaga apenas os horários do cliente atual
+    await repo
+      .createQueryBuilder()
+      .delete()
+      .where("idcliente = :idcliente", { idcliente })
+      .execute();
 
     const entities: HorarioAtendimento[] = [];
 
     for (const h of horarios) {
       const entity = repo.create({
+        idcliente,
         departamentoId: h.departamento_id,
         diasSemana: (h.dias_semana || []).join(","),
         inicio: h.inicio,
         fim: h.fim,
-        ativo: h.ativo
+        ativo: h.ativo,
       });
 
       entities.push(await repo.save(entity));

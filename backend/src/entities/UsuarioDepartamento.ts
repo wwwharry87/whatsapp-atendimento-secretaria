@@ -15,6 +15,7 @@ export class UsuarioDepartamento {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
+  // 🔹 Usuário que atende naquele departamento
   @ManyToOne(() => Usuario, { eager: true })
   @JoinColumn({ name: "usuario_id" })
   usuario!: Usuario;
@@ -22,6 +23,7 @@ export class UsuarioDepartamento {
   @Column({ name: "usuario_id", type: "uuid" })
   usuarioId!: string;
 
+  // 🔹 Departamento
   @ManyToOne(() => Departamento, { eager: true })
   @JoinColumn({ name: "departamento_id" })
   departamento!: Departamento;
@@ -29,6 +31,7 @@ export class UsuarioDepartamento {
   @Column({ name: "departamento_id", type: "int" })
   departamentoId!: number;
 
+  // 🔹 Cliente (multi-tenant)
   @ManyToOne(() => Cliente, { eager: true })
   @JoinColumn({ name: "idcliente" })
   cliente!: Cliente;
@@ -36,6 +39,7 @@ export class UsuarioDepartamento {
   @Column({ name: "idcliente", type: "int" })
   idcliente!: number;
 
+  // 🔹 Se é o agente principal daquele departamento
   @Column({ type: "boolean", default: true })
   principal!: boolean;
 }

@@ -29,8 +29,28 @@ export default function HorariosPage() {
           api.get<Departamento[]>("/departamentos"),
           api.get<HorarioAtendimento[]>("/horarios"),
         ]);
+
         setDepartamentos(depsRes.data);
-        setHorarios(horariosRes.data);
+
+        const data = (horariosRes.data || []) as HorarioAtendimento[];
+        const hasGeral = data.some((h) => h.departamento_id === null);
+
+        const base: HorarioAtendimento[] = [...data];
+
+        // Se ainda não existe horário geral cadastrado no banco,
+        // cria um horário padrão (seg-sex, 08:00 às 18:00)
+        if (!hasGeral) {
+          base.push({
+            id: 0,
+            departamento_id: null,
+            dias_semana: ["SEG", "TER", "QUA", "QUI", "SEX"],
+            inicio: "08:00",
+            fim: "18:00",
+            ativo: true,
+          } as HorarioAtendimento);
+        }
+
+        setHorarios(base);
       } catch (err: any) {
         console.error(err);
         setErro("Erro ao carregar horários / departamentos.");
@@ -59,22 +79,26 @@ export default function HorariosPage() {
     diaId: string,
     isGeral: boolean
   ) {
-    const updated = { ...entrada };
-    const has = updated.dias_semana.includes(diaId);
-    updated.dias_semana = has
-      ? updated.dias_semana.filter((d) => d !== diaId)
-      : [...updated.dias_semana, diaId];
+    const updated: HorarioAtendimento = {
+      ...entrada,
+      dias_semana: entrada.dias_semana.includes(diaId)
+        ? entrada.dias_semana.filter((d) => d !== diaId)
+        : [...entrada.dias_semana, diaId],
+    };
 
-    if (isGeral) {
-      setHorarios((prev) => {
+    setHorarios((prev) => {
+      if (isGeral) {
+        // Mantém apenas horários de departamento, substitui o geral
         const rest = prev.filter((h) => h.departamento_id !== null);
         return [...rest, updated];
-      });
-    } else {
-      setHorarios((prev) =>
-        prev.map((h) => (h.id === entrada.id ? updated : h))
+      }
+
+      // Upsert por departamento_id: só pode existir 1 por setor
+      const rest = prev.filter(
+        (h) => h.departamento_id !== updated.departamento_id
       );
-    }
+      return [...rest, updated];
+    });
   }
 
   function updateCampo(
@@ -83,17 +107,22 @@ export default function HorariosPage() {
     value: string | boolean,
     isGeral: boolean
   ) {
-    const updated = { ...entrada, [field]: value };
-    if (isGeral) {
-      setHorarios((prev) => {
+    const updated: HorarioAtendimento = {
+      ...entrada,
+      [field]: value,
+    };
+
+    setHorarios((prev) => {
+      if (isGeral) {
         const rest = prev.filter((h) => h.departamento_id !== null);
         return [...rest, updated];
-      });
-    } else {
-      setHorarios((prev) =>
-        prev.map((h) => (h.id === entrada.id ? updated : h))
+      }
+
+      const rest = prev.filter(
+        (h) => h.departamento_id !== updated.departamento_id
       );
-    }
+      return [...rest, updated];
+    });
   }
 
   async function salvarTudo() {
@@ -168,7 +197,6 @@ export default function HorariosPage() {
             Use para definir exceções, por exemplo um setor que só atende pela
             manhã.
           </p>
-          
 
           <div className="space-y-3">
             {loading && (
@@ -176,12 +204,15 @@ export default function HorariosPage() {
             )}
             {!loading &&
               departamentos.map((dep) => {
-                const entrada =
-                  horarios.find((h) => h.departamento_id === dep.id) ||
+                const entradaExistente = horarios.find(
+                  (h) => h.departamento_id === dep.id
+                );
+
+                const entrada: HorarioAtendimento =
+                  entradaExistente ||
                   ({
-                    id: dep.id,
+                    id: dep.id, // id "fake" só para controle na UI; backend ignora
                     departamento_id: dep.id,
-                    nome_departamento: dep.nome,
                     dias_semana: geral.dias_semana,
                     inicio: geral.inicio,
                     fim: geral.fim,
@@ -193,7 +224,11 @@ export default function HorariosPage() {
                     key={dep.id}
                     entrada={entrada}
                     titulo={dep.nome}
-                    descricao={`Responsável: ${dep.responsavel_nome}`}
+                    descricao={
+                      dep.responsavel_nome
+                        ? `Responsável: ${dep.responsavel_nome}`
+                        : undefined
+                    }
                     isGeral={false}
                     onToggleDia={toggleDia}
                     onChangeCampo={updateCampo}

@@ -22,6 +22,7 @@ export class HorarioAtendimento {
   @Column({ name: "idcliente", type: "int" })
   idcliente!: number;
 
+  // 🔹 Departamento (null = horário geral do cliente)
   @ManyToOne(() => Departamento, { nullable: true })
   @JoinColumn({ name: "departamento_id" })
   departamento?: Departamento | null;
@@ -29,15 +30,17 @@ export class HorarioAtendimento {
   @Column({ name: "departamento_id", type: "int", nullable: true })
   departamentoId?: number | null;
 
-  // JSON com array de dias ["SEG","TER",...]
+  // 🔹 Dias da semana armazenados como string "SEG,TER,QUA"
   @Column({ name: "dias_semana", type: "text" })
   diasSemana!: string;
 
+  // HH:mm
   @Column({ type: "varchar", length: 5 })
-  inicio!: string; // HH:mm
+  inicio!: string;
 
+  // HH:mm
   @Column({ type: "varchar", length: 5 })
-  fim!: string; // HH:mm
+  fim!: string;
 
   @Column({ type: "boolean", default: true })
   ativo!: boolean;

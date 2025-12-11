@@ -163,8 +163,7 @@ export default function AtendimentoDetalhePage() {
     () =>
       [...mensagens].sort(
         (a, b) =>
-          new Date(a.criado_em).getTime() -
-          new Date(b.criado_em).getTime()
+          new Date(a.criado_em).getTime() - new Date(b.criado_em).getTime()
       ),
     [mensagens]
   );
@@ -334,11 +333,11 @@ export default function AtendimentoDetalhePage() {
                 }
 
                 if (ia) {
-                  wrapperAlign = "items-center";
-                  rowJustify = "justify-center";
+                  // mantém alinhamento de AGENTE (direita),
+                  // apenas muda o visual da bolha para roxo
                   bubbleClasses =
-                    "bg-violet-50 text-violet-900 rounded-2xl border border-violet-100";
-                  metaAlign = "text-center";
+                    "bg-violet-50 text-violet-900 rounded-2xl rounded-br-sm border border-violet-100";
+                  // metaAlign continua "text-right"
                 }
 
                 return (
@@ -349,9 +348,7 @@ export default function AtendimentoDetalhePage() {
                     {/* Rótulo de quem falou (esconde pro SISTEMA) */}
                     {!sistema && (
                       <div
-                        className={`flex ${
-                          ia ? "justify-center" : rowJustify
-                        } w-full px-1 mb-0.5 text-[10px] text-slate-500`}
+                        className={`flex ${rowJustify} w-full px-1 mb-0.5 text-[10px] text-slate-500`}
                       >
                         <span className="max-w-[80%] truncate">
                           {getRotuloAutor(msg)}
