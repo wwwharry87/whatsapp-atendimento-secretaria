@@ -67,10 +67,14 @@ function normalizarAutor(autor?: string | null) {
 
 /**
  * Usa primeiro o campo direction ("CITIZEN" | "AGENT" | "IA"),
- * e só cai pro autor em texto como fallback (pra mensagens antigas).
+ * ou direcao (vindo direto da API), e só cai pro autor em texto como fallback.
  */
 function normalizarDirecao(msg: MensagemAtendimento) {
-  const dir = (msg.direction || "").toString().toUpperCase().trim();
+  // Suporta tanto "direction" quanto "direcao"
+  const rawDirection =
+    (msg as any).direction ?? (msg as any).direcao ?? "";
+
+  const dir = rawDirection.toString().toUpperCase().trim();
 
   if (dir === "CITIZEN" || dir === "CIDADAO" || dir === "CIDADÃO") {
     return "CIDADAO";
@@ -316,6 +320,7 @@ export default function AtendimentoDetalhePage() {
                   "bg-emerald-50 text-emerald-900 rounded-2xl rounded-br-sm border border-emerald-100";
                 let metaAlign = "text-right";
 
+                // CIDADÃO → esquerda (branco)
                 if (cidadao) {
                   wrapperAlign = "items-start";
                   rowJustify = "justify-start";
@@ -324,6 +329,7 @@ export default function AtendimentoDetalhePage() {
                   metaAlign = "text-left";
                 }
 
+                // SISTEMA → centro (cinza, sem “bolha” tradicional)
                 if (sistema) {
                   wrapperAlign = "items-center";
                   rowJustify = "justify-center";
@@ -332,9 +338,8 @@ export default function AtendimentoDetalhePage() {
                   metaAlign = "text-center";
                 }
 
-                if (ia) {
-                  // mantém alinhamento de AGENTE (direita),
-                  // apenas muda o visual da bolha para roxo
+                // IA → mesmo alinhamento do AGENTE (direita), só muda a cor
+                if (ia && !sistema && !cidadao) {
                   bubbleClasses =
                     "bg-violet-50 text-violet-900 rounded-2xl rounded-br-sm border border-violet-100";
                   // metaAlign continua "text-right"
@@ -362,7 +367,7 @@ export default function AtendimentoDetalhePage() {
                         className={`max-w-[80%] px-3 py-2 shadow-sm ${bubbleClasses}`}
                       >
                         {/* Etiqueta IA */}
-                        {ia && (
+                        {ia && !sistema && !cidadao && (
                           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 flex items-center justify-center gap-1">
                             <span>🤖</span>
                             <span>Atende Cidadão (IA)</span>

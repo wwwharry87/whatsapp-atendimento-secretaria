@@ -1,15 +1,15 @@
 // ESTE ARQUIVO É GERADO AUTOMATICAMENTE POR scripts/generateVersion.cjs
 // NÃO EDITE MANUALMENTE.
 
-export const APP_VERSION = "1.0.7";
-export const APP_BUILD_DATE_ISO = "2025-12-07T14:00:44.847Z";
+export const APP_VERSION = "1.0.8";
+export const APP_BUILD_DATE_ISO = "2025-12-11T14:36:24.556Z";
 
 export const VERSION_STORAGE_KEY = "atende_app_version";
 export const VERSION_SNOOZE_KEY = "atende_app_version_snooze_until";
 
 /**
  * Retorna um texto amigável com:
- * "Atualizado em: dd/MM/yyyy, às HH:mm:ss | v X.Y.Z"
+ * "Atualizado em: dd/MM/yyyy às HH:mm:ss | v X.Y.Z"
  */
 export function getFormattedVersionInfo(): string {
   try {
@@ -29,11 +29,14 @@ export function getFormattedVersionInfo(): string {
       hour12: false,
     });
 
-    // Normalmente vem "dd/mm/aaaa hh:mm:ss"
-    const [data, hora] = formatted.split(" ");
-    if (!data || !hora) {
+    // Normalmente vem "dd/mm/aaaa, hh:mm:ss"
+    const [dataRaw, hora] = formatted.split(" ");
+    if (!dataRaw || !hora) {
       return "v " + APP_VERSION;
     }
+
+    // Remove vírgulas sobrando do final da data, ex: "07/12/2025,"
+    const data = dataRaw.replace(/,+$/, "");
 
     return `Atualizado em: ${data} às ${hora} | v ${APP_VERSION}`;
   } catch {
