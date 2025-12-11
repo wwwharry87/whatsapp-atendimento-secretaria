@@ -158,6 +158,121 @@ function isGreeting(text: string): boolean {
   );
 }
 
+// ====================== TIPO DE ÓRGÃO / CLIENTE (prefeitura, escola, saúde etc.) ======================
+
+type OrgTipo = "PREFEITURA" | "EDUCACAO" | "SAUDE" | "ASSISTENCIA" | "ESCOLA" | "OUTRO";
+
+type OrgInfo = {
+  tipo: OrgTipo;
+  displayName: string;
+  escopoFrase: string;
+};
+
+/**
+ * Analisa o nome do cliente (tabela clientes.nome) e tenta entender
+ * que tipo de órgão é: prefeitura, secretaria de educação, saúde, assistência,
+ * escola/unidade ou genérico.
+ */
+function buildOrgInfo(clienteNome?: string | null): OrgInfo {
+  if (!clienteNome) {
+    return {
+      tipo: "OUTRO",
+      displayName: "o órgão responsável pelo atendimento",
+      escopoFrase:
+        "órgão público responsável pelos serviços atendidos neste canal",
+    };
+  }
+
+  const lower = clienteNome.toLowerCase();
+
+  // PREFEITURA
+  if (
+    lower.includes("prefeitura") ||
+    lower.includes("município de") ||
+    lower.includes("municipio de") ||
+    lower.includes("governo municipal")
+  ) {
+    return {
+      tipo: "PREFEITURA",
+      displayName: clienteNome,
+      escopoFrase:
+        "Prefeitura Municipal; atende assuntos gerais do município, como educação, saúde, assistência, tributos, obras e outros serviços públicos, conforme as configurações deste canal",
+    };
+  }
+
+  // EDUCAÇÃO / SEMED
+  if (
+    lower.includes("educação") ||
+    lower.includes("educacao") ||
+    lower.includes("semed") ||
+    lower.includes("secretaria municipal de educação")
+  ) {
+    return {
+      tipo: "EDUCACAO",
+      displayName: clienteNome,
+      escopoFrase:
+        "Secretaria Municipal de Educação; atende exclusivamente assuntos de educação, escolas, alunos, merenda e transporte escolar",
+    };
+  }
+
+  // SAÚDE
+  if (
+    lower.includes("saúde") ||
+    lower.includes("saude") ||
+    lower.includes("secretaria municipal de saúde") ||
+    lower.includes("sesau") ||
+    lower.includes("sms ")
+  ) {
+    return {
+      tipo: "SAUDE",
+      displayName: clienteNome,
+      escopoFrase:
+        "Secretaria de Saúde; atende exclusivamente assuntos de saúde vinculados a este órgão",
+    };
+  }
+
+  // ASSISTÊNCIA SOCIAL
+  if (
+    lower.includes("assistência social") ||
+    lower.includes("assistencia social") ||
+    lower.includes("secretaria de assistência") ||
+    lower.includes("secretaria de assistencia") ||
+    lower.includes("assistência e desenvolvimento social") ||
+    lower.includes("assistencia e desenvolvimento social")
+  ) {
+    return {
+      tipo: "ASSISTENCIA",
+      displayName: clienteNome,
+      escopoFrase:
+        "Secretaria de Assistência Social; atende assuntos de programas sociais, benefícios e serviços socioassistenciais",
+    };
+  }
+
+  // ESCOLA / CRECHE / UNIDADE
+  if (
+    lower.includes("escola ") ||
+    lower.includes("creche ") ||
+    lower.includes("cem ") ||
+    lower.includes("emei ") ||
+    lower.includes("emef ")
+  ) {
+    return {
+      tipo: "ESCOLA",
+      displayName: clienteNome,
+      escopoFrase:
+        "unidade de ensino (escola/creche); atende assuntos diretamente ligados à rotina dessa unidade, como matrícula, turmas, horários e comunicação com responsáveis",
+    };
+  }
+
+  // GENÉRICO / OUTROS ÓRGÃOS
+  return {
+    tipo: "OUTRO",
+    displayName: clienteNome,
+    escopoFrase:
+      "órgão público responsável pelos serviços atendidos neste canal",
+  };
+}
+
 // ====================== METADADOS DE COMANDO ======================
 
 type CommandMeta = {
@@ -1113,17 +1228,16 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     comandoDescricao: citizenMeta?.comandoDescricao ?? null,
   });
 
-  // ---------- IA DeepSeek: pré-atendimento fora do horário ----------
+  // ---------- IA: pré-atendimento fora do horário ----------
+  //
+  // Regra:
+  //   - IA habilitada
+  //   - Fora do horário de atendimento
+  //   - Fluxo em ASK_NAME (já com nome) ou ASK_DEPARTMENT
+  //
+  // No primeiro contato (sem nome ainda), seguimos o fluxo normal de pedir nome.
 
   const foraHorario = isOutOfBusinessHours();
-
-  /**
-   * Fora do horário, só usamos IA se:
-   *  - Já soubermos o nome do cidadão (mesmo em ASK_NAME), OU
-   *  - Já estivermos em ASK_DEPARTMENT.
-   *
-   * No primeiro contato (sem nome ainda), seguimos o fluxo normal de pedir nome.
-   */
   const podeUsarIAForaHorario =
     (session.status === "ASK_NAME" && !!session.citizenName) ||
     session.status === "ASK_DEPARTMENT";
@@ -1140,12 +1254,12 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         : "O cidadão entrou em contato fora do horário de atendimento.");
 
     const clienteNome = await getClienteNome(session.idcliente);
+    const orgInfo = buildOrgInfo(clienteNome);
 
-    const contexto = [
-      "Você é o *Atende Cidadão*, assistente virtual da prefeitura/órgão.",
-      clienteNome
-        ? `Nome do cliente (prefeitura/órgão): ${clienteNome}.`
-        : "O nome do cliente (prefeitura/órgão) não pôde ser identificado.",
+    const contextoParts: string[] = [
+      "Você é o *Atende Cidadão*, assistente virtual deste órgão público.",
+      `Nome do cliente / órgão: ${orgInfo.displayName}.`,
+      `Escopo do órgão: ${orgInfo.escopoFrase}.`,
       session.citizenName
         ? `Nome informado do cidadão: ${session.citizenName}.`
         : "Nome do cidadão ainda não informado.",
@@ -1156,11 +1270,51 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "Objetivo: orientar o cidadão, explicar de forma simples que é fora do horário e sugerir que ele deixe um recado para ser respondido no próximo expediente.",
       "Você deve:",
       "- Se apresentar de forma breve (1 frase).",
-      "- Mencionar o cliente (prefeitura/órgão) quando fizer sentido.",
+      "- Mencionar o órgão (cliente) quando fizer sentido.",
       "- Dar orientações gerais sobre o tipo de dúvida, sem prometer nada específico.",
       "- No final, incentive o cidadão a decidir se quer deixar um recado detalhado ou encerrar por enquanto.",
       "Responda em até 3 parágrafos curtos.",
-    ].join(" ");
+    ];
+
+    // Regras específicas para cada tipo de órgão
+
+    if (orgInfo.tipo === "EDUCACAO") {
+      contextoParts.push(
+        "Muito importante: neste canal você atende exclusivamente assuntos de EDUCAÇÃO.",
+        "Não use a palavra 'prefeitura'. Use sempre termos como 'Secretaria Municipal de Educação', 'Secretaria de Educação' ou 'SEMED'.",
+        "Não mencione saúde, tributos, obras ou outros temas fora da educação.",
+        "Se quiser dar exemplos, use apenas temas como matrícula escolar, merenda, transporte escolar, lotação de professores, calendário letivo, etc."
+      );
+    } else if (orgInfo.tipo === "SAUDE") {
+      contextoParts.push(
+        "Neste canal você atende exclusivamente assuntos de SAÚDE.",
+        "Evite mencionar temas como educação, obras ou tributos.",
+        "Se quiser dar exemplos, cite apenas temas como consultas, exames, vacinação, unidades de saúde, regulação e serviços relacionados à saúde."
+      );
+    } else if (orgInfo.tipo === "ASSISTENCIA") {
+      contextoParts.push(
+        "Neste canal você atende exclusivamente assuntos de ASSISTÊNCIA SOCIAL.",
+        "Evite mencionar temas de saúde, educação ou obras.",
+        "Se quiser dar exemplos, fale de benefícios sociais, CRAS, CREAS, programas sociais e serviços socioassistenciais."
+      );
+    } else if (orgInfo.tipo === "ESCOLA") {
+      contextoParts.push(
+        "Neste canal você atende exclusivamente assuntos desta UNIDADE DE ENSINO (escola/creche).",
+        "Não use a palavra 'prefeitura'. Use sempre o nome da escola ou expressão como 'nossa escola' ou 'nossa unidade'.",
+        "Se quiser dar exemplos, fale de matrícula, turmas, horários, reuniões, boletins, comunicação com responsáveis, etc."
+      );
+    } else if (orgInfo.tipo === "PREFEITURA") {
+      contextoParts.push(
+        "Neste canal você pode citar serviços gerais do município, como educação, saúde, assistência, tributos e obras, mas sempre de forma genérica.",
+        "Deixe claro que detalhes específicos e decisões dependem da equipe da prefeitura e das regras locais."
+      );
+    } else {
+      contextoParts.push(
+        "Evite dizer que é assistente da 'prefeitura' se o órgão não for explicitamente a prefeitura inteira. Prefira 'órgão' ou o nome oficial fornecido."
+      );
+    }
+
+    const contexto = contextoParts.join(" ");
 
     try {
       const ia = await gerarRespostaIA(
@@ -1170,14 +1324,13 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
 
       if (ia.sucesso && ia.resposta) {
-        // IA responde o contexto e o sistema adiciona o menu padrão 1/2 uma única vez
         const textoIa =
           ia.resposta.trim() +
           "\n\nResponda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar";
 
         await sendTextMessage(session.citizenNumber, textoIa);
 
-        // Salva resposta da IA
+        // Salva resposta da IA (texto exatamente enviado ao cidadão)
         await salvarMensagem({
           atendimentoId: session.atendimentoId,
           direcao: "IA" as any,
@@ -1209,7 +1362,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
     }
 
-    // Fallback se a IA falhar
+    // Fallback se a IA falhar (sem saldo, erro de rede, etc.)
     const orgFrase = clienteNome
       ? `da equipe de *${clienteNome}*`
       : "da equipe";
@@ -1277,6 +1430,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   if (session.status === "LEAVE_MESSAGE") {
     const clienteNome = await getClienteNome(session.idcliente);
+    const orgInfo = buildOrgInfo(clienteNome);
+
     const orgFrase = clienteNome
       ? `nossa equipe da *${clienteNome}*`
       : "nossa equipe";
@@ -1286,15 +1441,15 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     let textoFinal = ackBase;
 
+    // Se tiver texto e a IA estiver habilitada, deixa ela ajudar
     if (iaEstaHabilitada() && trimmed) {
       console.log(
         "[IA] Respondendo mensagem em modo LEAVE_MESSAGE (recado offline)..."
       );
 
-      const contexto = [
-        clienteNome
-          ? `Cliente (prefeitura/órgão): ${clienteNome}.`
-          : "Cliente (prefeitura/órgão) não identificado.",
+      const contextoParts: string[] = [
+        `Cliente / órgão: ${orgInfo.displayName}.`,
+        `Escopo do órgão: ${orgInfo.escopoFrase}.`,
         session.citizenName
           ? `Nome do cidadão: ${session.citizenName}.`
           : "Nome do cidadão não informado.",
@@ -1304,8 +1459,46 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         "Contexto: o atendimento está em modo de recado (LEAVE_MESSAGE), fora ou dentro do horário, mas sem atendimento humano imediato.",
         "Os atendentes humanos irão ler essa mensagem no próximo expediente e responder pelo canal oficial.",
         "Objetivo da IA: acolher o cidadão, dar orientação inicial e, se possível, sugerir caminhos gerais.",
-        "Importante: responda em no máximo 3 parágrafos curtos, sem despedidas longas e sem prometer algo que depende da prefeitura (emprego, benefício, vaga, etc.).",
-      ].join(" ");
+        "Importante: responda em no máximo 3 parágrafos curtos, sem despedidas longas e sem prometer algo que depende do órgão (como emprego, benefício, vaga etc.).",
+      ];
+
+      if (orgInfo.tipo === "EDUCACAO") {
+        contextoParts.push(
+          "Neste canal você atende exclusivamente assuntos de EDUCAÇÃO.",
+          "Não use a palavra 'prefeitura'. Use 'Secretaria Municipal de Educação', 'Secretaria de Educação' ou 'SEMED'.",
+          "Não mencione saúde, tributos, obras ou outros temas fora da educação.",
+          "Se quiser dar exemplos, cite apenas matrícula escolar, merenda, transporte escolar, lotação de professores, calendário letivo, etc."
+        );
+      } else if (orgInfo.tipo === "SAUDE") {
+        contextoParts.push(
+          "Neste canal você atende exclusivamente assuntos de SAÚDE.",
+          "Não fale de educação, obras ou tributos.",
+          "Se quiser dar exemplos, cite consultas, exames, vacinação, unidades de saúde, regulação, etc."
+        );
+      } else if (orgInfo.tipo === "ASSISTENCIA") {
+        contextoParts.push(
+          "Neste canal você atende exclusivamente assuntos de ASSISTÊNCIA SOCIAL.",
+          "Não traga temas de saúde, educação ou obras.",
+          "Se quiser dar exemplos, fale de benefícios sociais, programas sociais, CRAS, CREAS, etc."
+        );
+      } else if (orgInfo.tipo === "ESCOLA") {
+        contextoParts.push(
+          "Neste canal você atende exclusivamente assuntos desta UNIDADE DE ENSINO.",
+          "Não use 'prefeitura'. Use o nome da escola ou 'nossa escola', 'nossa unidade'.",
+          "Se quiser dar exemplos, fale de matrícula, turmas, horários, reuniões, boletins, comunicação com responsáveis, etc."
+        );
+      } else if (orgInfo.tipo === "PREFEITURA") {
+        contextoParts.push(
+          "Você pode mencionar serviços gerais da prefeitura (educação, saúde, assistência, tributos, obras), mas sempre de forma genérica.",
+          "Lembre-se: decisões específicas dependem da equipe da prefeitura."
+        );
+      } else {
+        contextoParts.push(
+          "Evite dizer que é assistente da 'prefeitura' se o órgão não for explicitamente a prefeitura inteira. Prefira 'órgão' ou o nome oficial."
+        );
+      }
+
+      const contexto = contextoParts.join(" ");
 
       const ia = await gerarRespostaIA(
         trimmed,
@@ -1314,8 +1507,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       );
 
       if (ia.sucesso && ia.resposta) {
+        // texto final = ACK + resposta da IA
         textoFinal = `${ackBase}\n\n${ia.resposta}`;
 
+        // Salvar mensagem da IA no banco
         await salvarMensagem({
           atendimentoId: session.atendimentoId,
           direcao: "IA" as any,
@@ -1340,6 +1535,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       }
     }
 
+    // Envia UMA mensagem só pro cidadão
     await sendTextMessage(session.citizenNumber, textoFinal);
 
     scheduleLeaveMessageAutoClose(session);
