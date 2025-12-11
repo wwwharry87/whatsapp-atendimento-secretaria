@@ -47,7 +47,7 @@ export type Session = {
   busyReminderCount?: number;
   lastActiveAt?: number;
   protocolo?: string;
-  /** NOVO: id do cliente (tabela clientes.id) */
+  /** id do cliente (tabela clientes.id) */
   idcliente?: number;
 };
 
@@ -113,9 +113,6 @@ function getSaudacaoPorHorario(): string {
  * Regra padrão de horário de atendimento humano:
  *   - Segunda a Sexta
  *   - Das 08:00 às 18:00 (fuso America/Sao_Paulo)
- *
- * Fora disso, consideramos "fora do horário" e a IA assume o pré-atendimento.
- * Depois podemos refinar para ler da tabela HorarioAtendimento.
  */
 function isOutOfBusinessHours(): boolean {
   try {
@@ -127,10 +124,7 @@ function isOutOfBusinessHours(): boolean {
     const diaSemana = agoraBR.getDay(); // 0 domingo, 6 sábado
     const hora = agoraBR.getHours();
 
-    // sábado (6) ou domingo (0)
     if (diaSemana === 0 || diaSemana === 6) return true;
-
-    // antes das 8h ou após 18h
     if (hora < 8 || hora >= 18) return true;
 
     return false;
@@ -328,8 +322,9 @@ let defaultClienteIdCache: number | null = null;
 
 /**
  * Recupera o id do cliente padrão.
- * Por enquanto: primeiro cliente ATIVO da tabela `clientes`.
- * (No teu banco: SEMED Tucuruí com id=1).
+ *
+ * 1) Primeiro tenta pegar um cliente com `ativo = true`
+ * 2) Se der erro (coluna não existe) ou não tiver, pega o primeiro da tabela
  */
 async function getDefaultClienteId(): Promise<number> {
   if (defaultClienteIdCache !== null) {
@@ -338,19 +333,50 @@ async function getDefaultClienteId(): Promise<number> {
 
   const repo = AppDataSource.getRepository(Cliente);
 
-  const cliente = await repo.findOne({
-    where: { ativo: true },
-    order: { id: "ASC" as any },
-  });
+  let cliente: Cliente | null = null;
+
+  try {
+    cliente = await repo.findOne({
+      where: { ativo: true as any },
+      order: { id: "ASC" as any },
+    });
+  } catch (err) {
+    console.log(
+      "[CLIENTE] Erro ao filtrar por ativo (talvez a coluna não exista).",
+      err
+    );
+  }
+
+  if (!cliente) {
+    cliente = await repo.findOne({
+      order: { id: "ASC" as any },
+    });
+  }
 
   if (!cliente) {
     throw new Error(
-      "Nenhum cliente ativo encontrado na tabela 'clientes'. Cadastre pelo menos um cliente ativo."
+      "Nenhum cliente encontrado na tabela 'clientes'. Cadastre pelo menos um registro."
     );
   }
 
   defaultClienteIdCache = cliente.id;
   return defaultClienteIdCache;
+}
+
+/**
+ * Recupera o nome do cliente (prefeitura/órgão) a partir do id,
+ * caindo no cliente padrão se não tiver id na sessão.
+ */
+async function getClienteNome(idcliente?: number): Promise<string | null> {
+  const repo = AppDataSource.getRepository(Cliente);
+
+  let effectiveId = idcliente;
+  if (effectiveId == null) {
+    effectiveId = await getDefaultClienteId();
+  }
+
+  const cliente = await repo.findOne({ where: { id: effectiveId } });
+  return cliente?.nome ?? null;
 }
 
 async function criarNovoAtendimento(
@@ -368,7 +394,6 @@ async function criarNovoAtendimento(
     "..."
   );
 
-  // Tenta recuperar o último atendimento para este número + cliente
   const ultimo = await repo.findOne({
     where: { cidadaoNumero: numero, idcliente },
     order: { criadoEm: "DESC" },
@@ -1089,16 +1114,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   });
 
   // ---------- IA DeepSeek: pré-atendimento fora do horário ----------
-  // Regra atual:
-  // - Só entra quando:
-  //   - IA está habilitada
-  //   - Está fora do horário de atendimento padrão
-  //   - E o fluxo ainda está em ASK_NAME ou ASK_DEPARTMENT
-  //
-  // Nesses casos:
-  //   1) IA responde o cidadão
-  //   2) Cidadão é convidado a deixar recado (LEAVE_MESSAGE_DECISION)
-  //   3) Não chama agente humano nem fila
+
   const foraHorario = isOutOfBusinessHours();
   const podeUsarIAForaHorario =
     session.status === "ASK_NAME" || session.status === "ASK_DEPARTMENT";
@@ -1114,7 +1130,13 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         ? "O cidadão enviou um áudio descrevendo a situação."
         : "O cidadão entrou em contato fora do horário de atendimento.");
 
+    const clienteNome = await getClienteNome(session.idcliente);
+
     const contexto = [
+      "Você é o *Atende Cidadão*, assistente virtual da prefeitura/órgão.",
+      clienteNome
+        ? `Nome do cliente (prefeitura/órgão): ${clienteNome}.`
+        : "O nome do cliente (prefeitura/órgão) não pôde ser identificado.",
       session.citizenName
         ? `Nome informado do cidadão: ${session.citizenName}.`
         : "Nome do cidadão ainda não informado.",
@@ -1122,37 +1144,81 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         ? `Setor mencionado/selecionado: ${session.departmentName}.`
         : "O setor ainda não foi selecionado.",
       "Situação: atendimento fora do horário padrão de funcionamento. Nenhum atendente humano está disponível agora.",
-      "Objetivo: orientar o cidadão, explicar que é fora do horário e sugerir que ele deixe um recado para ser respondido no próximo expediente.",
+      "Objetivo: orientar o cidadão, explicar de forma simples que é fora do horário e sugerir que ele deixe um recado para ser respondido no próximo expediente.",
+      "Você deve:",
+      "- Se apresentar de forma breve (1 frase).",
+      "- Mencionar o cliente (prefeitura/órgão) quando fizer sentido.",
+      "- Dar orientações gerais sobre o tipo de dúvida, sem prometer nada específico.",
+      "- No final, peça para ele responder com 1 ou 2, assim:",
+      '  \"Responda com:\\n1 - Deixar um recado detalhado\\n2 - Não, encerrar por enquanto\".',
+      "Responda em até 3 parágrafos curtos.",
     ].join(" ");
 
-    const ia = await gerarRespostaIA(
-      textoBaseIA,
-      "whatsapp_cidadao",
-      contexto
-    );
+    try {
+      const ia = await gerarRespostaIA(
+        textoBaseIA,
+        "whatsapp_cidadao",
+        contexto
+      );
 
-    if (ia.sucesso && ia.resposta) {
-      await sendTextMessage(session.citizenNumber, ia.resposta);
-    } else {
+      if (ia.sucesso && ia.resposta) {
+        const textoIa =
+          ia.resposta.trim() +
+          "\n\nResponda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar";
+
+        await sendTextMessage(session.citizenNumber, textoIa);
+
+        // Salva resposta da IA
+        await salvarMensagem({
+          atendimentoId: session.atendimentoId,
+          direcao: "IA" as any,
+          tipo: "TEXT" as MensagemTipo,
+          conteudoTexto: ia.resposta,
+          whatsappMessageId: undefined,
+          whatsappMediaId: undefined,
+          mediaUrl: undefined,
+          mimeType: undefined,
+          fileName: undefined,
+          fileSize: null,
+          remetenteNumero: "IA",
+          comandoCodigo: null,
+          comandoDescricao:
+            "Resposta da IA em pré-atendimento fora do horário.",
+        });
+
+        session.status = "LEAVE_MESSAGE_DECISION";
+        await atualizarAtendimento(session, {
+          status: "LEAVE_MESSAGE_DECISION",
+        });
+
+        return;
+      }
+    } catch (e) {
       console.log(
         "[IA] Falha ao obter resposta da IA fora do horário. Erro:",
-        ia.erro
-      );
-      await sendTextMessage(
-        session.citizenNumber,
-        "No momento estamos fora do horário de atendimento humano. Mesmo assim, você pode deixar sua mensagem aqui que ela será analisada no próximo expediente."
+        e
       );
     }
 
-    session.status = "LEAVE_MESSAGE_DECISION";
+    // Fallback se a IA falhar
+    const orgFrase = clienteNome
+      ? `da equipe de *${clienteNome}*`
+      : "da equipe";
 
     await sendTextMessage(
       session.citizenNumber,
-      `No momento estamos fora do horário de atendimento da equipe.\n\n` +
-        `Deseja deixar um recado detalhado para que possamos responder no próximo expediente?\n` +
-        `1 - Sim, deixar recado\n` +
-        `2 - Não, encerrar`
+      `No momento estamos fora do horário de atendimento ${orgFrase}. Mesmo assim, você pode deixar sua mensagem aqui que ela será analisada no próximo expediente.`
     );
+
+    await sendTextMessage(
+      session.citizenNumber,
+      "Deseja deixar um recado detalhado para que possamos responder no próximo expediente?\n1 - Sim, deixar recado\n2 - Não, encerrar"
+    );
+
+    session.status = "LEAVE_MESSAGE_DECISION";
+    await atualizarAtendimento(session, {
+      status: "LEAVE_MESSAGE_DECISION",
+    });
 
     return;
   }
@@ -1169,6 +1235,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
     if (onlyDigits === "1") {
       session.status = "LEAVE_MESSAGE";
+      await atualizarAtendimento(session, {
+        status: "LEAVE_MESSAGE",
+      });
       await sendTextMessage(
         session.citizenNumber,
         "Perfeito! 👍\nEscreva sua mensagem detalhada, envie fotos ou áudios.\nRegistraremos tudo."
@@ -1195,33 +1264,65 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     return;
   }
 
+  // ---------- Fluxo: Modo recado (LEAVE_MESSAGE) com IA + nome do cliente ----------
+
   if (session.status === "LEAVE_MESSAGE") {
-    // Se tiver texto e a IA estiver habilitada, deixa ela responder também
+    const clienteNome = await getClienteNome(session.idcliente);
+    const orgFrase = clienteNome
+      ? `nossa equipe da *${clienteNome}*`
+      : "nossa equipe";
+
+    const ackBase =
+      `Recebido ✅. Sua mensagem ficará registrada e ${orgFrase} vai analisar no próximo atendimento.`;
+
+    let textoFinal = ackBase;
+
     if (iaEstaHabilitada() && trimmed) {
       console.log(
         "[IA] Respondendo mensagem em modo LEAVE_MESSAGE (recado offline)..."
       );
-  
+
       const contexto = [
+        clienteNome
+          ? `Cliente (prefeitura/órgão): ${clienteNome}.`
+          : "Cliente (prefeitura/órgão) não identificado.",
         session.citizenName
           ? `Nome do cidadão: ${session.citizenName}.`
           : "Nome do cidadão não informado.",
         session.departmentName
-          ? `Setor responsável: ${session.departmentName}.`
-          : "Setor ainda não definido.",
-        "Contexto: o atendimento está em modo de recado (LEAVE_MESSAGE).",
-        "Os atendentes humanos só irão analisar essa mensagem depois.",
-        "Objetivo: responder de forma acolhedora, orientar o cidadão e, se fizer sentido, explicar que a resposta definitiva dependerá da equipe humana.",
+          ? `Setor responsável (se já definido): ${session.departmentName}.`
+          : "Setor ainda não definido (modo recado geral).",
+        "Contexto: o atendimento está em modo de recado (LEAVE_MESSAGE), fora ou dentro do horário, mas sem atendimento humano imediato.",
+        "Os atendentes humanos irão ler essa mensagem no próximo expediente e responder pelo canal oficial.",
+        "Objetivo da IA: acolher o cidadão, dar orientação inicial e, se possível, sugerir caminhos gerais.",
+        "Importante: responda em no máximo 3 parágrafos curtos, sem despedidas longas e sem prometer algo que depende da prefeitura (emprego, benefício, vaga, etc.).",
       ].join(" ");
-  
+
       const ia = await gerarRespostaIA(
         trimmed,
         "whatsapp_cidadao",
         contexto
       );
-  
+
       if (ia.sucesso && ia.resposta) {
-        await sendTextMessage(session.citizenNumber, ia.resposta);
+        textoFinal = `${ackBase}\n\n${ia.resposta}`;
+
+        await salvarMensagem({
+          atendimentoId: session.atendimentoId,
+          direcao: "IA" as any,
+          tipo: "TEXT" as MensagemTipo,
+          conteudoTexto: ia.resposta,
+          whatsappMessageId: undefined,
+          whatsappMediaId: undefined,
+          mediaUrl: undefined,
+          mimeType: undefined,
+          fileName: undefined,
+          fileSize: null,
+          remetenteNumero: "IA",
+          comandoCodigo: null,
+          comandoDescricao:
+            "Resposta da IA em modo LEAVE_MESSAGE (recado offline).",
+        });
       } else {
         console.log(
           "[IA] Falha ao responder em LEAVE_MESSAGE. Erro:",
@@ -1229,17 +1330,12 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         );
       }
     }
-  
-    // Mensagem padrão de confirmação de recado
-    await sendTextMessage(
-      session.citizenNumber,
-      "Recebido ✅. Sua mensagem ficará registrada e nossa equipe vai analisar no próximo atendimento. Se quiser, pode enviar mais detalhes."
-    );
-  
+
+    await sendTextMessage(session.citizenNumber, textoFinal);
+
     scheduleLeaveMessageAutoClose(session);
     return;
   }
-  
 
   // ---------- Fluxo: Fila (IN_QUEUE) ----------
 

@@ -10,7 +10,7 @@ import {
 import { Atendimento } from "./Atendimento";
 import { Cliente } from "./Cliente";
 
-export type MensagemDirecao = "CITIZEN" | "AGENT";
+export type MensagemDirecao = "CITIZEN" | "AGENT" | "IA";
 export type MensagemTipo =
   | "TEXT"
   | "IMAGE"

@@ -163,6 +163,8 @@ router.get(
           autorBase = "CIDADÃO";
         } else if (m.direcao === "AGENT") {
           autorBase = "AGENTE";
+        } else if (m.direcao === "IA") {
+          autorBase = "ASSISTENTE VIRTUAL";
         } else {
           autorBase = "SISTEMA";
         }
