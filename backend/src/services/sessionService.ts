@@ -1,6 +1,7 @@
 // src/services/sessionService.ts
 import {
   getDepartamentoPorIndice,
+  listarDepartamentos,
   montarMenuDepartamentos,
 } from "./departmentService";
 
@@ -21,7 +22,11 @@ import { salvarMensagem } from "./messageService";
 import { MensagemTipo } from "../entities/Mensagem";
 import { Cliente } from "../entities/Cliente";
 import { HorarioAtendimento } from "../entities/HorarioAtendimento";
-import { gerarRespostaIA, iaEstaHabilitada } from "./iaService";
+import {
+  classificarDepartamentoPorIntencaoIA,
+  gerarRespostaIA,
+  iaEstaHabilitada,
+} from "./iaService";
 
 export type SessionStatus =
   | "ASK_NAME"
@@ -54,6 +59,11 @@ export type Session = {
   leaveMessageAckSent?: boolean;
   /** se já oferecemos falar de protocolo nesta sessão */
   protocolHintSent?: boolean;
+  /** sugestão de setor pendente (quando a IA retorna MEDIA e pedimos confirmação) */
+  pendingDepartmentIndice?: number;
+  pendingDepartmentName?: string;
+  /** resumo inicial (1ª mensagem do cidadão) para o agente */
+  initialSummary?: string;
 };
 
 const sessionsByCitizen = new Map<string, Session>();
@@ -85,6 +95,110 @@ function getAgentKey(num?: string | null): string {
 
 function lowerTipo(tipo: MensagemTipo): string {
   return String(tipo || "").toLowerCase();
+}
+
+function stripAccents(input: string): string {
+  try {
+    return input.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  } catch {
+    return input;
+  }
+}
+
+function normText(input: string): string {
+  return stripAccents(String(input || "")).toLowerCase().trim();
+}
+
+function truncateResumo(texto: string, max: number = 140): string {
+  const t = String(texto || "").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1) + "…";
+}
+
+type SugestaoIndice = { indice: number; confianca: "ALTA" | "MEDIA"; motivo: string };
+
+/**
+ * Tentativa rápida (sem IA) para identificar setor por palavras-chave comuns.
+ * Funciona bem para SEMED/SEMEDC/SEMEC, mas também ajuda em outros órgãos.
+ */
+function sugerirIndicePorRegras(
+  mensagem: string,
+  departamentos: Array<{ nome: string | null }>
+): SugestaoIndice | null {
+  const m = normText(mensagem);
+  if (!m) return null;
+
+  const categories: Array<{
+    key: string;
+    msgRegex: RegExp;
+    deptHints: RegExp;
+    motivo: string;
+  }> = [
+    {
+      key: "alimentacao",
+      msgRegex: /(merenda|cardapio|cardápio|lanche|alimentacao|alimentaç|refeicao|refeição|nutri)/i,
+      deptHints: /(aliment|merenda|nutri|refeic)/i,
+      motivo: "Termos relacionados a merenda/cardápio/alimentação",
+    },
+    {
+      key: "transporte",
+      msgRegex: /(transporte|onibus|ônibus|rota|van|escolar|motorista)/i,
+      deptHints: /(transp|ônibus|onibus|rota)/i,
+      motivo: "Termos relacionados a transporte escolar/rotas",
+    },
+    {
+      key: "matricula",
+      msgRegex: /(matricula|matrícula|vaga|transferencia|transferência|remanejamento|documento|declaracao|declaração)/i,
+      deptHints: /(matric|secretaria|cadastro|document)/i,
+      motivo: "Termos relacionados a matrícula/documentos/cadastro",
+    },
+    {
+      key: "compras",
+      msgRegex: /(compras|licitacao|licitação|pregao|pregão|fornecedor|empenho|cotacao|cotação|contrato)/i,
+      deptHints: /(compr|licit|preg|contrat|empenh)/i,
+      motivo: "Termos relacionados a compras/licitação/contratos",
+    },
+    {
+      key: "almoxarifado",
+      msgRegex: /(almoxarifado|estoque|material|insumo|entrega|requisicao|requisição)/i,
+      deptHints: /(almox|estoq|material|insumo)/i,
+      motivo: "Termos relacionados a estoque/almoxarifado/materiais",
+    },
+    {
+      key: "censo",
+      msgRegex: /(censo|educacenso|inep|escolar|censo escolar)/i,
+      deptHints: /(censo|inep|educacenso)/i,
+      motivo: "Termos relacionados a censo escolar/INEP",
+    },
+    {
+      key: "gabinete",
+      msgRegex: /(gabinete|secretario|secretário|falar com secretario|falar com a secretaria|diretor|direção|direcao)/i,
+      deptHints: /(gabinete|direc|chefia|secretar)/i,
+      motivo: "Termos relacionados a gabinete/direção/chefia",
+    },
+  ];
+
+  // procura categoria que casa com a mensagem
+  for (const cat of categories) {
+    if (!cat.msgRegex.test(m)) continue;
+
+    // encontra o melhor departamento cujo nome combina com hints
+    let bestIdx = -1;
+    for (let i = 0; i < departamentos.length; i++) {
+      const dn = normText(departamentos[i].nome ?? "");
+      if (cat.deptHints.test(dn)) {
+        bestIdx = i;
+        break;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      return { indice: bestIdx + 1, confianca: "ALTA", motivo: cat.motivo };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -2156,15 +2270,31 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.leaveMessageAckSent = false;
       session.protocolHintSent = false;
 
-      const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
+      const idcliente = session.idcliente;
+      if (!idcliente) {
+        await sendTextMessage(
+          session.citizenNumber,
+          "⚠️ Não consegui identificar o órgão deste canal. Tente novamente em instantes."
+        );
+        return;
+      }
 
-      await sendMenuComNomeTemplate({
-        to: session.citizenNumber,
-        saudacao,
-        citizenName: session.citizenName ?? "Cidadão",
-        menuTexto: menuSemRodape,
+      const clienteNome = await getClienteNome(idcliente);
+      const orgInfo = buildOrgInfo(clienteNome);
+      const menu = await montarMenuDepartamentos(idcliente, {
+        semRodape: true,
+        semTitulo: true,
       });
+
+      await sendTextMessage(
+        session.citizenNumber,
+        `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋\n` +
+          `Você está falando com *${orgInfo.displayName}*.\n\n` +
+          `Você pode *escrever o que precisa* (ex: "merenda", "matrícula", "transporte") ou escolher um setor:\n\n` +
+          `${menu}\n\n` +
+          `Como posso ajudar?`
+      );
       return;
     }
     if (onlyDigits === "2") {
@@ -2216,22 +2346,38 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         status: "ASK_DEPARTMENT",
       });
 
-      const menuSemRodape = await montarMenuDepartamentos(true);
       const saudacao = getSaudacaoPorHorario();
+      const idcliente = session.idcliente;
+      if (!idcliente) {
+        await sendTextMessage(
+          session.citizenNumber,
+          "⚠️ Não consegui identificar o órgão deste canal. Tente novamente em instantes."
+        );
+        return;
+      }
 
-      await sendMenuComNomeTemplate({
-        to: session.citizenNumber,
-        saudacao,
-        citizenName: session.citizenName,
-        menuTexto: menuSemRodape,
+      const clienteNome = await getClienteNome(idcliente);
+      const orgInfo = buildOrgInfo(clienteNome);
+      const menu = await montarMenuDepartamentos(idcliente, {
+        semRodape: true,
+        semTitulo: true,
       });
+
+      await sendTextMessage(
+        session.citizenNumber,
+        `${saudacao}, *${session.citizenName}*! 👋\n` +
+          `Bem-vindo(a) ao atendimento de *${orgInfo.displayName}*.\n\n` +
+          `Você pode *escrever o que precisa* (ex: "merenda", "matrícula", "transporte") ou escolher um setor:\n\n` +
+          `${menu}\n\n` +
+          `Como posso ajudar?`
+      );
       return;
     }
   }
 
   // ---------- Escolha de departamento ----------
 
-  if (session.status === "ASK_DEPARTMENT") {
+    if (session.status === "ASK_DEPARTMENT") {
     console.log(
       "[FLOW] ASK_DEPARTMENT atendimento=",
       session.atendimentoId,
@@ -2239,185 +2385,332 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       trimmed
     );
 
-    const numero = parseInt(trimmed, 10);
-    if (isNaN(numero)) {
-      const menuComRodape = await montarMenuDepartamentos();
+    const idcliente = session.idcliente;
+    if (!idcliente) {
+      await sendTextMessage(
+        session.citizenNumber,
+        "⚠️ Não consegui identificar o órgão deste canal. Tente novamente em instantes."
+      );
+      return;
+    }
 
-      // 👉 Cidadão já conhecido (tem nome) e ainda não oferecemos falar de protocolo
-      if (session.citizenName && !session.protocolHintSent) {
-        session.protocolHintSent = true;
+    const clienteNome = await getClienteNome(idcliente);
+    const orgInfo = buildOrgInfo(clienteNome);
 
-        const saudacao = getSaudacaoPorHorario();
-        const menuSemRodape = await montarMenuDepartamentos(true);
+    const enviarMenuHibrido = async (opts?: { incluirProtocoloHint?: boolean }) => {
+      const menu = await montarMenuDepartamentos(idcliente, {
+        semRodape: true,
+        semTitulo: true,
+      });
 
-        const textoMenu =
-          `Percebi que você já falou com a gente outras vezes, *${session.citizenName}*.\n` +
-          `Se quiser, você pode *falar sobre algum protocolo já registrado* me enviando o número dele (por exemplo: ATD-20251210-ABC123).\n\n` +
-          `Se preferir abrir um *novo atendimento*, é só escolher o setor na lista abaixo:\n\n` +
-          menuSemRodape;
+      const partes: string[] = [];
+      const saudacao = getSaudacaoPorHorario();
 
-        await sendMenuComNomeTemplate({
-          to: session.citizenNumber,
-          saudacao,
-          citizenName: session.citizenName,
-          menuTexto: textoMenu,
+      if (session.citizenName) {
+        partes.push(`${saudacao}, *${session.citizenName}*! 👋`);
+      } else {
+        partes.push(`${saudacao}! 👋`);
+      }
+
+      partes.push(`Você está falando com *${orgInfo.displayName}*.`);
+      partes.push("");
+
+      if (opts?.incluirProtocoloHint) {
+        partes.push(
+          "Se você já tem um atendimento anterior, pode me enviar o *protocolo* (ex: ATD-20251210-ABC123)."
+        );
+        partes.push("");
+      }
+
+      partes.push(
+        "Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:"
+      );
+      partes.push("");
+      partes.push(menu);
+      partes.push("");
+      partes.push("Como posso ajudar?");
+
+      await sendTextMessage(session.citizenNumber, partes.join("\n"));
+    };
+
+    // 1) Se estamos aguardando confirmação de uma sugestão (confiança MEDIA)
+    if (session.pendingDepartmentIndice && session.pendingDepartmentName) {
+      const low = trimmedLower;
+
+      if (onlyDigits === "1" || low === "sim" || low === "s") {
+        const departamento = await getDepartamentoPorIndice(
+          idcliente,
+          session.pendingDepartmentIndice
+        );
+
+        session.pendingDepartmentIndice = undefined;
+        session.pendingDepartmentName = undefined;
+
+        if (!departamento) {
+          await enviarMenuHibrido({ incluirProtocoloHint: false });
+          return;
+        }
+
+        // aplica seleção
+        session.departmentId = departamento.id;
+        session.departmentName = departamento.nome ?? undefined;
+        session.agentNumber = departamento.responsavelNumero || undefined;
+        session.agentName = departamento.responsavelNome || "Responsável";
+        session.busyReminderCount = 0;
+
+        await atualizarAtendimento(session, {
+          departamentoId: departamento.id,
+          agenteNumero: session.agentNumber,
+          agenteNome: session.agentName,
+          status: "WAITING_AGENT_CONFIRMATION",
         });
 
+        const key = getAgentKey(session.agentNumber);
+        if (key) sessionsByAgent.set(key, session);
+        const agenteEnvio = normalizePhone(session.agentNumber);
+
+        await sendTextMessage(
+          session.citizenNumber,
+          `Entendi! Vou encaminhar você para o setor *${departamento.nome}*. ⏳\n` +
+            `Pode ir descrevendo sua situação aqui.`
+        );
+
+        await sendNovoAtendimentoTemplateToAgent({
+          to: agenteEnvio,
+          departamentoNome: departamento.nome ?? "Setor",
+          cidadaoNome: session.citizenName ?? "Cidadão",
+          telefoneCidadao: session.citizenNumber,
+          resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+        });
+
+        scheduleBusyReminder(session);
         return;
       }
 
-      // Se ele só mandou um "oi" e já tem nome, reforçamos o menu normal (sem repetir protocolo)
-      if (session.citizenName && greetingMessage) {
-        const saudacao = getSaudacaoPorHorario();
-        const menuSemRodape = await montarMenuDepartamentos(true);
+      if (onlyDigits === "2" || low === "nao" || low === "não" || low === "n") {
+        // rejeita sugestão
+        session.pendingDepartmentIndice = undefined;
+        session.pendingDepartmentName = undefined;
+        await enviarMenuHibrido({ incluirProtocoloHint: false });
+        return;
+      }
 
-        await sendMenuComNomeTemplate({
-          to: session.citizenNumber,
-          saudacao,
-          citizenName: session.citizenName,
-          menuTexto: menuSemRodape,
-        });
-      } else {
+      // se digitou outro número, segue seleção direta; se texto, segue classificação normal
+      session.pendingDepartmentIndice = undefined;
+      session.pendingDepartmentName = undefined;
+    }
+
+    // 2) Comandos rápidos (sempre disponíveis)
+    if (
+      trimmedLower === "menu" ||
+      trimmedLower === "voltar" ||
+      trimmedLower === "trocar setor" ||
+      trimmedLower === "setores" ||
+      greetingMessage
+    ) {
+      // Oferece dica de protocolo só uma vez por sessão para cidadãos já conhecidos
+      const incluirProtocoloHint =
+        Boolean(session.citizenName) && !session.protocolHintSent;
+
+      if (incluirProtocoloHint) session.protocolHintSent = true;
+
+      await enviarMenuHibrido({ incluirProtocoloHint });
+      return;
+    }
+
+    // 3) Seleção direta por número (rápido, sem IA)
+    const numero = /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : NaN;
+
+    if (!isNaN(numero)) {
+      const departamento = await getDepartamentoPorIndice(idcliente, numero);
+
+      if (!departamento) {
         await sendTextMessage(
           session.citizenNumber,
-          "Digite apenas o número da opção desejada.\n\n" + menuComRodape
+          "Opção inválida. Por favor, escolha um número da lista."
         );
+        await enviarMenuHibrido({ incluirProtocoloHint: false });
+        return;
       }
-      return;
-    }
 
-    const departamento = await getDepartamentoPorIndice(numero);
-    if (!departamento) {
-      const menu = await montarMenuDepartamentos();
-      await sendTextMessage(
-        session.citizenNumber,
-        "Opção inválida. Tente novamente.\n\n" + menu
-      );
-      return;
-    }
-
-    console.log(
-      "[DEPARTAMENTO] Opção menu=",
-      numero,
-      "resultou em departamento=",
-      departamento.nome,
-      "id=",
-      departamento.id
-    );
-
-    session.departmentId = departamento.id;
-    session.departmentName = departamento.nome ?? undefined;
-    session.agentNumber = departamento.responsavelNumero || undefined;
-    session.agentName = departamento.responsavelNome || "Responsável";
-    session.busyReminderCount = 0;
-
-    console.log(
-      "[DEPARTAMENTO] Sessão atualizada com departamento=",
-      session.departmentName,
-      ", agente=",
-      session.agentNumber
-    );
-
-    if (!session.agentNumber) {
-      await atualizarAtendimento(session, {
-        departamentoId: departamento.id,
-        status: "ASK_DEPARTMENT",
-      });
-
-      await sendTextMessage(
-        session.citizenNumber,
-        "Este setor está sem responsável configurado no momento. Sua solicitação foi registrada."
-      );
-      return;
-    }
-
-    const idcliente = session.idcliente ?? (await getDefaultClienteId());
-    const { busy, queueCount } = await getAgentBusyAndQueueCount(
-      session.agentNumber,
-      idcliente
-    );
-
-    console.log(
-      "[DEPARTAMENTO] Resultado busy=",
-      busy,
-      ", queueCount=",
-      queueCount,
-      "para agente=",
-      session.agentNumber,
-      "idcliente=",
-      idcliente
-    );
-
-    if (busy) {
-      session.status = "IN_QUEUE";
+      session.departmentId = departamento.id;
+      session.departmentName = departamento.nome ?? undefined;
+      session.agentNumber = departamento.responsavelNumero || undefined;
+      session.agentName = departamento.responsavelNome || "Responsável";
+      session.busyReminderCount = 0;
 
       await atualizarAtendimento(session, {
         departamentoId: departamento.id,
         agenteNumero: session.agentNumber,
         agenteNome: session.agentName,
-        status: "IN_QUEUE" as AtendimentoStatus,
+        status: "WAITING_AGENT_CONFIRMATION",
       });
 
-      const pos = queueCount + 1;
+      const key = getAgentKey(session.agentNumber);
+      if (key) sessionsByAgent.set(key, session);
+      const agenteEnvio = normalizePhone(session.agentNumber);
 
       await sendTextMessage(
         session.citizenNumber,
-        `📥 Todos os atendentes de *${departamento.nome}* estão ocupados no momento.\n` +
-          `Você entrou na fila e está na posição *${pos}*.\n` +
-          `Quando chegar sua vez, vamos te avisar aqui.`
+        `Aguarde um instante, estou contatando o setor *${departamento.nome}*. ⏳\n` +
+          `Pode ir descrevendo sua situação aqui.`
       );
 
+      await sendNovoAtendimentoTemplateToAgent({
+        to: agenteEnvio,
+        departamentoNome: departamento.nome ?? "Setor",
+        cidadaoNome: session.citizenName ?? "Cidadão",
+        telefoneCidadao: session.citizenNumber,
+        resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+      });
+
+      scheduleBusyReminder(session);
       return;
     }
 
-    session.status = "WAITING_AGENT_CONFIRMATION";
+    // 4) Resposta por texto: tentamos roteamento inteligente
+    const deps = await listarDepartamentos({ idcliente, somenteAtivos: true });
 
-    await atualizarAtendimento(session, {
-      departamentoId: departamento.id,
-      agenteNumero: session.agentNumber,
-      agenteNome: session.agentName,
-      status: "WAITING_AGENT_CONFIRMATION",
-    });
+    if (!deps.length) {
+      await sendTextMessage(
+        session.citizenNumber,
+        "⚠️ Ainda não há setores configurados para este canal. Por favor, tente novamente mais tarde."
+      );
+      return;
+    }
 
-    const key = getAgentKey(session.agentNumber);
-    if (key) sessionsByAgent.set(key, session);
-    const agenteEnvio = normalizePhone(session.agentNumber);
+    // Guardamos um resumo inicial pro agente (a 1ª intenção do cidadão)
+    if (!session.initialSummary) {
+      session.initialSummary = truncateResumo(trimmed);
+    }
 
+    // 4.1) Tentativa por regras (barata e rápida)
+    const sugestaoRegra = sugerirIndicePorRegras(trimmed, deps);
+
+    if (sugestaoRegra?.confianca === "ALTA") {
+      const departamento = await getDepartamentoPorIndice(
+        idcliente,
+        sugestaoRegra.indice
+      );
+
+      if (departamento) {
+        session.departmentId = departamento.id;
+        session.departmentName = departamento.nome ?? undefined;
+        session.agentNumber = departamento.responsavelNumero || undefined;
+        session.agentName = departamento.responsavelNome || "Responsável";
+        session.busyReminderCount = 0;
+
+        await atualizarAtendimento(session, {
+          departamentoId: departamento.id,
+          agenteNumero: session.agentNumber,
+          agenteNome: session.agentName,
+          status: "WAITING_AGENT_CONFIRMATION",
+        });
+
+        const key = getAgentKey(session.agentNumber);
+        if (key) sessionsByAgent.set(key, session);
+        const agenteEnvio = normalizePhone(session.agentNumber);
+
+        await sendTextMessage(
+          session.citizenNumber,
+          `Entendi! Vou encaminhar você para o setor *${departamento.nome}*. ⏳\n` +
+            `Pode ir descrevendo sua situação aqui.`
+        );
+
+        await sendNovoAtendimentoTemplateToAgent({
+          to: agenteEnvio,
+          departamentoNome: departamento.nome ?? "Setor",
+          cidadaoNome: session.citizenName ?? "Cidadão",
+          telefoneCidadao: session.citizenNumber,
+          resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+        });
+
+        scheduleBusyReminder(session);
+        return;
+      }
+    }
+
+    // 4.2) IA (somente se habilitada)
+    if (iaEstaHabilitada()) {
+      const roteamento = await classificarDepartamentoPorIntencaoIA({
+        mensagemUsuario: trimmed,
+        departamentos: deps.map((d) => ({
+          id: d.id,
+          nome: d.nome || "",
+          descricao: d.descricao,
+        })),
+      });
+
+      if (roteamento.confianca === "ALTA" && roteamento.indice) {
+        const departamento = await getDepartamentoPorIndice(
+          idcliente,
+          roteamento.indice
+        );
+
+        if (departamento) {
+          session.departmentId = departamento.id;
+          session.departmentName = departamento.nome ?? undefined;
+          session.agentNumber = departamento.responsavelNumero || undefined;
+          session.agentName = departamento.responsavelNome || "Responsável";
+          session.busyReminderCount = 0;
+
+          await atualizarAtendimento(session, {
+            departamentoId: departamento.id,
+            agenteNumero: session.agentNumber,
+            agenteNome: session.agentName,
+            status: "WAITING_AGENT_CONFIRMATION",
+          });
+
+          const key = getAgentKey(session.agentNumber);
+          if (key) sessionsByAgent.set(key, session);
+          const agenteEnvio = normalizePhone(session.agentNumber);
+
+          await sendTextMessage(
+            session.citizenNumber,
+            `Entendi! Vou encaminhar você para o setor *${departamento.nome}*. ⏳\n` +
+              `Pode ir descrevendo sua situação aqui.`
+          );
+
+          await sendNovoAtendimentoTemplateToAgent({
+            to: agenteEnvio,
+            departamentoNome: departamento.nome ?? "Setor",
+            cidadaoNome: session.citizenName ?? "Cidadão",
+            telefoneCidadao: session.citizenNumber,
+            resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+          });
+
+          scheduleBusyReminder(session);
+          return;
+        }
+      }
+
+      if (roteamento.confianca === "MEDIA" && roteamento.indice) {
+        const departamento = await getDepartamentoPorIndice(
+          idcliente,
+          roteamento.indice
+        );
+
+        if (departamento) {
+          session.pendingDepartmentIndice = roteamento.indice;
+          session.pendingDepartmentName = departamento.nome || undefined;
+
+          await sendTextMessage(
+            session.citizenNumber,
+            `Só pra eu acertar: você quer falar com o setor *${departamento.nome}*?\n\n` +
+              `1 - Sim\n` +
+              `2 - Não, ver lista de setores`
+          );
+          return;
+        }
+      }
+    }
+
+    // 5) Fallback: pede pro usuário escolher (mantém robustez)
     await sendTextMessage(
       session.citizenNumber,
-      `Aguarde um instante, estou contatando o setor *${departamento.nome}*. ⏳\n` +
-        `Pode ir descrevendo sua situação aqui.`
+      "Não consegui identificar o setor com segurança. Por favor, escolha uma opção da lista ou escreva com mais detalhes:"
     );
-
-    console.log(
-      "[ROTEAMENTO] Enviando nova solicitação para agente=",
-      agenteEnvio,
-      "dep=",
-      departamento.nome,
-      "cidadao=",
-      session.citizenNumber,
-      "atendimento=",
-      session.atendimentoId
-    );
-
-    console.log(
-      "[TEMPLATE] Chamando novo_atendimento_agente para agente=",
-      agenteEnvio,
-      "dep=",
-      departamento.nome,
-      "cidadao=",
-      session.citizenNumber
-    );
-
-    await sendNovoAtendimentoTemplateToAgent({
-      to: agenteEnvio,
-      departamentoNome: departamento.nome ?? "Setor",
-      cidadaoNome: session.citizenName ?? "Cidadão",
-      telefoneCidadao: session.citizenNumber,
-      resumo: "-",
-    });
-
-    scheduleBusyReminder(session);
+    await enviarMenuHibrido({ incluirProtocoloHint: false });
     return;
   }
 
@@ -2655,7 +2948,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
         return;
       }
 
-      const novoDep = await getDepartamentoPorIndice(idx);
+      const idcliente = session.idcliente ?? (await getDefaultClienteId());
+      const novoDep = await getDepartamentoPorIndice(idcliente, idx);
       if (!novoDep) {
         await sendTextMessage(
           agentFullNumber,
