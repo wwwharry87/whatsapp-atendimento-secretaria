@@ -253,6 +253,10 @@ router.get("/:id", async (req: Request, res: Response) => {
  * POST /recados/:id/responder
  *
  * Responde ao cidadão a partir do painel (modo recado).
+ *
+ * Aqui é onde a gente garante que:
+ *  - o WhatsApp usado é o do idcliente do atendimento
+ *  - o registro da mensagem fica com o idcliente correto
  */
 router.post("/:id/responder", async (req: Request, res: Response) => {
   try {
@@ -335,7 +339,9 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
         "Você pode responder esta mensagem normalmente caso tenha dúvidas ou queira complementar informações, até que o atendimento seja marcado como concluído.";
     }
 
-    await sendTextMessage(numeroCidadao, aviso);
+    await sendTextMessage(numeroCidadao, aviso, {
+      idcliente: Number(idcliente),
+    });
 
     // 2) Define tipo de mídia (se houver)
     let tipoMensagem: "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO" =
@@ -360,26 +366,30 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
         ? `🧑‍💼 *${agenteNome}*:\n${mensagem.trim()}`
         : mensagem.trim();
 
-      await sendTextMessage(numeroCidadao, corpoAgente);
+      await sendTextMessage(numeroCidadao, corpoAgente, {
+        idcliente: Number(idcliente),
+      });
     }
 
     // 4) Envio da mídia (se existir)
     if (mediaId) {
+      const sendOpts = { idcliente: Number(idcliente) };
+
       if (tipoMensagem === "IMAGE") {
-        await sendImageMessageById(numeroCidadao, mediaId);
+        await sendImageMessageById(numeroCidadao, mediaId, sendOpts);
       } else if (tipoMensagem === "AUDIO") {
-        await sendAudioMessageById(numeroCidadao, mediaId);
+        await sendAudioMessageById(numeroCidadao, mediaId, sendOpts);
       } else if (tipoMensagem === "VIDEO") {
-        await sendVideoMessageById(numeroCidadao, mediaId);
+        await sendVideoMessageById(numeroCidadao, mediaId, sendOpts);
       } else {
         // DOCUMENT ou fallback
-        await sendDocumentMessageById(numeroCidadao, mediaId);
+        await sendDocumentMessageById(numeroCidadao, mediaId, sendOpts);
       }
     }
 
     // 5) Registra mensagem no histórico (AGORA COM idcliente e suporte a mídia)
     const msgEntity = repoMensagem.create({
-      idcliente, // multi-tenant
+      idcliente: Number(idcliente), // multi-tenant
       atendimentoId: atendimento.id,
       direcao: "AGENT" as any,
       tipo: tipoMensagem as any,
@@ -389,7 +399,8 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       mimeType: mimeType || null,
       fileName: fileName || null,
       fileSize: fileSize ?? null,
-      remetenteNumero: agenteNumero || (atendimento as any).agenteNumero || "PAINEL",
+      remetenteNumero:
+        agenteNumero || (atendimento as any).agenteNumero || "PAINEL",
       comandoCodigo: null,
       comandoDescricao: mediaId
         ? "Recado (mídia) enviado pelo painel de recados (modo recado)."
