@@ -270,15 +270,7 @@ function isGreeting(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return false;
 
-  const ignoreWords = [
-    "oi",
-    "ola",
-    "olá",
-    "bom dia",
-    "boa tarde",
-    "boa noite",
-    "menu",
-  ];
+  const ignoreWords = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "menu"];
 
   return (
     ignoreWords.some((w) => trimmed.startsWith(w)) &&
@@ -1144,27 +1136,54 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
 
 // ====================== TIMERS ======================
 
+/**
+ * Timer do modo recado:
+ * - NÃO encerra mais o atendimento sozinho;
+ * - Garante que exista protocolo;
+ * - Envia confirmação amigável para o cidadão (se ainda não foi enviada);
+ * - Avisa o agente que há recado registrado com aquele protocolo;
+ * - Mantém o status em LEAVE_MESSAGE (recado continua aberto no painel).
+ */
 function scheduleLeaveMessageAutoClose(session: Session) {
   const citizenKey = normalizePhone(session.citizenNumber);
   const atendimentoId = session.atendimentoId;
-  const MINUTOS = 10;
+  const TIMEOUT_MINUTOS = 10;
+
+  // usamos lastActiveAt para evitar múltiplos timers agindo sobre o mesmo recado
+  const scheduledAt = Date.now();
+  session.lastActiveAt = scheduledAt;
 
   setTimeout(async () => {
     const current = sessionsByCitizen.get(citizenKey);
     if (!current) return;
     if (current.atendimentoId !== atendimentoId) return;
     if (current.status !== "LEAVE_MESSAGE") return;
+    if (current.lastActiveAt !== scheduledAt) return;
 
-    const protocolo = await fecharAtendimentoComProtocolo(current);
+    // ⚠️ IMPORTANTE:
+    // Aqui NÃO vamos concluir o atendimento.
+    // Apenas garantimos o protocolo, confirmamos o registro e avisamos o agente.
 
-    await sendTextMessage(
-      current.citizenNumber,
-      `✅ Sua mensagem foi registrada e o atendimento foi encerrado.\n` +
-        `Número de protocolo: *${protocolo}*.\n` +
-        `Guarde este número para acompanhar sua solicitação.`
-    );
+    const protocolo = await ensureProtocolForSession(current);
 
-    // ⚠️ NOVO: avisar o agente responsável que houve recado encerrado com protocolo
+    // Se ainda não enviamos o ACK formal do recado, mandamos agora
+    if (!current.leaveMessageAckSent) {
+      const clienteNome = await getClienteNome(current.idcliente);
+      const orgFrase = clienteNome
+        ? `nossa equipe da *${clienteNome}*`
+        : "nossa equipe responsável";
+
+      await sendTextMessage(
+        current.citizenNumber,
+        `✅ Seu recado foi registrado e será analisado por ${orgFrase}.\n` +
+          `Protocolo: *${protocolo}*.\n` +
+          `Guarde este número para acompanhar sua solicitação.`
+      );
+
+      current.leaveMessageAckSent = true;
+    }
+
+    // Avisar o agente responsável que existe recado pendente
     if (current.agentNumber) {
       const agenteEnvio = normalizePhone(current.agentNumber);
       const nomeCidadao = current.citizenName ?? current.citizenNumber;
@@ -1172,18 +1191,17 @@ function scheduleLeaveMessageAutoClose(session: Session) {
 
       await sendTextMessage(
         agenteEnvio,
-        `📩 *Novo recado encerrado (modo recado)*\n\n` +
+        `📩 *Novo recado registrado (modo recado)*\n\n` +
           `Setor: *${nomeSetor}*\n` +
           `Cidadão: *${nomeCidadao}*\n` +
           `Protocolo: *${protocolo}*.\n\n` +
-          `Os detalhes completos estão disponíveis no painel do Atende Cidadão.`
+          `O atendimento continua aberto no painel do Atende Cidadão até que você marque como concluído.`
       );
     }
 
-    await ativarProximoDaFila(current);
-
-    sessionsByCitizen.delete(citizenKey);
-  }, MINUTOS * 60 * 1000);
+    // ✅ Não mudamos status para FINISHED, nem encerradoEm,
+    // não chamamos ativarProximoDaFila e nem removemos a sessão aqui.
+  }, TIMEOUT_MINUTOS * 60 * 1000);
 }
 
 function scheduleActiveAutoClose(session: Session) {
@@ -1844,7 +1862,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         }. 👍\nSeu recado já está registrado.\nProtocolo: *${protocolo}*.\nSe precisar de algo depois, é só mandar mensagem.`
       );
 
-      // ⚠️ NOVO: avisar o agente que o recado foi encerrado manualmente pelo cidadão
+      // avisar o agente que o recado foi encerrado manualmente pelo cidadão
       if (session.agentNumber) {
         const agenteEnvio = normalizePhone(session.agentNumber);
         const nomeCidadao = session.citizenName ?? session.citizenNumber;
@@ -1868,8 +1886,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     const clienteNome = await getClienteNome(session.idcliente);
     const orgInfo = buildOrgInfo(clienteNome);
 
-    // ⚠️ NOVO: sempre que o cidadão manda um recado (texto/áudio/imagem/etc.),
-    // encaminhamos para o agente responsável, se existir.
+    // Sempre que o cidadão manda um recado, encaminhamos para o agente.
     await encaminharRecadoParaAgente({
       session,
       tipo,
@@ -1877,9 +1894,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       mediaId,
     });
 
-    // ACK mais humano:
-    // - primeira mensagem: confirma e explica que será analisado
-    // - demais: NÃO manda mais "Entendi, Nome"; deixa só a resposta da IA
+    // ACK mais humano
     let ackBase = "";
     if (!session.leaveMessageAckSent) {
       const orgFrase = clienteNome
@@ -2110,14 +2125,14 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     session.status = "ASK_ANOTHER_DEPARTMENT";
 
     await sendTextMessage(
-      session.citizenNumber,
-      "Agradecemos sua avaliação! 🌟\n\n" +
-        "Deseja falar com *outro setor*?\n" +
-        "1 - Sim, abrir atendimento em outro setor\n" +
-        "2 - Não, encerrar por aqui"
-    );
-    return;
-  }
+        session.citizenNumber,
+        "Agradecemos sua avaliação! 🌟\n\n" +
+          "Deseja falar com *outro setor*?\n" +
+          "1 - Sim, abrir atendimento em outro setor\n" +
+          "2 - Não, encerrar por aqui"
+      );
+      return;
+    }
 
   // ---------- Outro departamento após encerramento ----------
 

@@ -1,6 +1,5 @@
 // src/routes/recadosRoutes.ts
 import { Router, Request, Response } from "express";
-import { In } from "typeorm";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { Mensagem } from "../entities/Mensagem";
@@ -11,17 +10,26 @@ import {
   sendAudioMessageById,
   sendVideoMessageById,
 } from "../services/whatsappService";
+import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
 
 /**
  * Helper para pegar idcliente do usuário autenticado (se existir)
+ * Compatível com o authMiddleware (req.idcliente)
+ * e também com req.user.idcliente, se em algum ponto for usado assim.
  */
 function getRequestClienteId(req: Request): number | undefined {
-  const user = (req as any).user;
-  if (user && typeof user.idcliente === "number") {
-    return user.idcliente;
+  const r = req as AuthRequest & { user?: any };
+
+  if (typeof r.idcliente === "number") {
+    return r.idcliente;
   }
+
+  if (r.user && typeof r.user.idcliente === "number") {
+    return r.user.idcliente;
+  }
+
   return undefined;
 }
 
@@ -82,7 +90,10 @@ router.get("/", async (req: Request, res: Response) => {
     const page = req.query.page ? Number(req.query.page) : 1;
     const perPage = req.query.perPage ? Number(req.query.perPage) : 20;
 
-    let statuses: AtendimentoStatus[] = ["LEAVE_MESSAGE", "LEAVE_MESSAGE_DECISION"];
+    let statuses: AtendimentoStatus[] = [
+      "LEAVE_MESSAGE",
+      "LEAVE_MESSAGE_DECISION",
+    ];
 
     if (statusParam === "encerrados") {
       statuses = ["FINISHED"];

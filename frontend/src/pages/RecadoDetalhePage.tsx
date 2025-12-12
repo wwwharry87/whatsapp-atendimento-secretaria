@@ -2,11 +2,7 @@
 import { useEffect, useState, ChangeEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
-import {
-  RecadoStatus,
-  RecadoDetalhe,
-  RecadoMensagem,
-} from "../types";
+import { RecadoStatus, RecadoDetalhe, RecadoMensagem } from "../types";
 
 function formatarDataBr(valor?: string | null) {
   if (!valor) return "-";
@@ -51,8 +47,7 @@ export default function RecadoDetalhePage() {
 
   const [concluindo, setConcluindo] = useState(false);
 
-  const podeResponder =
-    !!recado && recado.status !== "FINISHED";
+  const podeResponder = !!recado && recado.status !== "FINISHED";
 
   async function carregar() {
     if (!id) return;
@@ -81,7 +76,7 @@ export default function RecadoDetalhePage() {
 
   async function handleResponder(e: React.FormEvent) {
     e.preventDefault();
-    if (!id) return;
+    if (!id || !recado) return;
 
     const texto = resposta.trim();
     if (!texto && !fileToUpload) {
@@ -98,45 +93,49 @@ export default function RecadoDetalhePage() {
             mimeType?: string;
             fileName?: string;
             fileSize?: number;
-            mediaUrl?: string;
-            tipoMidia?: "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO";
-            tipo?: string;
           }
         | null = null;
 
-      // 1) Se tiver arquivo, faz upload AGORA
+      // 1) Se tiver arquivo, faz upload AGORA (já mandando atendimentoId)
       if (fileToUpload) {
         const formData = new FormData();
         formData.append("file", fileToUpload);
+        // importante para o backend conseguir resolver o idcliente via atendimento
+        formData.append("atendimentoId", recado.id);
 
-        const uploadResp = await api.post("/media/upload", formData, {
+        const uploadResp = await api.post<{
+          mediaId: string;
+          mimeType: string;
+          fileName: string;
+          fileSize: number;
+        }>("/media/upload", formData, {
           headers: {
             "Content-Type": "multipart/form-data",
           },
         });
 
-        mediaPayload = uploadResp.data;
+        const { mediaId, mimeType, fileName, fileSize } = uploadResp.data;
+
+        mediaPayload = {
+          mediaId,
+          mimeType,
+          fileName,
+          fileSize,
+        };
       }
 
       // 2) Envia recado (texto + anexo junto)
       await api.post(`/recados/${id}/responder`, {
         mensagem: texto || undefined,
-        agenteNome: recado?.agenteNome || undefined,
-        agenteNumero: recado?.agenteNumero || undefined,
-        tipoMidia:
-          mediaPayload?.tipoMidia ||
-          (mediaPayload?.tipo as
-            | "TEXT"
-            | "IMAGE"
-            | "DOCUMENT"
-            | "AUDIO"
-            | "VIDEO"
-            | undefined),
+        // opcional: pode preencher com o nome/número do usuário logado no painel
+        agenteNome: recado.agenteNome || undefined,
+        agenteNumero: recado.agenteNumero || undefined,
+
+        // campos de mídia (o backend pode usar isso pra enviar o anexo)
         mediaId: mediaPayload?.mediaId,
         mimeType: mediaPayload?.mimeType,
         fileName: mediaPayload?.fileName,
         fileSize: mediaPayload?.fileSize,
-        mediaUrl: mediaPayload?.mediaUrl,
       });
 
       setResposta("");
@@ -305,7 +304,6 @@ export default function RecadoDetalhePage() {
                 {recado.mensagens.map((m) => {
                   const isCitizen = m.direcao?.toUpperCase() === "CITIZEN";
                   const isAgent = m.direcao?.toUpperCase() === "AGENT";
-                  const isIA = m.direcao?.toUpperCase() === "IA";
 
                   return (
                     <div
@@ -377,7 +375,7 @@ export default function RecadoDetalhePage() {
                   disabled={!podeResponder || enviando}
                 />
 
-                {/* Anexo */}
+                {/* Anexo + botão único */}
                 <div className="flex items-center justify-between gap-3 mt-1">
                   <label className="inline-flex items-center gap-2 text-xs text-slate-600">
                     <span className="px-2 py-1 rounded-lg border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100">
