@@ -7,26 +7,13 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 
-/**
- * Cliente (órgão/secretaria) que utiliza o Atende Cidadão.
- *
- * IMPORTANTE:
- *  - Os campos de WhatsApp abaixo foram alinhados com o JSON que você enviou:
- *      whatsapp_phone_number
- *      whatsapp_phone_number_id
- *      whatsapp_waba_id
- *      whatsapp_access_token
- *      whatsapp_verify_token
- *      whatsapp_webhook_secret
- *  - A aplicação passa a buscar phone_number_id e access_token aqui,
- *    em vez de variáveis de ambiente do Render.
- */
 @Entity("clientes")
 export class Cliente {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ type: "varchar", length: 150 })
+  // Deixa compatível com o banco: varchar(255) e ACEITANDO null
+  @Column({ type: "varchar", length: 255, nullable: true })
   nome!: string;
 
   @Column({ type: "varchar", length: 20, nullable: true })
