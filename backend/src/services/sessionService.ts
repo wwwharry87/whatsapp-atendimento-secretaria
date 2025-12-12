@@ -1528,7 +1528,13 @@ function scheduleLeaveMessageAutoClose(session: Session) {
         ? `nossa equipe da *${clienteNome}*`
         : "nossa equipe responsável";
 
-      
+      await waSendText(
+        current.citizenNumber,
+        `✅ Seu recado foi registrado e será analisado por ${orgFrase}.
+Protocolo: *${protocolo}*.
+Guarde este número para acompanhar sua solicitação.`,
+        current
+      );
 
       current.leaveMessageAckSent = true;
     }
@@ -1539,8 +1545,20 @@ function scheduleLeaveMessageAutoClose(session: Session) {
       const nomeCidadao = current.citizenName ?? current.citizenNumber;
       const nomeSetor = current.departmentName ?? "Setor";
 
-      
-    }
+
+      await waSendText(
+        agenteEnvio,
+        `📩 *Novo recado registrado (modo recado)*
+
+Setor: *${nomeSetor}*
+Cidadão: *${nomeCidadao}*
+Protocolo: *${protocolo}*.
+
+O atendimento continua aberto no painel do Atende Cidadão até que você marque como concluído.`,
+        current
+      );
+    
+}
 
     // ✅ Não mudamos status para FINISHED, nem encerradoEm,
     // não chamamos ativarProximoDaFila e nem removemos a sessão aqui.
@@ -2099,6 +2117,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   // ---------- Fluxo: cidadão decide se deixa recado ou encerra ----------
 
+  
+  // ---------- Fluxo: cidadão decide se deixa recado, vê lista de setores ou encerra ----------
+
   if (session.status === "LEAVE_MESSAGE_DECISION") {
     console.log(
       "[FLOW] LEAVE_MESSAGE_DECISION atendimento=",
@@ -2107,17 +2128,11 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       trimmed
     );
 
-    // Atalho: voltar ao menu de setores
-    if (
-      trimmedLower === "menu" ||
-      trimmedLower === "voltar" ||
-      trimmedLower === "setores" ||
-      trimmedLower === "trocar setor"
-    ) {
-      const idcliente = session.idcliente ?? (await getDefaultClienteId());
+    const idcliente = session.idcliente ?? (await getDefaultClienteId(session.phoneNumberId));
+    const clienteNome = await getClienteNome(idcliente);
+    const orgInfo = buildOrgInfo(clienteNome);
 
-      const clienteNome = await getClienteNome(idcliente);
-      const orgInfo = buildOrgInfo(clienteNome);
+    const enviarMenu = async () => {
       const menu = await montarMenuDepartamentos(idcliente, {
         semRodape: true,
         semTitulo: true,
@@ -2125,11 +2140,38 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       const saudacao = getSaudacaoPorHorario();
 
       session.status = "ASK_DEPARTMENT";
-      session.protocolHintSent = true; // já mostramos a dica na conversa
+      session.protocolHintSent = true;
 
       await atualizarAtendimento(session, { status: "ASK_DEPARTMENT" });
 
-      
+      await waSendText(
+        session.citizenNumber,
+        `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋
+` +
+          `Você está falando com *${orgInfo.displayName}*.
+` +
+          `${EXPEDIENTE_PADRAO_MENU}
+
+` +
+          `Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:
+
+` +
+          `${menu}
+
+` +
+          `Como posso ajudar?`,
+        session
+      );
+    };
+
+    // Atalhos por texto
+    if (
+      trimmedLower === "menu" ||
+      trimmedLower === "voltar" ||
+      trimmedLower === "setores" ||
+      trimmedLower === "trocar setor"
+    ) {
+      await enviarMenu();
       return;
     }
 
@@ -2137,24 +2179,48 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.status = "LEAVE_MESSAGE";
       session.leaveMessageAckSent = false;
 
-      await atualizarAtendimento(session, {
-        status: "LEAVE_MESSAGE",
-      });
+      await atualizarAtendimento(session, { status: "LEAVE_MESSAGE" });
 
-      
+      await waSendText(
+        session.citizenNumber,
+        `Perfeito! 👍
+Escreva sua mensagem detalhada, envie fotos ou áudios.
+Registraremos tudo.`,
+        session
+      );
+
       scheduleLeaveMessageAutoClose(session);
       return;
     }
+
     if (onlyDigits === "2") {
+      await enviarMenu();
+      return;
+    }
+
+    if (onlyDigits === "3") {
       const protocolo = await fecharAtendimentoComProtocolo(session);
-      
+
+      await waSendText(
+        session.citizenNumber,
+        `✅ Atendimento encerrado.
+Protocolo: *${protocolo}*.`,
+        session
+      );
 
       await ativarProximoDaFila(session);
-
       sessionsByCitizen.delete(citizenKey);
       return;
     }
-    
+
+    await waSendText(
+      session.citizenNumber,
+      `Responda apenas:
+1 - Deixar recado detalhado
+2 - Ver lista de setores
+3 - Encerrar`,
+      session
+    );
     return;
   }
 
@@ -2482,7 +2548,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         return;
       }
 
-      session.citizenName = trimmed;
+      
+session.citizenName = trimmed;
       session.status = "ASK_DEPARTMENT";
       session.protocolHintSent = false;
 
@@ -2494,22 +2561,128 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       const saudacao = getSaudacaoPorHorario();
       const idcliente = session.idcliente;
       if (!idcliente) {
-        
+        await waSendText(
+          session.citizenNumber,
+          "⚠️ Não consegui identificar o órgão deste canal. Tente novamente em instantes.",
+          session
+        );
         return;
       }
 
+      // 🔥 Se estamos fora do horário, já orienta o cidadão e oferece recado/menu/encerrar.
+      const foraGeral = await isOutOfBusinessHoursDB({
+        idcliente: session.idcliente,
+        departamentoId: null,
+      });
+
       const clienteNome = await getClienteNome(idcliente);
       const orgInfo = buildOrgInfo(clienteNome);
+
+      if (foraGeral) {
+        const horarioTxt = await getHorarioAtendimentoTexto({
+          idcliente: session.idcliente,
+          departamentoId: null,
+          prefix: "🕘 Expediente",
+        });
+
+        // Se IA estiver habilitada, dá uma orientação curta e já oferece as opções.
+        if (iaEstaHabilitada()) {
+          try {
+            const textoBaseIA =
+              trimmed || "O cidadão informou o nome e entrou em contato fora do horário.";
+
+            const contexto = [
+              "Você é o assistente virtual do *Atende Cidadão*, canal oficial deste órgão público.",
+              `Nome do cliente / órgão: ${orgInfo.displayName}.`,
+              `Escopo do órgão: ${orgInfo.escopoFrase}.`,
+              `Nome do cidadão: ${session.citizenName}.`,
+              "Situação: atendimento fora do horário de expediente configurado no sistema. Não há atendente humano disponível agora.",
+              "Objetivo: acolher e orientar de forma geral, e em seguida pedir que o cidadão escolha entre deixar recado, ver lista de setores ou encerrar.",
+              "Regras:",
+              "- Responda em até 2 parágrafos curtos.",
+              "- Use o nome do cidadão no máximo UMA vez, na primeira frase.",
+              "- Não prometa datas/decisões; oriente de forma genérica.",
+              "- No final, incentive a escolha das opções abaixo (sem repetir a lista literalmente).",
+            ].join(" ");
+
+            const ia = await gerarRespostaIA(textoBaseIA, "whatsapp_cidadao", contexto);
+
+            if (ia.sucesso && ia.resposta) {
+              await waSendText(
+                session.citizenNumber,
+                `${ia.resposta.trim()}
+
+${horarioTxt}
+
+Responda com:
+1 - Deixar recado detalhado
+2 - Ver lista de setores
+3 - Encerrar`,
+                session
+              );
+
+              session.status = "LEAVE_MESSAGE_DECISION";
+              session.leaveMessageAckSent = false;
+              await atualizarAtendimento(session, { status: "LEAVE_MESSAGE_DECISION" });
+              return;
+            }
+          } catch (e) {
+            console.log("[IA] Falha ao orientar após ASK_NAME fora do horário. Erro:", e);
+          }
+        }
+
+        await waSendText(
+          session.citizenNumber,
+          `${saudacao}, *${session.citizenName}*! 👋
+` +
+            `Você está falando com *${orgInfo.displayName}*.
+` +
+            `${horarioTxt}
+
+` +
+            `No momento estamos fora do horário de atendimento humano.
+
+` +
+            `Responda com:
+1 - Deixar recado detalhado
+2 - Ver lista de setores
+3 - Encerrar`,
+          session
+        );
+
+        session.status = "LEAVE_MESSAGE_DECISION";
+        session.leaveMessageAckSent = false;
+        await atualizarAtendimento(session, { status: "LEAVE_MESSAGE_DECISION" });
+        return;
+      }
+
+      // ✅ Dentro do horário: envia o menu normalmente
       const menu = await montarMenuDepartamentos(idcliente, {
         semRodape: true,
         semTitulo: true,
       });
 
-      
+      await waSendText(
+        session.citizenNumber,
+        `${saudacao}, *${session.citizenName}*! 👋
+` +
+          `Bem-vindo(a) ao atendimento de *${orgInfo.displayName}*.
+${EXPEDIENTE_PADRAO_MENU}
+
+` +
+          `Você pode *escrever o que precisa* (ex: "merenda", "matrícula", "transporte") ou escolher um setor:
+
+` +
+          `${menu}
+
+` +
+          `Como posso ajudar?`,
+        session
+      );
+
       return;
     }
   }
-
   // ---------- Escolha de departamento ----------
 
   if (session.status === "ASK_DEPARTMENT") {
