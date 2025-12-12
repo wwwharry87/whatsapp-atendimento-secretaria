@@ -31,6 +31,15 @@ async function loadWhatsappConfigFromDb(
 ): Promise<WhatsappClientConfig | null> {
   const repo = AppDataSource.getRepository(Cliente);
 
+  const strictTenant = process.env.WHATSAPP_STRICT_TENANT === "true";
+  if (strictTenant && !params?.idcliente && !params?.phoneNumberId) {
+    console.error(
+      "[WHATSAPP_CONFIG] STRICT mode: idcliente/phoneNumberId não informado. Recusando envio para evitar cruzar municípios."
+    );
+    return null;
+  }
+
+
   let cliente: Cliente | null = null;
 
   // 1) Tenta por phoneNumberId
