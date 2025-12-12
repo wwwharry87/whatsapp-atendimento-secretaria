@@ -9,6 +9,7 @@ import { MensagemTipo } from "../entities/Mensagem";
 import { AppDataSource } from "../database/data-source";
 import { Departamento } from "../entities/Departamento";
 import { Usuario } from "../entities/Usuario";
+import { Cliente } from "../entities/Cliente";
 
 const router = Router();
 
@@ -18,12 +19,41 @@ function normalizePhone(num: string): string {
 
 // ===================== VERIFICAÇÃO DO WEBHOOK (GET) =====================
 
-router.get("/", (req: Request, res: Response) => {
+async function isValidVerifyToken(tokenRaw: unknown): Promise<boolean> {
+  const token = String(tokenRaw || "").trim();
+  if (!token) return false;
+
+  // 1) Confere com o valor opcional de env, se ainda existir
+  if (env.whatsapp.verifyToken && token === env.whatsapp.verifyToken) {
+    return true;
+  }
+
+  // 2) Confere na tabela `clientes` (coluna whatsapp_verify_token)
+  try {
+    const repo = AppDataSource.getRepository(Cliente);
+    const count = await repo.count({
+      where: { whatsappVerifyToken: token as any },
+    });
+
+    if (count > 0) {
+      return true;
+    }
+  } catch (err) {
+    console.error(
+      "[WEBHOOK][VERIFY] Erro ao consultar whatsapp_verify_token em clientes:",
+      err
+    );
+  }
+
+  return false;
+}
+
+router.get("/", async (req: Request, res: Response) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === env.whatsapp.verifyToken) {
+  if (mode === "subscribe" && (await isValidVerifyToken(token))) {
     console.log("WEBHOOK_VERIFIED");
     return res.status(200).send(challenge);
   } else {
@@ -57,7 +87,7 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
     return true;
   }
 
-  // 2) Verifica se é um usuário cadastrado com TELEFONE (coluna existente)
+  // 2) Verifica se é um usuário cadastrado com TELEFONE
   const usuario = await userRepo
     .createQueryBuilder("u")
     .where(
@@ -77,7 +107,7 @@ async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
   return false;
 }
 
-// ===================== PARSE DE MENSAGEM DO WHATSAPP =====================
+// ===================== TIPAGEM SIMPLIFICADA DA MENSAGEM DO WHATSAPP =====================
 
 type WhatsappMessage = {
   from: string;

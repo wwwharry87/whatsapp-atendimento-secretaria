@@ -55,6 +55,8 @@ export type Session = {
   protocolo?: string;
   /** id do cliente (tabela clientes.id) */
   idcliente?: number;
+  /** id do canal / linha WhatsApp (phone_number_id vindo da Meta) */
+  phoneNumberId?: string;
   /** se já mandamos o ACK de recado no modo LEAVE_MESSAGE */
   leaveMessageAckSent?: boolean;
   /** se já oferecemos falar de protocolo nesta sessão */
@@ -77,6 +79,8 @@ export type IncomingMessage = {
   mediaId?: string;
   mimeType?: string;
   fileName?: string;
+  /** phone_number_id vindo do WhatsApp (identifica o cliente/linha do canal) */
+  phoneNumberId?: string;
 };
 
 // ====================== HELPERS GERAIS ======================
@@ -116,7 +120,11 @@ function truncateResumo(texto: string, max: number = 140): string {
   return t.slice(0, max - 1) + "…";
 }
 
-type SugestaoIndice = { indice: number; confianca: "ALTA" | "MEDIA"; motivo: string };
+type SugestaoIndice = {
+  indice: number;
+  confianca: "ALTA" | "MEDIA";
+  motivo: string;
+};
 
 /**
  * Tentativa rápida (sem IA) para identificar setor por palavras-chave comuns.
@@ -137,31 +145,36 @@ function sugerirIndicePorRegras(
   }> = [
     {
       key: "alimentacao",
-      msgRegex: /(merenda|cardapio|cardápio|lanche|alimentacao|alimentaç|refeicao|refeição|nutri)/i,
+      msgRegex:
+        /(merenda|cardapio|cardápio|lanche|alimentacao|alimentaç|refeicao|refeição|nutri)/i,
       deptHints: /(aliment|merenda|nutri|refeic)/i,
       motivo: "Termos relacionados a merenda/cardápio/alimentação",
     },
     {
       key: "transporte",
-      msgRegex: /(transporte|onibus|ônibus|rota|van|escolar|motorista)/i,
+      msgRegex:
+        /(transporte|onibus|ônibus|rota|van|escolar|motorista)/i,
       deptHints: /(transp|ônibus|onibus|rota)/i,
       motivo: "Termos relacionados a transporte escolar/rotas",
     },
     {
       key: "matricula",
-      msgRegex: /(matricula|matrícula|vaga|transferencia|transferência|remanejamento|documento|declaracao|declaração)/i,
+      msgRegex:
+        /(matricula|matrícula|vaga|transferencia|transferência|remanejamento|documento|declaracao|declaração)/i,
       deptHints: /(matric|secretaria|cadastro|document)/i,
       motivo: "Termos relacionados a matrícula/documentos/cadastro",
     },
     {
       key: "compras",
-      msgRegex: /(compras|licitacao|licitação|pregao|pregão|fornecedor|empenho|cotacao|cotação|contrato)/i,
+      msgRegex:
+        /(compras|licitacao|licitação|pregao|pregão|fornecedor|empenho|cotacao|cotação|contrato)/i,
       deptHints: /(compr|licit|preg|contrat|empenh)/i,
       motivo: "Termos relacionados a compras/licitação/contratos",
     },
     {
       key: "almoxarifado",
-      msgRegex: /(almoxarifado|estoque|material|insumo|entrega|requisicao|requisição)/i,
+      msgRegex:
+        /(almoxarifado|estoque|material|insumo|entrega|requisicao|requisição)/i,
       deptHints: /(almox|estoq|material|insumo)/i,
       motivo: "Termos relacionados a estoque/almoxarifado/materiais",
     },
@@ -173,7 +186,8 @@ function sugerirIndicePorRegras(
     },
     {
       key: "gabinete",
-      msgRegex: /(gabinete|secretario|secretário|falar com secretario|falar com a secretaria|diretor|direção|direcao)/i,
+      msgRegex:
+        /(gabinete|secretario|secretário|falar com secretario|falar com a secretaria|diretor|direção|direcao)/i,
       deptHints: /(gabinete|direc|chefia|secretar)/i,
       motivo: "Termos relacionados a gabinete/direção/chefia",
     },
@@ -380,8 +394,6 @@ async function isOutOfBusinessHoursDB(params: {
   }
 }
 
-
-
 // ====================== HORÁRIOS (TEXTO PARA O USUÁRIO) ======================
 
 const EXPEDIENTE_PADRAO_MENU =
@@ -413,7 +425,10 @@ function formatDiasSemanaHuman(diasSemana?: string | null): string {
   const hasAll = all.every((d) => uniq.includes(d));
   if (hasAll) return "Todos os dias";
 
-  const hasWeek = weekday.every((d) => uniq.includes(d)) && !uniq.includes("DOM") && !uniq.includes("SAB");
+  const hasWeek =
+    weekday.every((d) => uniq.includes(d)) &&
+    !uniq.includes("DOM") &&
+    !uniq.includes("SAB");
   if (hasWeek) return "Seg–Sex";
 
   // ordena conforme semana
@@ -436,7 +451,8 @@ function formatHorariosRegistros(registros: HorarioAtendimento[]): string {
   // evita ficar gigantesco no WhatsApp
   const max = 4;
   const limited = parts.slice(0, max);
-  const suffix = parts.length > max ? " | +" + (parts.length - max) + " períodos" : "";
+  const suffix =
+    parts.length > max ? " | +" + (parts.length - max) + " períodos" : "";
   return limited.join(" | ") + suffix;
 }
 
@@ -475,7 +491,9 @@ async function getHorarioAtendimentoTexto(params: {
 
   const prefix =
     params.prefix ??
-    (params.departamentoId != null ? "🕘 Expediente do setor" : "🕘 Expediente");
+    (params.departamentoId != null
+      ? "🕘 Expediente do setor"
+      : "🕘 Expediente");
 
   if (!registros || registros.length === 0) {
     return `${prefix}: Seg–Sex 08:00–18:00.`;
@@ -489,7 +507,15 @@ function isGreeting(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return false;
 
-  const ignoreWords = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "menu"];
+  const ignoreWords = [
+    "oi",
+    "ola",
+    "olá",
+    "bom dia",
+    "boa tarde",
+    "boa noite",
+    "menu",
+  ];
 
   return (
     ignoreWords.some((w) => trimmed.startsWith(w)) &&
@@ -760,8 +786,66 @@ function mapAgentCommandMetadata(
 // ====================== BANCO / CLIENTE & ATENDIMENTOS ======================
 
 let defaultClienteIdCache: number | null = null;
+/** cache: phone_number_id -> idcliente */
+const clientePhoneIdCache = new Map<string, number>();
 
-async function getDefaultClienteId(): Promise<number> {
+/**
+ * Tenta encontrar o id do cliente pelo phone_number_id configurado na tabela `clientes`.
+ */
+async function getClienteIdByPhoneNumberId(
+  phoneNumberId?: string | null
+): Promise<number | null> {
+  const raw = (phoneNumberId || "").trim();
+  if (!raw) return null;
+
+  const key = raw;
+
+  if (clientePhoneIdCache.has(key)) {
+    return clientePhoneIdCache.get(key)!;
+  }
+
+  const repo = AppDataSource.getRepository(Cliente);
+
+  try {
+    const cliente = await repo.findOne({
+      where: { whatsappPhoneNumberId: raw as any },
+    });
+
+    if (!cliente) {
+      console.log(
+        "[CLIENTE] Nenhum cliente encontrado com whatsapp_phone_number_id=",
+        raw
+      );
+      return null;
+    }
+
+    clientePhoneIdCache.set(key, cliente.id);
+    return cliente.id;
+  } catch (err) {
+    console.log(
+      "[CLIENTE] Erro ao buscar cliente por whatsapp_phone_number_id=",
+      raw,
+      err
+    );
+    return null;
+  }
+}
+
+/**
+ * Retorna um idcliente para uso geral.
+ * Se receber phoneNumberId, tenta mapear para um cliente específico.
+ * Se não achar, cai no cliente "padrão" (primeiro ativo ou primeiro da tabela).
+ */
+async function getDefaultClienteId(
+  phoneNumberId?: string | null
+): Promise<number> {
+  // 1) tenta pelo phone_number_id (multi-cliente por número)
+  const byPhone = await getClienteIdByPhoneNumberId(phoneNumberId);
+  if (byPhone !== null) {
+    return byPhone;
+  }
+
+  // 2) fallback: cliente padrão em cache
   if (defaultClienteIdCache !== null) {
     return defaultClienteIdCache;
   }
@@ -811,11 +895,12 @@ async function getClienteNome(idcliente?: number): Promise<string | null> {
 }
 
 async function criarNovoAtendimento(
-  citizenNumber: string
+  citizenNumber: string,
+  phoneNumberId?: string
 ): Promise<Atendimento> {
   const repo = AppDataSource.getRepository(Atendimento);
   const numero = normalizePhone(citizenNumber);
-  const idcliente = await getDefaultClienteId();
+  const idcliente = await getDefaultClienteId(phoneNumberId);
 
   console.log(
     "[ATENDIMENTO] Criando novo atendimento para cidadão",
@@ -876,11 +961,12 @@ async function criarNovoAtendimentoParaOutroSetor(
 }
 
 async function carregarAtendimentoAberto(
-  citizenNumber: string
+  citizenNumber: string,
+  phoneNumberId?: string
 ): Promise<Atendimento | null> {
   const repo = AppDataSource.getRepository(Atendimento);
   const numero = normalizePhone(citizenNumber);
-  const idcliente = await getDefaultClienteId();
+  const idcliente = await getDefaultClienteId(phoneNumberId);
 
   console.log(
     "[ATENDIMENTO] Buscando atendimento aberto (ACTIVE) para cidadão",
@@ -965,6 +1051,7 @@ async function recoverAgentSession(
     lastActiveAt: Date.now(),
     protocolo: atendimento.protocolo ?? undefined,
     idcliente: atendimento.idcliente,
+    phoneNumberId: undefined,
     leaveMessageAckSent: false,
     protocolHintSent: false,
   };
@@ -984,12 +1071,17 @@ async function recoverAgentSession(
   return session;
 }
 
-async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
+async function getOrCreateSession(
+  citizenNumberRaw: string,
+  phoneNumberId?: string
+): Promise<Session> {
   const citizenKey = normalizePhone(citizenNumberRaw);
 
   console.log(
     "[SESSION] getOrCreateSession para cidadão=",
     citizenKey,
+    "phoneNumberId=",
+    phoneNumberId,
     ". Tamanho atual sessionsByCitizen=",
     sessionsByCitizen.size
   );
@@ -1009,9 +1101,12 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     return existente;
   }
 
-  let atendimento = await carregarAtendimentoAberto(citizenKey);
+  let atendimento = await carregarAtendimentoAberto(
+    citizenKey,
+    phoneNumberId
+  );
   if (!atendimento) {
-    atendimento = await criarNovoAtendimento(citizenKey);
+    atendimento = await criarNovoAtendimento(citizenKey, phoneNumberId);
   }
 
   const session: Session = {
@@ -1027,6 +1122,7 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     lastActiveAt: Date.now(),
     protocolo: atendimento.protocolo ?? undefined,
     idcliente: atendimento.idcliente,
+    phoneNumberId: phoneNumberId,
     leaveMessageAckSent: false,
     protocolHintSent: false,
   };
@@ -1043,7 +1139,9 @@ async function getOrCreateSession(citizenNumberRaw: string): Promise<Session> {
     ", agente=",
     session.agentNumber,
     ", idcliente=",
-    session.idcliente
+    session.idcliente,
+    ", phoneNumberId=",
+    session.phoneNumberId
   );
 
   sessionsByCitizen.set(citizenKey, session);
@@ -1316,6 +1414,7 @@ async function ativarProximoDaFila(sessionEncerrada: Session) {
     lastActiveAt: Date.now(),
     protocolo: proximo.protocolo ?? undefined,
     idcliente: proximo.idcliente,
+    phoneNumberId: undefined,
     leaveMessageAckSent: false,
     protocolHintSent: false,
   };
@@ -1797,6 +1896,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     mediaId,
     mimeType,
     fileName,
+    phoneNumberId,
   } = msg;
 
   const citizenKey = normalizePhone(from);
@@ -1808,6 +1908,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   console.log(
     "[CITIZEN_MSG] De=",
     citizenKey,
+    "canal.phone_number_id=",
+    phoneNumberId,
     "tipo=",
     tipo,
     'texto="',
@@ -1816,7 +1918,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     mediaId
   );
 
-  const session = await getOrCreateSession(citizenKey);
+  const session = await getOrCreateSession(citizenKey, phoneNumberId);
   session.lastActiveAt = Date.now();
 
   console.log(
@@ -1829,7 +1931,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     ", agente=",
     session.agentNumber ? session.agentNumber : "undefined",
     ", idcliente=",
-    session.idcliente
+    session.idcliente,
+    ", phoneNumberId=",
+    session.phoneNumberId
   );
 
   const citizenMeta = mapCitizenCommandMetadata(
@@ -2028,47 +2132,47 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       trimmed
     );
 
-// Atalho: voltar ao menu de setores
-if (
-  trimmedLower === "menu" ||
-  trimmedLower === "voltar" ||
-  trimmedLower === "setores" ||
-  trimmedLower === "trocar setor"
-) {
-  const idcliente = session.idcliente ?? (await getDefaultClienteId());
+    // Atalho: voltar ao menu de setores
+    if (
+      trimmedLower === "menu" ||
+      trimmedLower === "voltar" ||
+      trimmedLower === "setores" ||
+      trimmedLower === "trocar setor"
+    ) {
+      const idcliente = session.idcliente ?? (await getDefaultClienteId());
 
-  const clienteNome = await getClienteNome(idcliente);
-  const orgInfo = buildOrgInfo(clienteNome);
-  const menu = await montarMenuDepartamentos(idcliente, {
-    semRodape: true,
-    semTitulo: true,
-  });
-  const saudacao = getSaudacaoPorHorario();
+      const clienteNome = await getClienteNome(idcliente);
+      const orgInfo = buildOrgInfo(clienteNome);
+      const menu = await montarMenuDepartamentos(idcliente, {
+        semRodape: true,
+        semTitulo: true,
+      });
+      const saudacao = getSaudacaoPorHorario();
 
-  session.status = "ASK_DEPARTMENT";
-  session.protocolHintSent = true; // já mostramos a dica na conversa
+      session.status = "ASK_DEPARTMENT";
+      session.protocolHintSent = true; // já mostramos a dica na conversa
 
-  await atualizarAtendimento(session, { status: "ASK_DEPARTMENT" });
+      await atualizarAtendimento(session, { status: "ASK_DEPARTMENT" });
 
-  await sendTextMessage(
-    session.citizenNumber,
-    `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋
+      await sendTextMessage(
+        session.citizenNumber,
+        `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋
 ` +
-      `Você está falando com *${orgInfo.displayName}*.
+          `Você está falando com *${orgInfo.displayName}*.
 ` +
-      `${EXPEDIENTE_PADRAO_MENU}
-
-` +
-      `Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:
+          `${EXPEDIENTE_PADRAO_MENU}
 
 ` +
-      `${menu}
+          `Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:
 
 ` +
-      `Como posso ajudar?`
-  );
-  return;
-}
+          `${menu}
+
+` +
+          `Como posso ajudar?`
+      );
+      return;
+    }
 
     if (onlyDigits === "1") {
       session.status = "LEAVE_MESSAGE";
@@ -2258,9 +2362,7 @@ if (
       );
 
       if (ia.sucesso && ia.resposta) {
-        textoFinal = ackBase
-          ? `${ackBase}\n\n${ia.resposta}`
-          : ia.resposta;
+        textoFinal = ackBase ? `${ackBase}\n\n${ia.resposta}` : ia.resposta;
 
         await salvarMensagem({
           atendimentoId: session.atendimentoId,
@@ -2387,14 +2489,14 @@ if (
     session.status = "ASK_ANOTHER_DEPARTMENT";
 
     await sendTextMessage(
-        session.citizenNumber,
-        "Agradecemos sua avaliação! 🌟\n\n" +
-          "Deseja falar com *outro setor*?\n" +
-          "1 - Sim, abrir atendimento em outro setor\n" +
-          "2 - Não, encerrar por aqui"
-      );
-      return;
-    }
+      session.citizenNumber,
+      "Agradecemos sua avaliação! 🌟\n\n" +
+        "Deseja falar com *outro setor*?\n" +
+        "1 - Sim, abrir atendimento em outro setor\n" +
+        "2 - Não, encerrar por aqui"
+    );
+    return;
+  }
 
   // ---------- Outro departamento após encerramento ----------
 
@@ -2525,7 +2627,7 @@ if (
 
   // ---------- Escolha de departamento ----------
 
-    if (session.status === "ASK_DEPARTMENT") {
+  if (session.status === "ASK_DEPARTMENT") {
     console.log(
       "[FLOW] ASK_DEPARTMENT atendimento=",
       session.atendimentoId,
@@ -2545,7 +2647,9 @@ if (
     const clienteNome = await getClienteNome(idcliente);
     const orgInfo = buildOrgInfo(clienteNome);
 
-    const enviarMenuHibrido = async (opts?: { incluirProtocoloHint?: boolean }) => {
+    const enviarMenuHibrido = async (opts?: {
+      incluirProtocoloHint?: boolean;
+    }) => {
       const menu = await montarMenuDepartamentos(idcliente, {
         semRodape: true,
         semTitulo: true,
@@ -2607,64 +2711,41 @@ if (
         session.agentName = departamento.responsavelNome || "Responsável";
         session.busyReminderCount = 0;
 
-
         session.status = "WAITING_AGENT_CONFIRMATION";
 
-
         const foraSetor = await isOutOfBusinessHoursDB({
-
           idcliente: session.idcliente,
-
           departamentoId: departamento.id,
-
         });
 
-
         if (foraSetor) {
-
           const horarioTxt = await getHorarioAtendimentoTexto({
-
             idcliente: session.idcliente,
-
             departamentoId: departamento.id,
-
-            prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
-
+            prefix: `🕘 Expediente do setor *${
+              departamento.nome ?? "Setor"
+            }*`,
           });
-
 
           await sendTextMessage(
-
             session.citizenNumber,
-
-            `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
-
+            `⚠️ O setor *${
+              departamento.nome
+            }* não está em expediente agora.\n${horarioTxt}\n\n` +
               `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
-
               `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
-
           );
 
-
           session.status = "LEAVE_MESSAGE_DECISION";
-
           session.leaveMessageAckSent = false;
 
-
           await atualizarAtendimento(session, {
-
             departamentoId: departamento.id,
-
             agenteNumero: session.agentNumber,
-
             agenteNome: session.agentName,
-
             status: "LEAVE_MESSAGE_DECISION",
-
           });
-
           return;
-
         }
 
         await atualizarAtendimento(session, {
@@ -2686,10 +2767,9 @@ if (
 
         await sendNovoAtendimentoTemplateToAgent({
           to: agenteEnvio,
-          departamentoNome: departamento.nome ?? "Setor",
-          cidadaoNome: session.citizenName ?? "Cidadão",
-          telefoneCidadao: session.citizenNumber,
-          resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+          departmentName: departamento.nome ?? "Setor",
+          citizenName: session.citizenName ?? "Cidadão",
+          protocolo: session.protocolo ?? "-",
         });
 
         scheduleBusyReminder(session);
@@ -2748,64 +2828,42 @@ if (
       session.agentName = departamento.responsavelNome || "Responsável";
       session.busyReminderCount = 0;
 
-
       session.status = "WAITING_AGENT_CONFIRMATION";
 
-
       const foraSetor = await isOutOfBusinessHoursDB({
-
         idcliente: session.idcliente,
-
         departamentoId: departamento.id,
-
       });
 
-
       if (foraSetor) {
-
         const horarioTxt = await getHorarioAtendimentoTexto({
-
           idcliente: session.idcliente,
-
           departamentoId: departamento.id,
-
-          prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
-
+          prefix: `🕘 Expediente do setor *${
+            departamento.nome ?? "Setor"
+          }*`,
         });
 
-
         await sendTextMessage(
-
           session.citizenNumber,
-
-          `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
-
+          `⚠️ O setor *${
+            departamento.nome
+          }* não está em expediente agora.\n${horarioTxt}\n\n` +
             `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
-
             `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
-
         );
 
-
         session.status = "LEAVE_MESSAGE_DECISION";
-
         session.leaveMessageAckSent = false;
 
-
         await atualizarAtendimento(session, {
-
           departamentoId: departamento.id,
-
           agenteNumero: session.agentNumber,
-
           agenteNome: session.agentName,
-
           status: "LEAVE_MESSAGE_DECISION",
-
         });
 
         return;
-
       }
 
       await atualizarAtendimento(session, {
@@ -2827,10 +2885,9 @@ if (
 
       await sendNovoAtendimentoTemplateToAgent({
         to: agenteEnvio,
-        departamentoNome: departamento.nome ?? "Setor",
-        cidadaoNome: session.citizenName ?? "Cidadão",
-        telefoneCidadao: session.citizenNumber,
-        resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+        departmentName: departamento.nome ?? "Setor",
+        citizenName: session.citizenName ?? "Cidadão",
+        protocolo: session.protocolo ?? "-",
       });
 
       scheduleBusyReminder(session);
@@ -2869,64 +2926,42 @@ if (
         session.agentName = departamento.responsavelNome || "Responsável";
         session.busyReminderCount = 0;
 
-
         session.status = "WAITING_AGENT_CONFIRMATION";
 
-
         const foraSetor = await isOutOfBusinessHoursDB({
-
           idcliente: session.idcliente,
-
           departamentoId: departamento.id,
-
         });
 
-
         if (foraSetor) {
-
           const horarioTxt = await getHorarioAtendimentoTexto({
-
             idcliente: session.idcliente,
-
             departamentoId: departamento.id,
-
-            prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
-
+            prefix: `🕘 Expediente do setor *${
+              departamento.nome ?? "Setor"
+            }*`,
           });
 
-
           await sendTextMessage(
-
             session.citizenNumber,
-
-            `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
-
+            `⚠️ O setor *${
+              departamento.nome
+            }* não está em expediente agora.\n${horarioTxt}\n\n` +
               `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
-
               `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
-
           );
 
-
           session.status = "LEAVE_MESSAGE_DECISION";
-
           session.leaveMessageAckSent = false;
 
-
           await atualizarAtendimento(session, {
-
             departamentoId: departamento.id,
-
             agenteNumero: session.agentNumber,
-
             agenteNome: session.agentName,
-
             status: "LEAVE_MESSAGE_DECISION",
-
           });
 
           return;
-
         }
 
         await atualizarAtendimento(session, {
@@ -2948,10 +2983,9 @@ if (
 
         await sendNovoAtendimentoTemplateToAgent({
           to: agenteEnvio,
-          departamentoNome: departamento.nome ?? "Setor",
-          cidadaoNome: session.citizenName ?? "Cidadão",
-          telefoneCidadao: session.citizenNumber,
-          resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+          departmentName: departamento.nome ?? "Setor",
+          citizenName: session.citizenName ?? "Cidadão",
+          protocolo: session.protocolo ?? "-",
         });
 
         scheduleBusyReminder(session);
@@ -2983,64 +3017,42 @@ if (
           session.agentName = departamento.responsavelNome || "Responsável";
           session.busyReminderCount = 0;
 
-
           session.status = "WAITING_AGENT_CONFIRMATION";
 
-
           const foraSetor = await isOutOfBusinessHoursDB({
-
             idcliente: session.idcliente,
-
             departamentoId: departamento.id,
-
           });
 
-
           if (foraSetor) {
-
             const horarioTxt = await getHorarioAtendimentoTexto({
-
               idcliente: session.idcliente,
-
               departamentoId: departamento.id,
-
-              prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
-
+              prefix: `🕘 Expediente do setor *${
+                departamento.nome ?? "Setor"
+              }*`,
             });
 
-
             await sendTextMessage(
-
               session.citizenNumber,
-
-              `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
-
+              `⚠️ O setor *${
+                departamento.nome
+              }* não está em expediente agora.\n${horarioTxt}\n\n` +
                 `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
-
                 `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
-
             );
 
-
             session.status = "LEAVE_MESSAGE_DECISION";
-
             session.leaveMessageAckSent = false;
 
-
             await atualizarAtendimento(session, {
-
               departamentoId: departamento.id,
-
               agenteNumero: session.agentNumber,
-
               agenteNome: session.agentName,
-
               status: "LEAVE_MESSAGE_DECISION",
-
             });
 
             return;
-
           }
 
           await atualizarAtendimento(session, {
@@ -3062,10 +3074,9 @@ if (
 
           await sendNovoAtendimentoTemplateToAgent({
             to: agenteEnvio,
-            departamentoNome: departamento.nome ?? "Setor",
-            cidadaoNome: session.citizenName ?? "Cidadão",
-            telefoneCidadao: session.citizenNumber,
-            resumo: session.initialSummary ? truncateResumo(session.initialSummary) : "-",
+            departmentName: departamento.nome ?? "Setor",
+            citizenName: session.citizenName ?? "Cidadão",
+            protocolo: session.protocolo ?? "-",
           });
 
           scheduleBusyReminder(session);
