@@ -380,6 +380,111 @@ async function isOutOfBusinessHoursDB(params: {
   }
 }
 
+
+
+// ====================== HORÁRIOS (TEXTO PARA O USUÁRIO) ======================
+
+const EXPEDIENTE_PADRAO_MENU =
+  "🕘 Expediente: Seg–Sex 08:00–18:00 (alguns setores podem variar; ao escolher eu te informo).";
+
+const DIA_LABEL: Record<string, string> = {
+  DOM: "Dom",
+  SEG: "Seg",
+  TER: "Ter",
+  QUA: "Qua",
+  QUI: "Qui",
+  SEX: "Sex",
+  SAB: "Sáb",
+};
+
+function formatDiasSemanaHuman(diasSemana?: string | null): string {
+  if (!diasSemana) return "";
+  const dias = diasSemana
+    .split(",")
+    .map((d) => d.trim().toUpperCase())
+    .filter(Boolean);
+
+  const uniq = Array.from(new Set(dias));
+  if (uniq.length === 0) return "";
+
+  const all = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"];
+  const weekday = ["SEG", "TER", "QUA", "QUI", "SEX"];
+
+  const hasAll = all.every((d) => uniq.includes(d));
+  if (hasAll) return "Todos os dias";
+
+  const hasWeek = weekday.every((d) => uniq.includes(d)) && !uniq.includes("DOM") && !uniq.includes("SAB");
+  if (hasWeek) return "Seg–Sex";
+
+  // ordena conforme semana
+  uniq.sort((a, b) => all.indexOf(a) - all.indexOf(b));
+  return uniq.map((d) => DIA_LABEL[d] || d).join(", ");
+}
+
+function formatHorariosRegistros(registros: HorarioAtendimento[]): string {
+  const parts: string[] = [];
+
+  for (const h of registros) {
+    if (!h.inicio || !h.fim) continue;
+    const dias = formatDiasSemanaHuman(h.diasSemana);
+    const janela = `${h.inicio}–${h.fim}`;
+    parts.push(dias ? `${dias} ${janela}` : janela);
+  }
+
+  if (parts.length === 0) return "";
+
+  // evita ficar gigantesco no WhatsApp
+  const max = 4;
+  const limited = parts.slice(0, max);
+  const suffix = parts.length > max ? " | +" + (parts.length - max) + " períodos" : "";
+  return limited.join(" | ") + suffix;
+}
+
+async function getHorarioAtendimentoTexto(params: {
+  idcliente?: number;
+  departamentoId?: number | null;
+  prefix?: string;
+}): Promise<string> {
+  const horarioRepo = AppDataSource.getRepository(HorarioAtendimento);
+  const effectiveClienteId =
+    params.idcliente ?? (await getDefaultClienteId());
+
+  let registros: HorarioAtendimento[] = [];
+
+  if (params.departamentoId != null) {
+    registros = await horarioRepo.find({
+      where: {
+        idcliente: effectiveClienteId as any,
+        departamentoId: params.departamentoId as any,
+        ativo: true as any,
+      },
+      order: { id: "ASC" as any },
+    });
+  }
+
+  if (!registros || registros.length === 0) {
+    registros = await horarioRepo.find({
+      where: {
+        idcliente: effectiveClienteId as any,
+        departamentoId: null as any,
+        ativo: true as any,
+      },
+      order: { id: "ASC" as any },
+    });
+  }
+
+  const prefix =
+    params.prefix ??
+    (params.departamentoId != null ? "🕘 Expediente do setor" : "🕘 Expediente");
+
+  if (!registros || registros.length === 0) {
+    return `${prefix}: Seg–Sex 08:00–18:00.`;
+  }
+
+  const resumo = formatHorariosRegistros(registros);
+  return resumo ? `${prefix}: ${resumo}.` : `${prefix}: Seg–Sex 08:00–18:00.`;
+}
+
 function isGreeting(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return false;
@@ -1785,7 +1890,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     const orgInfo = buildOrgInfo(clienteNomeOrg);
 
     const contextoParts: string[] = [
-      "Você é o *Atende Cidadão*, assistente virtual deste órgão público.",
+      "Você é o assistente virtual do *Atende Cidadão*, canal oficial deste órgão público.",
       `Nome do cliente / órgão: ${orgInfo.displayName}.`,
       `Escopo do órgão: ${orgInfo.escopoFrase}.`,
       session.citizenName
@@ -1798,6 +1903,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "Objetivo: orientar o cidadão, explicar de forma simples que é fora do horário e sugerir que ele deixe um recado para ser respondido no próximo expediente.",
       "Você deve:",
       "- Se apresentar de forma breve (1 frase).",
+      "- Ao se apresentar, use o formato: 'Sou o assistente virtual do Atende Cidadão, da [NOME DO ÓRGÃO]'. (NÃO diga 'Sou o Atende Cidadão').",
       "- Mencionar o órgão (cliente) quando fizer sentido.",
       "- Dar orientações gerais sobre o tipo de dúvida, sem prometer nada específico.",
       "- No final, incentive o cidadão a decidir se quer deixar um recado detalhado ou encerrar por enquanto.",
@@ -1921,6 +2027,48 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       "resposta=",
       trimmed
     );
+
+// Atalho: voltar ao menu de setores
+if (
+  trimmedLower === "menu" ||
+  trimmedLower === "voltar" ||
+  trimmedLower === "setores" ||
+  trimmedLower === "trocar setor"
+) {
+  const idcliente = session.idcliente ?? (await getDefaultClienteId());
+
+  const clienteNome = await getClienteNome(idcliente);
+  const orgInfo = buildOrgInfo(clienteNome);
+  const menu = await montarMenuDepartamentos(idcliente, {
+    semRodape: true,
+    semTitulo: true,
+  });
+  const saudacao = getSaudacaoPorHorario();
+
+  session.status = "ASK_DEPARTMENT";
+  session.protocolHintSent = true; // já mostramos a dica na conversa
+
+  await atualizarAtendimento(session, { status: "ASK_DEPARTMENT" });
+
+  await sendTextMessage(
+    session.citizenNumber,
+    `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋
+` +
+      `Você está falando com *${orgInfo.displayName}*.
+` +
+      `${EXPEDIENTE_PADRAO_MENU}
+
+` +
+      `Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:
+
+` +
+      `${menu}
+
+` +
+      `Como posso ajudar?`
+  );
+  return;
+}
 
     if (onlyDigits === "1") {
       session.status = "LEAVE_MESSAGE";
@@ -2290,7 +2438,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       await sendTextMessage(
         session.citizenNumber,
         `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋\n` +
-          `Você está falando com *${orgInfo.displayName}*.\n\n` +
+          `Você está falando com *${orgInfo.displayName}*.\n${EXPEDIENTE_PADRAO_MENU}\n\n` +
           `Você pode *escrever o que precisa* (ex: "merenda", "matrícula", "transporte") ou escolher um setor:\n\n` +
           `${menu}\n\n` +
           `Como posso ajudar?`
@@ -2366,7 +2514,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       await sendTextMessage(
         session.citizenNumber,
         `${saudacao}, *${session.citizenName}*! 👋\n` +
-          `Bem-vindo(a) ao atendimento de *${orgInfo.displayName}*.\n\n` +
+          `Bem-vindo(a) ao atendimento de *${orgInfo.displayName}*.\n${EXPEDIENTE_PADRAO_MENU}\n\n` +
           `Você pode *escrever o que precisa* (ex: "merenda", "matrícula", "transporte") ou escolher um setor:\n\n` +
           `${menu}\n\n` +
           `Como posso ajudar?`
@@ -2413,6 +2561,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       }
 
       partes.push(`Você está falando com *${orgInfo.displayName}*.`);
+      partes.push(EXPEDIENTE_PADRAO_MENU);
       partes.push("");
 
       if (opts?.incluirProtocoloHint) {
@@ -2457,6 +2606,66 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         session.agentNumber = departamento.responsavelNumero || undefined;
         session.agentName = departamento.responsavelNome || "Responsável";
         session.busyReminderCount = 0;
+
+
+        session.status = "WAITING_AGENT_CONFIRMATION";
+
+
+        const foraSetor = await isOutOfBusinessHoursDB({
+
+          idcliente: session.idcliente,
+
+          departamentoId: departamento.id,
+
+        });
+
+
+        if (foraSetor) {
+
+          const horarioTxt = await getHorarioAtendimentoTexto({
+
+            idcliente: session.idcliente,
+
+            departamentoId: departamento.id,
+
+            prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
+
+          });
+
+
+          await sendTextMessage(
+
+            session.citizenNumber,
+
+            `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
+
+              `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
+
+              `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
+
+          );
+
+
+          session.status = "LEAVE_MESSAGE_DECISION";
+
+          session.leaveMessageAckSent = false;
+
+
+          await atualizarAtendimento(session, {
+
+            departamentoId: departamento.id,
+
+            agenteNumero: session.agentNumber,
+
+            agenteNome: session.agentName,
+
+            status: "LEAVE_MESSAGE_DECISION",
+
+          });
+
+          return;
+
+        }
 
         await atualizarAtendimento(session, {
           departamentoId: departamento.id,
@@ -2539,6 +2748,66 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       session.agentName = departamento.responsavelNome || "Responsável";
       session.busyReminderCount = 0;
 
+
+      session.status = "WAITING_AGENT_CONFIRMATION";
+
+
+      const foraSetor = await isOutOfBusinessHoursDB({
+
+        idcliente: session.idcliente,
+
+        departamentoId: departamento.id,
+
+      });
+
+
+      if (foraSetor) {
+
+        const horarioTxt = await getHorarioAtendimentoTexto({
+
+          idcliente: session.idcliente,
+
+          departamentoId: departamento.id,
+
+          prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
+
+        });
+
+
+        await sendTextMessage(
+
+          session.citizenNumber,
+
+          `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
+
+            `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
+
+            `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
+
+        );
+
+
+        session.status = "LEAVE_MESSAGE_DECISION";
+
+        session.leaveMessageAckSent = false;
+
+
+        await atualizarAtendimento(session, {
+
+          departamentoId: departamento.id,
+
+          agenteNumero: session.agentNumber,
+
+          agenteNome: session.agentName,
+
+          status: "LEAVE_MESSAGE_DECISION",
+
+        });
+
+        return;
+
+      }
+
       await atualizarAtendimento(session, {
         departamentoId: departamento.id,
         agenteNumero: session.agentNumber,
@@ -2600,6 +2869,66 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
         session.agentName = departamento.responsavelNome || "Responsável";
         session.busyReminderCount = 0;
 
+
+        session.status = "WAITING_AGENT_CONFIRMATION";
+
+
+        const foraSetor = await isOutOfBusinessHoursDB({
+
+          idcliente: session.idcliente,
+
+          departamentoId: departamento.id,
+
+        });
+
+
+        if (foraSetor) {
+
+          const horarioTxt = await getHorarioAtendimentoTexto({
+
+            idcliente: session.idcliente,
+
+            departamentoId: departamento.id,
+
+            prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
+
+          });
+
+
+          await sendTextMessage(
+
+            session.citizenNumber,
+
+            `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
+
+              `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
+
+              `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
+
+          );
+
+
+          session.status = "LEAVE_MESSAGE_DECISION";
+
+          session.leaveMessageAckSent = false;
+
+
+          await atualizarAtendimento(session, {
+
+            departamentoId: departamento.id,
+
+            agenteNumero: session.agentNumber,
+
+            agenteNome: session.agentName,
+
+            status: "LEAVE_MESSAGE_DECISION",
+
+          });
+
+          return;
+
+        }
+
         await atualizarAtendimento(session, {
           departamentoId: departamento.id,
           agenteNumero: session.agentNumber,
@@ -2653,6 +2982,66 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
           session.agentNumber = departamento.responsavelNumero || undefined;
           session.agentName = departamento.responsavelNome || "Responsável";
           session.busyReminderCount = 0;
+
+
+          session.status = "WAITING_AGENT_CONFIRMATION";
+
+
+          const foraSetor = await isOutOfBusinessHoursDB({
+
+            idcliente: session.idcliente,
+
+            departamentoId: departamento.id,
+
+          });
+
+
+          if (foraSetor) {
+
+            const horarioTxt = await getHorarioAtendimentoTexto({
+
+              idcliente: session.idcliente,
+
+              departamentoId: departamento.id,
+
+              prefix: `🕘 Expediente do setor *${departamento.nome ?? "Setor"}*`,
+
+            });
+
+
+            await sendTextMessage(
+
+              session.citizenNumber,
+
+              `⚠️ O setor *${departamento.nome}* não está em expediente agora.\n${horarioTxt}\n\n` +
+
+                `Se preferir, você pode deixar um recado detalhado para esse setor.\n` +
+
+                `Responda com:\n1 - Deixar recado detalhado\n2 - Não, encerrar`
+
+            );
+
+
+            session.status = "LEAVE_MESSAGE_DECISION";
+
+            session.leaveMessageAckSent = false;
+
+
+            await atualizarAtendimento(session, {
+
+              departamentoId: departamento.id,
+
+              agenteNumero: session.agentNumber,
+
+              agenteNome: session.agentName,
+
+              status: "LEAVE_MESSAGE_DECISION",
+
+            });
+
+            return;
+
+          }
 
           await atualizarAtendimento(session, {
             departamentoId: departamento.id,
