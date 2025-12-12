@@ -3,24 +3,35 @@ import { Router, Request, Response } from "express";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento } from "../entities/Atendimento";
 import { Mensagem } from "../entities/Mensagem";
+import { AuthRequest } from "../middlewares/authMiddleware"; // 👈 usa o idcliente do token
 
 const router = Router();
 
 /**
- * Lê o idcliente do header X-Id-Cliente ou da variável
- * de ambiente DEFAULT_CLIENTE_ID. Se nada vier, usa 1.
- *
- * (Mesma lógica utilizada em routes/usuarios.ts)
+ * Resolve o idcliente, priorizando o que vem do token JWT (authMiddleware),
+ * depois header X-Id-Cliente, depois variável de ambiente DEFAULT_CLIENTE_ID
+ * e, por fim, o fallback 1.
  */
 function getIdClienteFromRequest(req: Request): number {
+  // 1) Tenta pegar do token (authMiddleware preenche req.idcliente)
+  const authReq = req as AuthRequest;
+  if (authReq.idcliente && !Number.isNaN(Number(authReq.idcliente))) {
+    return Number(authReq.idcliente);
+  }
+
+  // 2) Tenta pegar do header X-Id-Cliente
   const headerVal = (req.headers["x-id-cliente"] || "").toString();
   if (headerVal && !Number.isNaN(Number(headerVal))) {
     return Number(headerVal);
   }
+
+  // 3) Tenta pegar da env DEFAULT_CLIENTE_ID
   const envVal = process.env.DEFAULT_CLIENTE_ID;
   if (envVal && !Number.isNaN(Number(envVal))) {
     return Number(envVal);
   }
+
+  // 4) Fallback hardcoded (compatibilidade)
   return 1;
 }
 

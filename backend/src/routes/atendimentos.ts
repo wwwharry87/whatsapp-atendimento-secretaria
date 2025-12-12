@@ -1,36 +1,53 @@
+// src/routes/atendimentos.ts
 import { Router, Request, Response } from "express";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento } from "../entities/Atendimento";
 import { Mensagem } from "../entities/Mensagem";
 import { AtendimentoEvento } from "../entities/AtendimentoEvento";
+import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
 
 /**
- * Tenta obter o idcliente a partir do JWT já decodificado no middleware de auth.
- * Se não tiver nada, retorna null (sem filtro de cliente).
+ * Tenta obter o idcliente a partir do JWT (authMiddleware) ou headers/params.
+ * Se não conseguir, retorna null (sem filtro de cliente).
  */
-function getUserClientId(req: Request): number | null {
-  try {
-    const userPayload =
-      (req as any).userJwtPayload ||
-      (req as any).user ||
-      (req as any).authUser ||
-      null;
+function getIdClienteFromRequest(req: Request): number | null {
+  const authReq = req as AuthRequest;
 
-    const raw =
-      userPayload?.idcliente ??
-      (req as any).idcliente ??
-      (req.headers["x-idcliente"] as string | undefined);
-
-    if (!raw) return null;
-
-    const parsed = parseInt(String(raw), 10);
-    if (Number.isNaN(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
+  // 1) Token JWT (preenchido pelo authMiddleware)
+  if (authReq.idcliente && !Number.isNaN(Number(authReq.idcliente))) {
+    return Number(authReq.idcliente);
   }
+
+  // 2) Headers (aceita x-id-cliente e x-idcliente)
+  const headerVal =
+    (req.headers["x-id-cliente"] ||
+      req.headers["x-idcliente"] ||
+      "")?.toString() || "";
+  if (headerVal && !Number.isNaN(Number(headerVal))) {
+    return Number(headerVal);
+  }
+
+  // 3) Query
+  const queryVal = (req.query.idcliente || "").toString();
+  if (queryVal && !Number.isNaN(Number(queryVal))) {
+    return Number(queryVal);
+  }
+
+  // 4) Body
+  const bodyVal = (req.body?.idcliente || "").toString();
+  if (bodyVal && !Number.isNaN(Number(bodyVal))) {
+    return Number(bodyVal);
+  }
+
+  // 5) Env (fallback)
+  const envVal = process.env.DEFAULT_CLIENTE_ID;
+  if (envVal && !Number.isNaN(Number(envVal))) {
+    return Number(envVal);
+  }
+
+  return null;
 }
 
 /**
@@ -61,7 +78,7 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
     const pageNum = Math.max(parseInt(page || "1", 10), 1);
     const pageSize = Math.min(Math.max(parseInt(limit || "20", 10), 1), 100);
 
-    const idcliente = getUserClientId(req);
+    const idcliente = getIdClienteFromRequest(req);
 
     const qb = repo
       .createQueryBuilder("a")
@@ -71,7 +88,7 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
       .take(pageSize);
 
     // 🔹 Multi-tenant: filtrar por cliente, se tiver
-    if (idcliente) {
+    if (idcliente !== null) {
       qb.andWhere("a.idcliente = :idcliente", { idcliente });
     }
 
@@ -120,28 +137,31 @@ router.get("/atendimentos", async (req: Request, res: Response) => {
 /**
  * ============================================================
  *  ROTAS MAIS ESPECÍFICAS /atendimentos/:id/...
- *  (PRECISAM VIR ANTES DE /atendimentos/:id)
  * ============================================================
  */
 
 /**
+ * GET /atendimentos/:id/mensagens
  * Lista mensagens de um atendimento em ordem cronológica
  * no formato esperado pelo painel.
- *
- * GET /atendimentos/:id/mensagens
  */
 router.get(
   "/atendimentos/:id/mensagens",
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const idcliente = getIdClienteFromRequest(req);
+
       const repoAt = AppDataSource.getRepository(Atendimento);
       const repoMsg = AppDataSource.getRepository(Mensagem);
 
-      // ✅ Aqui podemos até ignorar idcliente, porque o painel só acessa
-      // atendimentos que já vieram da lista filtrada.
+      const whereAt: any = { id };
+      if (idcliente !== null) {
+        whereAt.idcliente = idcliente;
+      }
+
       const atendimento = await repoAt.findOne({
-        where: { id },
+        where: whereAt,
         relations: ["departamento"],
       });
 
@@ -151,9 +171,14 @@ router.get(
           .json({ error: "Atendimento não encontrado (mensagens)" });
       }
 
+      const whereMsg: any = { atendimentoId: id };
+      if (idcliente !== null) {
+        whereMsg.idcliente = idcliente;
+      }
+
       const mensagens = await repoMsg.find({
-        where: { atendimentoId: id },
-        order: { criadoEm: "ASC" },
+        where: whereMsg,
+        order: { criadoEm: "ASC" as any },
       });
 
       const resposta = mensagens.map((m) => {
@@ -202,11 +227,17 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      const idcliente = getIdClienteFromRequest(req);
       const repoEvt = AppDataSource.getRepository(AtendimentoEvento);
 
+      const whereEvt: any = { atendimentoId: id };
+      if (idcliente !== null) {
+        whereEvt.idcliente = idcliente;
+      }
+
       const eventos = await repoEvt.find({
-        where: { atendimentoId: id },
-        order: { criadoEm: "ASC" },
+        where: whereEvt,
+        order: { criadoEm: "ASC" as any },
       });
 
       res.json(eventos);
@@ -218,34 +249,37 @@ router.get(
 );
 
 /**
- * ============================================================
- *  GET /atendimentos/:id  (DETALHE DO ATENDIMENTO)
- * ============================================================
- *
- * 🔴 IMPORTANTE:
- *  - Aqui eu NÃO filtro por idcliente.
- *  - O ID já vem da listagem filtrada, então está seguro.
- *  - Isso evita o 404 por causa de inconsistência de idcliente.
- *  - Se não achar no atendimento, ainda tento reconstruir com base na 1ª mensagem.
+ * GET /atendimentos/:id  (DETALHE DO ATENDIMENTO)
  */
 router.get("/atendimentos/:id", async (req: Request, res: Response) => {
   try {
     const repo = AppDataSource.getRepository(Atendimento);
     const repoMsg = AppDataSource.getRepository(Mensagem);
     const { id } = req.params;
+    const idcliente = getIdClienteFromRequest(req);
+
+    const whereAt: any = { id };
+    if (idcliente !== null) {
+      whereAt.idcliente = idcliente;
+    }
 
     // 1) Tenta pegar direto da tabela de atendimentos
     let atendimento = await repo.findOne({
-      where: { id },
+      where: whereAt,
       relations: ["departamento"],
     });
 
     // 2) Se ainda assim não encontrar, tenta montar cabeçalho mínimo
-    //    com base na primeira mensagem existente
+    //    com base na primeira mensagem existente PARA O MESMO CLIENTE
     if (!atendimento) {
+      const whereMsg: any = { atendimentoId: id };
+      if (idcliente !== null) {
+        whereMsg.idcliente = idcliente;
+      }
+
       const firstMsg = await repoMsg.findOne({
-        where: { atendimentoId: id },
-        order: { criadoEm: "ASC" },
+        where: whereMsg,
+        order: { criadoEm: "ASC" as any },
       });
 
       if (!firstMsg) {
@@ -254,7 +288,7 @@ router.get("/atendimentos/:id", async (req: Request, res: Response) => {
 
       atendimento = {
         id,
-        idcliente: null,
+        idcliente: idcliente ?? (firstMsg as any).idcliente ?? null,
         cidadaoNumero: firstMsg.remetenteNumero ?? "",
         cidadaoNome: null,
         status: "ACTIVE",
@@ -282,7 +316,6 @@ router.get("/atendimentos/:id", async (req: Request, res: Response) => {
 /**
  * GET /atendimentos/protocolo/:protocolo
  * Buscar atendimento por número de protocolo
- * (aqui sim é seguro filtrar por idcliente, se quiser)
  */
 router.get(
   "/atendimentos/protocolo/:protocolo",
@@ -290,10 +323,10 @@ router.get(
     try {
       const repo = AppDataSource.getRepository(Atendimento);
       const { protocolo } = req.params;
-      const idcliente = getUserClientId(req);
+      const idcliente = getIdClienteFromRequest(req);
 
       const where: any = { protocolo };
-      if (idcliente) {
+      if (idcliente !== null) {
         where.idcliente = idcliente;
       }
 
@@ -327,13 +360,13 @@ router.get("/dashboard/resumo", async (req: Request, res: Response) => {
   try {
     const repo = AppDataSource.getRepository(Atendimento);
     const { dataInicio, dataFim } = req.query as Record<string, string>;
-    const idcliente = getUserClientId(req);
+    const idcliente = getIdClienteFromRequest(req);
 
     // 🔹 Filtro base reutilizável
     const baseWhere: string[] = [];
     const baseParams: any = {};
 
-    if (idcliente) {
+    if (idcliente !== null) {
       baseWhere.push("a.idcliente = :idcliente");
       baseParams.idcliente = idcliente;
     }

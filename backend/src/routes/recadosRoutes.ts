@@ -15,22 +15,54 @@ import { AuthRequest } from "../middlewares/authMiddleware";
 const router = Router();
 
 /**
- * Helper para pegar idcliente do usuário autenticado (se existir)
- * Compatível com o authMiddleware (req.idcliente)
- * e também com req.user.idcliente, se em algum ponto for usado assim.
+ * Resolve idcliente da requisição, com prioridade:
+ *  1) Token JWT (authMiddleware: req.idcliente)
+ *  2) req.user.idcliente (caso algum middleware populou assim)
+ *  3) Header "x-id-cliente"
+ *  4) Query string "idcliente"
+ *  5) Body.idcliente
+ *  6) DEFAULT_CLIENTE_ID
+ *  7) 1
  */
-function getRequestClienteId(req: Request): number | undefined {
+function resolveIdCliente(req: Request): number {
   const r = req as AuthRequest & { user?: any };
 
-  if (typeof r.idcliente === "number") {
-    return r.idcliente;
+  if (
+    typeof r.idcliente === "number" &&
+    !Number.isNaN(Number(r.idcliente))
+  ) {
+    return Number(r.idcliente);
   }
 
-  if (r.user && typeof r.user.idcliente === "number") {
-    return r.user.idcliente;
+  if (
+    r.user &&
+    typeof r.user.idcliente === "number" &&
+    !Number.isNaN(Number(r.user.idcliente))
+  ) {
+    return Number(r.user.idcliente);
   }
 
-  return undefined;
+  const headerVal = (req.headers["x-id-cliente"] || "").toString();
+  if (headerVal && !Number.isNaN(Number(headerVal))) {
+    return Number(headerVal);
+  }
+
+  const queryVal = (req.query.idcliente || "").toString();
+  if (queryVal && !Number.isNaN(Number(queryVal))) {
+    return Number(queryVal);
+  }
+
+  const bodyVal = (req.body?.idcliente || "").toString();
+  if (bodyVal && !Number.isNaN(Number(bodyVal))) {
+    return Number(bodyVal);
+  }
+
+  const envVal = process.env.DEFAULT_CLIENTE_ID;
+  if (envVal && !Number.isNaN(Number(envVal))) {
+    return Number(envVal);
+  }
+
+  return 1;
 }
 
 /**
@@ -101,16 +133,13 @@ router.get("/", async (req: Request, res: Response) => {
       statuses = ["LEAVE_MESSAGE", "LEAVE_MESSAGE_DECISION", "FINISHED"];
     }
 
+    const idcliente = resolveIdCliente(req);
+
     const qb = repoAtendimento
       .createQueryBuilder("a")
       .leftJoinAndSelect("a.departamento", "d")
-      .where("a.status IN (:...statuses)", { statuses });
-
-    // Multi-tenant: filtra pelo idcliente do token, se existir
-    const reqIdCliente = getRequestClienteId(req);
-    if (reqIdCliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
-    }
+      .where("a.status IN (:...statuses)", { statuses })
+      .andWhere("a.idcliente = :idcliente", { idcliente });
 
     if (departamentoId) {
       qb.andWhere("a.departamento_id = :departamentoId", { departamentoId });
@@ -167,15 +196,13 @@ router.get("/:id", async (req: Request, res: Response) => {
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
 
+    const idcliente = resolveIdCliente(req);
+
     const qb = repoAtendimento
       .createQueryBuilder("a")
       .leftJoinAndSelect("a.departamento", "d")
-      .where("a.id = :id", { id });
-
-    const reqIdCliente = getRequestClienteId(req);
-    if (reqIdCliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
-    }
+      .where("a.id = :id", { id })
+      .andWhere("a.idcliente = :idcliente", { idcliente });
 
     const atendimento = await qb.getOne();
 
@@ -184,7 +211,7 @@ router.get("/:id", async (req: Request, res: Response) => {
     }
 
     const mensagens = await repoMensagem.find({
-      where: { atendimentoId: id },
+      where: { atendimentoId: id as any, idcliente: idcliente as any },
       order: { criadoEm: "ASC" as any },
     });
 
@@ -226,23 +253,6 @@ router.get("/:id", async (req: Request, res: Response) => {
  * POST /recados/:id/responder
  *
  * Responde ao cidadão a partir do painel (modo recado).
- *
- * Body:
- *  - mensagem?: string
- *  - agenteNome?: string
- *  - agenteNumero?: string
- *  - tipoMidia?: "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO"
- *  - mediaId?: string
- *  - mimeType?: string
- *  - fileName?: string
- *  - fileSize?: number
- *  - mediaUrl?: string
- *
- * Comportamento:
- *  - Garante que o atendimento tenha protocolo;
- *  - Envia primeiro um aviso ao cidadão citando o protocolo;
- *  - Depois envia o texto do agente (se tiver) e/ou a mídia;
- *  - Grava a mensagem no histórico com idcliente.
  */
 router.post("/:id/responder", async (req: Request, res: Response) => {
   try {
@@ -280,15 +290,13 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
 
-    // Busca o atendimento, garantindo (se possível) o mesmo idcliente do usuário logado
+    const idclienteResolved = resolveIdCliente(req);
+
+    // Busca o atendimento, garantindo o mesmo idcliente
     const qb = repoAtendimento
       .createQueryBuilder("a")
-      .where("a.id = :id", { id });
-
-    const reqIdCliente = getRequestClienteId(req);
-    if (reqIdCliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
-    }
+      .where("a.id = :id", { id })
+      .andWhere("a.idcliente = :idcliente", { idcliente: idclienteResolved });
 
     const atendimento = await qb.getOne();
 
@@ -304,7 +312,7 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       });
     }
 
-    const idcliente = atendimento.idcliente || reqIdCliente;
+    const idcliente = (atendimento as any).idcliente || idclienteResolved;
     if (!idcliente) {
       return res.status(500).json({
         error:
@@ -381,7 +389,7 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       mimeType: mimeType || null,
       fileName: fileName || null,
       fileSize: fileSize ?? null,
-      remetenteNumero: agenteNumero || atendimento.agenteNumero || "PAINEL",
+      remetenteNumero: agenteNumero || (atendimento as any).agenteNumero || "PAINEL",
       comandoCodigo: null,
       comandoDescricao: mediaId
         ? "Recado (mídia) enviado pelo painel de recados (modo recado)."
@@ -392,10 +400,10 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
 
     // Atualiza nome/número do agente se veio do painel
     const atualizacoes: Partial<Atendimento> = {};
-    if (agenteNome && !atendimento.agenteNome) {
+    if (agenteNome && !(atendimento as any).agenteNome) {
       (atualizacoes as any).agenteNome = agenteNome;
     }
-    if (agenteNumero && !atendimento.agenteNumero) {
+    if (agenteNumero && !(atendimento as any).agenteNumero) {
       (atualizacoes as any).agenteNumero = agenteNumero;
     }
 
@@ -418,10 +426,6 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
  * PATCH /recados/:id/transferir
  *
  * Transfere o atendimento (recado) para outro departamento e/ou agente.
- * Body:
- *   - departamentoId?: number
- *   - agenteNome?: string
- *   - agenteNumero?: string
  */
 router.patch("/:id/transferir", async (req: Request, res: Response) => {
   try {
@@ -433,15 +437,12 @@ router.patch("/:id/transferir", async (req: Request, res: Response) => {
     };
 
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
+    const idcliente = resolveIdCliente(req);
 
     const qb = repoAtendimento
       .createQueryBuilder("a")
-      .where("a.id = :id", { id });
-
-    const reqIdCliente = getRequestClienteId(req);
-    if (reqIdCliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
-    }
+      .where("a.id = :id", { id })
+      .andWhere("a.idcliente = :idcliente", { idcliente });
 
     const atendimento = await qb.getOne();
 
@@ -477,9 +478,6 @@ router.patch("/:id/transferir", async (req: Request, res: Response) => {
  * PATCH /recados/:id/concluir
  *
  * Marca o recado/atendimento como concluído, garantindo que exista protocolo.
- * Body (opcional):
- *   - foiResolvido?: boolean
- *   - notaSatisfacao?: number
  */
 router.patch("/:id/concluir", async (req: Request, res: Response) => {
   try {
@@ -490,15 +488,12 @@ router.patch("/:id/concluir", async (req: Request, res: Response) => {
     };
 
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
+    const idcliente = resolveIdCliente(req);
 
     const qb = repoAtendimento
       .createQueryBuilder("a")
-      .where("a.id = :id", { id });
-
-    const reqIdCliente = getRequestClienteId(req);
-    if (reqIdCliente) {
-      qb.andWhere("a.idcliente = :idcliente", { idcliente: reqIdCliente });
-    }
+      .where("a.id = :id", { id })
+      .andWhere("a.idcliente = :idcliente", { idcliente });
 
     const atendimento = await qb.getOne();
 

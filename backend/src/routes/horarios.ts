@@ -2,6 +2,7 @@
 import { Router, Request, Response } from "express";
 import { AppDataSource } from "../database/data-source";
 import { HorarioAtendimento } from "../entities/HorarioAtendimento";
+import { AuthRequest } from "../middlewares/authMiddleware"; // 👈 pega idcliente do token
 
 const router = Router();
 const repo = AppDataSource.getRepository(HorarioAtendimento);
@@ -22,32 +23,44 @@ function mapEntityToDTO(h: HorarioAtendimento) {
 /**
  * Identifica o idcliente a partir da requisição.
  * Prioridade:
- *  - header "x-id-cliente"
- *  - query string "idcliente"
- *  - body.idcliente
- *  - DEFAULT_CLIENTE_ID ou 1
+ *  1) idcliente vindo do token JWT (authMiddleware)
+ *  2) header "x-id-cliente"
+ *  3) query string "idcliente"
+ *  4) body.idcliente
+ *  5) DEFAULT_CLIENTE_ID ou 1
  */
 function getIdClienteFromRequest(req: Request): number {
+  // 1) Token JWT
+  const authReq = req as AuthRequest;
+  if (authReq.idcliente && !isNaN(Number(authReq.idcliente))) {
+    return Number(authReq.idcliente);
+  }
+
+  // 2) Header
   const headerVal = (req.headers["x-id-cliente"] || "").toString();
   if (headerVal && !isNaN(Number(headerVal))) {
     return Number(headerVal);
   }
 
+  // 3) Query
   const queryVal = (req.query.idcliente || "").toString();
   if (queryVal && !isNaN(Number(queryVal))) {
     return Number(queryVal);
   }
 
+  // 4) Body
   const bodyVal = (req.body?.idcliente || "").toString();
   if (bodyVal && !isNaN(Number(bodyVal))) {
     return Number(bodyVal);
   }
 
+  // 5) Env
   const envVal = process.env.DEFAULT_CLIENTE_ID;
   if (envVal && !isNaN(Number(envVal))) {
     return Number(envVal);
   }
 
+  // Fallback
   return 1;
 }
 

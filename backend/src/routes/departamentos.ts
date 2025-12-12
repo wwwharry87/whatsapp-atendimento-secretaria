@@ -3,6 +3,7 @@ import { Router, Request, Response } from "express";
 import { AppDataSource } from "../database/data-source";
 import { Departamento } from "../entities/Departamento";
 import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
+import { AuthRequest } from "../middlewares/authMiddleware"; // 👈 pega idcliente do token
 
 const router = Router();
 const repo = AppDataSource.getRepository(Departamento);
@@ -11,32 +12,44 @@ const usuarioDepartamentoRepo = AppDataSource.getRepository(UsuarioDepartamento)
 /**
  * Identifica o idcliente a partir da requisição.
  * Prioridade:
- *  - header "x-id-cliente"
- *  - query string "idcliente"
- *  - body.idcliente
- *  - DEFAULT_CLIENTE_ID ou 1
+ *  1) idcliente vindo do token JWT (authMiddleware)
+ *  2) header "x-id-cliente"
+ *  3) query string "idcliente"
+ *  4) body.idcliente
+ *  5) DEFAULT_CLIENTE_ID ou 1
  */
 function getIdClienteFromRequest(req: Request): number {
+  // 1) Token JWT (preenchido pelo authMiddleware)
+  const authReq = req as AuthRequest;
+  if (authReq.idcliente && !isNaN(Number(authReq.idcliente))) {
+    return Number(authReq.idcliente);
+  }
+
+  // 2) Header
   const headerVal = (req.headers["x-id-cliente"] || "").toString();
   if (headerVal && !isNaN(Number(headerVal))) {
     return Number(headerVal);
   }
 
+  // 3) Query
   const queryVal = (req.query.idcliente || "").toString();
   if (queryVal && !isNaN(Number(queryVal))) {
     return Number(queryVal);
   }
 
+  // 4) Body
   const bodyVal = (req.body?.idcliente || "").toString();
   if (bodyVal && !isNaN(Number(bodyVal))) {
     return Number(bodyVal);
   }
 
+  // 5) Env
   const envVal = process.env.DEFAULT_CLIENTE_ID;
   if (envVal && !isNaN(Number(envVal))) {
     return Number(envVal);
   }
 
+  // Fallback
   return 1;
 }
 
@@ -58,8 +71,8 @@ router.get("/", async (req: Request, res: Response) => {
       nome: d.nome,
       responsavel_nome: d.responsavelNome ?? "",
       responsavel_numero: d.responsavelNumero ?? "",
-      criado_em: d.criadoEm.toISOString(),
-      atualizado_em: d.atualizadoEm.toISOString(),
+      criado_em: d.criadoEm?.toISOString?.() ?? null,
+      atualizado_em: d.atualizadoEm?.toISOString?.() ?? null,
     }));
 
     res.json(data);
@@ -98,8 +111,8 @@ router.post("/", async (req: Request, res: Response) => {
       nome: departamento.nome,
       responsavel_nome: departamento.responsavelNome ?? "",
       responsavel_numero: departamento.responsavelNumero ?? "",
-      criado_em: departamento.criadoEm.toISOString(),
-      atualizado_em: departamento.atualizadoEm.toISOString(),
+      criado_em: departamento.criadoEm?.toISOString?.() ?? null,
+      atualizado_em: departamento.atualizadoEm?.toISOString?.() ?? null,
     });
   } catch (err) {
     console.error("Erro ao criar departamento:", err);
@@ -141,8 +154,8 @@ router.put("/:id", async (req: Request, res: Response) => {
       nome: departamento.nome,
       responsavel_nome: departamento.responsavelNome ?? "",
       responsavel_numero: departamento.responsavelNumero ?? "",
-      criado_em: departamento.criadoEm.toISOString(),
-      atualizado_em: departamento.atualizadoEm.toISOString(),
+      criado_em: departamento.criadoEm?.toISOString?.() ?? null,
+      atualizado_em: departamento.atualizadoEm?.toISOString?.() ?? null,
     });
   } catch (err) {
     console.error("Erro ao atualizar departamento:", err);
@@ -162,9 +175,16 @@ router.get("/:id/agentes", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "ID de departamento inválido" });
     }
 
+    // (Opcional mas recomendado) Garante que o departamento é do cliente atual
+    const dep = await repo.findOne({ where: { id: departamentoId, idcliente } });
+    if (!dep) {
+      return res.status(404).json({ error: "Departamento não encontrado" });
+    }
+
     const relacoes = await usuarioDepartamentoRepo.find({
       where: { idcliente, departamentoId },
       order: { principal: "DESC" },
+      relations: ["usuario"],
     });
 
     const data = relacoes.map((r) => ({
@@ -201,6 +221,12 @@ router.post("/:id/agentes", async (req: Request, res: Response) => {
     const departamentoId = Number(req.params.id);
     if (Number.isNaN(departamentoId)) {
       return res.status(400).json({ error: "ID de departamento inválido" });
+    }
+
+    // Garante que o departamento pertence a esse cliente
+    const dep = await repo.findOne({ where: { id: departamentoId, idcliente } });
+    if (!dep) {
+      return res.status(404).json({ error: "Departamento não encontrado" });
     }
 
     const { agentes } = req.body as {

@@ -5,12 +5,17 @@ import { AppDataSource } from "../database/data-source";
 import { Usuario, PerfilUsuario } from "../entities/Usuario";
 import { Cliente } from "../entities/Cliente";
 import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
+import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
 
-// ====== Helpers de cliente (mesmo padrão do sessionService) ======
+// ====== Helpers de cliente ======
 let defaultClienteIdCache: number | null = null;
 
+/**
+ * Usado apenas como fallback (quando não vier idcliente no token),
+ * por exemplo em um cenário legado ou usuário "global" de configuração.
+ */
 async function getDefaultClienteId(): Promise<number> {
   if (defaultClienteIdCache !== null) return defaultClienteIdCache;
 
@@ -45,6 +50,26 @@ async function getDefaultClienteId(): Promise<number> {
   return defaultClienteIdCache;
 }
 
+/**
+ * Sempre que possível, usa o idcliente do token (authMiddleware).
+ * Só cai no default (primeiro cliente) se não tiver nada no token.
+ */
+async function getIdClienteFromRequest(req: Request): Promise<number> {
+  const authReq = req as AuthRequest;
+
+  if (authReq.idcliente && !Number.isNaN(Number(authReq.idcliente))) {
+    return Number(authReq.idcliente);
+  }
+
+  // fallback legado
+  const envVal = process.env.DEFAULT_CLIENTE_ID;
+  if (envVal && !Number.isNaN(Number(envVal))) {
+    return Number(envVal);
+  }
+
+  return getDefaultClienteId();
+}
+
 // ====== Helpers gerais ======
 
 function normalizarTelefone(telefone?: string | null): string | null {
@@ -54,7 +79,7 @@ function normalizarTelefone(telefone?: string | null): string | null {
 }
 
 function validarEmail(email?: string | null): boolean {
-  if (!email) return true; // se não informar, não vamos travar aqui (pode ser opcional)
+  if (!email) return true; // se não informar, não travamos aqui
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return re.test(email.trim());
 }
@@ -66,7 +91,7 @@ type UsuarioCreateBody = {
   senha?: string; // opcional na tela
   perfil?: PerfilUsuario;
   ativo?: boolean;
-  departamentosIds?: number[]; // opcional – vínculo com setores
+  departamentosIds?: number[]; // vínculos com setores
 };
 
 type UsuarioUpdateBody = {
@@ -83,7 +108,7 @@ type UsuarioUpdateBody = {
 
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const idcliente = await getDefaultClienteId();
+    const idcliente = await getIdClienteFromRequest(req);
     const repo = AppDataSource.getRepository(Usuario);
 
     const usuarios = await repo.find({
@@ -135,12 +160,11 @@ router.post("/", async (req: Request, res: Response) => {
       return res.status(400).json({ message: "E-mail inválido." });
     }
 
-    const idcliente = await getDefaultClienteId();
+    const idcliente = await getIdClienteFromRequest(req);
     const repo = AppDataSource.getRepository(Usuario);
     const udRepo = AppDataSource.getRepository(UsuarioDepartamento);
 
-    // Se não informar senha pela tela, usaremos uma padrão por enquanto
-    // (você pode depois trocar isso por senha aleatória, etc.)
+    // Se não informar senha pela tela, usamos uma senha padrão temporária
     const senhaEmTexto =
       (senha && senha.trim()) || "123456"; // <<< senha padrão TEMPORÁRIA
     const senhaHash = await bcrypt.hash(senhaEmTexto, 10);
@@ -186,7 +210,6 @@ router.post("/", async (req: Request, res: Response) => {
       perfil: usuario.perfil,
       ativo: usuario.ativo,
       idcliente: usuario.idcliente,
-      // se quiser, pode retornar a senha temporária pra exibir na tela:
       senhaTemporaria: senha ? undefined : senhaEmTexto,
     });
   } catch (err) {
@@ -210,10 +233,14 @@ router.put("/:id", async (req: Request, res: Response) => {
       departamentosIds,
     } = req.body as UsuarioUpdateBody;
 
+    const idcliente = await getIdClienteFromRequest(req);
     const repo = AppDataSource.getRepository(Usuario);
     const udRepo = AppDataSource.getRepository(UsuarioDepartamento);
 
-    const usuario = await repo.findOne({ where: { id } });
+    // Garante que o usuário seja do MESMO cliente
+    const usuario = await repo.findOne({
+      where: { id, idcliente: idcliente as any },
+    });
 
     if (!usuario) {
       return res.status(404).json({ message: "Usuário não encontrado." });
@@ -252,10 +279,11 @@ router.put("/:id", async (req: Request, res: Response) => {
 
     // Atualizar vínculos com departamentos, se veio no corpo
     if (Array.isArray(departamentosIds)) {
-      const idcliente = usuario.idcliente;
-
-      // apaga vínculos antigos deste usuário
-      await udRepo.delete({ usuarioId: usuario.id, idcliente: idcliente as any });
+      // apaga vínculos antigos deste usuário para ESTE cliente
+      await udRepo.delete({
+        usuarioId: usuario.id,
+        idcliente: idcliente as any,
+      });
 
       if (departamentosIds.length > 0) {
         const novosVinculos: UsuarioDepartamento[] = departamentosIds.map(
@@ -271,7 +299,12 @@ router.put("/:id", async (req: Request, res: Response) => {
       }
     }
 
-    console.log("[USUARIOS] Usuário atualizado:", usuario.id);
+    console.log(
+      "[USUARIOS] Usuário atualizado:",
+      usuario.id,
+      "idcliente=",
+      idcliente
+    );
 
     return res.json({
       id: usuario.id,
@@ -288,16 +321,19 @@ router.put("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// ====== DESATIVAR / REATIVAR RÁPIDO (opcional) ======
+// ====== DESATIVAR / REATIVAR RÁPIDO ======
 
 router.patch("/:id/status", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { ativo } = req.body as { ativo: boolean };
 
+    const idcliente = await getIdClienteFromRequest(req);
     const repo = AppDataSource.getRepository(Usuario);
 
-    const usuario = await repo.findOne({ where: { id } });
+    const usuario = await repo.findOne({
+      where: { id, idcliente: idcliente as any },
+    });
 
     if (!usuario) {
       return res.status(404).json({ message: "Usuário não encontrado." });
