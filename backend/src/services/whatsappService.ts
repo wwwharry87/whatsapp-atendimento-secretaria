@@ -1,56 +1,185 @@
 // src/services/whatsappService.ts
 import axios from "axios";
 import { env } from "../config/env";
-import {
-  getClientByPhoneNumberId,
-  getClientById,
-  WhatsappClientInfo,
-} from "./credentialService";
+import { AppDataSource } from "../database/data-source";
+import { Cliente } from "../entities/Cliente";
 
-type SendContext = {
-  phoneNumberId?: string | null;
-  idcliente?: number | null;
+type WhatsappClientConfig = {
+  idcliente: number;
+  nome: string;
+  phoneNumberId: string;
+  accessToken: string;
 };
 
-async function resolveClient(ctx?: SendContext): Promise<WhatsappClientInfo | null> {
-  // 1) Se veio o phone_number_id da mensagem WhatsApp, prioriza isso
-  if (ctx?.phoneNumberId) {
-    const c = await getClientByPhoneNumberId(ctx.phoneNumberId);
-    if (c) return c;
+type LoadConfigParams = {
+  idcliente?: number;
+  phoneNumberId?: string;
+};
+
+/**
+ * Carrega a configuração do WhatsApp a partir da tabela `clientes`,
+ * de forma multi-tenant.
+ *
+ * Prioridade:
+ *  1) phoneNumberId (se informado)
+ *  2) idcliente (se informado)
+ *  3) primeiro cliente ATIVO (coluna ativo = true)
+ *  4) primeiro cliente da tabela
+ */
+async function loadWhatsappConfigFromDb(
+  params?: LoadConfigParams
+): Promise<WhatsappClientConfig | null> {
+  const repo = AppDataSource.getRepository(Cliente);
+
+  let cliente: Cliente | null = null;
+
+  // 1) Tenta por phoneNumberId
+  if (params?.phoneNumberId) {
+    try {
+      cliente = await repo.findOne({
+        where: { whatsappPhoneNumberId: params.phoneNumberId },
+      });
+      if (cliente) {
+        console.log(
+          "[WHATSAPP_CONFIG] Cliente resolvido por phoneNumberId:",
+          params.phoneNumberId,
+          "-> id=",
+          cliente.id,
+          "nome=",
+          cliente.nome
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[WHATSAPP_CONFIG] Erro ao buscar cliente por whatsapp_phone_number_id:",
+        err
+      );
+    }
   }
 
-  // 2) Se veio idcliente (ex.: painel / recados), tenta por id
-  if (ctx?.idcliente) {
-    const c = await getClientById(ctx.idcliente);
-    if (c) return c;
+  // 2) Tenta por idcliente
+  if (!cliente && params?.idcliente) {
+    try {
+      cliente = await repo.findOne({
+        where: { id: params.idcliente },
+      });
+      if (cliente) {
+        console.log(
+          "[WHATSAPP_CONFIG] Cliente resolvido por idcliente:",
+          params.idcliente,
+          "-> id=",
+          cliente.id,
+          "nome=",
+          cliente.nome
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[WHATSAPP_CONFIG] Erro ao buscar cliente por idcliente:",
+        err
+      );
+    }
   }
 
-  // 3) Cai no cliente default (primeiro ativo)
-  return getClientByPhoneNumberId(null);
-}
+  // 3) Primeiro cliente ativo
+  if (!cliente) {
+    try {
+      cliente = await repo.findOne({
+        where: { ativo: true as any },
+        order: { id: "ASC" as any },
+      });
+      if (cliente) {
+        console.log(
+          "[WHATSAPP_CONFIG] Cliente resolvido como primeiro ATIVO: id=",
+          cliente.id,
+          "nome=",
+          cliente.nome
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[WHATSAPP_CONFIG] Erro ao buscar primeiro cliente ativo:",
+        err
+      );
+    }
+  }
 
-async function postToWhatsapp(payload: any, ctx?: SendContext) {
-  const client = await resolveClient(ctx);
+  // 4) Primeiro cliente de qualquer forma
+  if (!cliente) {
+    try {
+      cliente = await repo.findOne({
+        order: { id: "ASC" as any },
+      });
+      if (cliente) {
+        console.log(
+          "[WHATSAPP_CONFIG] Cliente resolvido como primeiro registro da tabela: id=",
+          cliente.id,
+          "nome=",
+          cliente.nome
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[WHATSAPP_CONFIG] Erro ao buscar primeiro cliente na tabela:",
+        err
+      );
+    }
+  }
 
-  if (!client || !client.phoneNumberId || !client.accessToken) {
-    console.error("[WHATSAPP] Nenhum cliente válido para envio.", {
-      ctx,
-      client,
-    });
+  if (!cliente) {
+    console.error(
+      "[WHATSAPP_CONFIG] Nenhum registro encontrado na tabela 'clientes'."
+    );
     return null;
   }
 
-  const url = `https://graph.facebook.com/${env.whatsapp.apiVersion}/${client.phoneNumberId}/messages`;
+  const phoneNumberId = (cliente.whatsappPhoneNumberId || "").trim();
+  const accessToken = (cliente.whatsappAccessToken || "").trim();
+
+  if (!phoneNumberId || !accessToken) {
+    console.error(
+      "[WHATSAPP_CONFIG] Cliente encontrado, mas sem whatsapp_phone_number_id ou whatsapp_access_token preenchidos.",
+      {
+        id: cliente.id,
+        nome: cliente.nome,
+        whatsappPhoneNumberId: cliente.whatsappPhoneNumberId,
+        hasAccessToken: !!cliente.whatsappAccessToken,
+      }
+    );
+    return null;
+  }
+
+  return {
+    idcliente: cliente.id,
+    nome: cliente.nome,
+    phoneNumberId,
+    accessToken,
+  };
+}
+
+/**
+ * Faz o POST para a API do WhatsApp já usando:
+ *  - apiVersion vinda do env (estático)
+ *  - phoneNumberId e accessToken vindos da tabela `clientes`
+ */
+async function postToWhatsapp(payload: any, params?: LoadConfigParams) {
+  const cfg = await loadWhatsappConfigFromDb(params);
+  if (!cfg) {
+    // Já logamos o erro dentro do loader; apenas não envia nada
+    return null;
+  }
+
+  const url = `https://graph.facebook.com/${env.whatsapp.apiVersion}/${cfg.phoneNumberId}/messages`;
 
   console.log("[WHATSAPP] Enviando via cliente:", {
-    idcliente: client.idcliente,
-    nome: client.nome,
+    idcliente: cfg.idcliente,
+    nome: cfg.nome,
     url,
   });
 
   return axios.post(url, payload, {
     headers: {
-      Authorization: `Bearer ${client.accessToken}`,
+      Authorization: `Bearer ${cfg.accessToken}`,
       "Content-Type": "application/json",
     },
   });
@@ -61,7 +190,7 @@ async function postToWhatsapp(payload: any, ctx?: SendContext) {
 export async function sendTextMessage(
   to: string,
   body: string,
-  ctx?: SendContext
+  params?: LoadConfigParams
 ) {
   try {
     const payload = {
@@ -79,11 +208,11 @@ export async function sendTextMessage(
       to,
       "body=",
       body,
-      "ctx=",
-      ctx
+      "params=",
+      params
     );
 
-    const res = await postToWhatsapp(payload, ctx);
+    const res = await postToWhatsapp(payload, params);
 
     console.log("[WHATSAPP][TEXT] Sucesso:", res?.data);
   } catch (err: any) {
@@ -94,10 +223,12 @@ export async function sendTextMessage(
   }
 }
 
+// ========= ENVIO DE MÍDIA POR ID (REUTILIZANDO mediaId DO PRÓPRIO WHATSAPP) ========= //
+
 export async function sendAudioMessageById(
   to: string,
   mediaId: string,
-  ctx?: SendContext
+  params?: LoadConfigParams
 ) {
   try {
     const payload = {
@@ -109,9 +240,16 @@ export async function sendAudioMessageById(
       },
     };
 
-    console.log("[WHATSAPP][AUDIO] Enviando áudio:", { to, mediaId, ctx });
+    console.log(
+      "[WHATSAPP][AUDIO] Enviando áudio para",
+      to,
+      "mediaId=",
+      mediaId,
+      "params=",
+      params
+    );
 
-    const res = await postToWhatsapp(payload, ctx);
+    const res = await postToWhatsapp(payload, params);
 
     console.log("[WHATSAPP][AUDIO] Sucesso:", res?.data);
   } catch (err: any) {
@@ -125,19 +263,28 @@ export async function sendAudioMessageById(
 export async function sendImageMessageById(
   to: string,
   mediaId: string,
-  ctx?: SendContext
+  params?: LoadConfigParams
 ) {
   try {
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "image",
-      image: { id: mediaId },
+      image: {
+        id: mediaId,
+      },
     };
 
-    console.log("[WHATSAPP][IMAGE] Enviando imagem:", { to, mediaId, ctx });
+    console.log(
+      "[WHATSAPP][IMAGE] Enviando imagem para",
+      to,
+      "mediaId=",
+      mediaId,
+      "params=",
+      params
+    );
 
-    const res = await postToWhatsapp(payload, ctx);
+    const res = await postToWhatsapp(payload, params);
 
     console.log("[WHATSAPP][IMAGE] Sucesso:", res?.data);
   } catch (err: any) {
@@ -151,19 +298,28 @@ export async function sendImageMessageById(
 export async function sendVideoMessageById(
   to: string,
   mediaId: string,
-  ctx?: SendContext
+  params?: LoadConfigParams
 ) {
   try {
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "video",
-      video: { id: mediaId },
+      video: {
+        id: mediaId,
+      },
     };
 
-    console.log("[WHATSAPP][VIDEO] Enviando vídeo:", { to, mediaId, ctx });
+    console.log(
+      "[WHATSAPP][VIDEO] Enviando vídeo para",
+      to,
+      "mediaId=",
+      mediaId,
+      "params=",
+      params
+    );
 
-    const res = await postToWhatsapp(payload, ctx);
+    const res = await postToWhatsapp(payload, params);
 
     console.log("[WHATSAPP][VIDEO] Sucesso:", res?.data);
   } catch (err: any) {
@@ -177,19 +333,28 @@ export async function sendVideoMessageById(
 export async function sendDocumentMessageById(
   to: string,
   mediaId: string,
-  ctx?: SendContext
+  params?: LoadConfigParams
 ) {
   try {
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "document",
-      document: { id: mediaId },
+      document: {
+        id: mediaId,
+      },
     };
 
-    console.log("[WHATSAPP][DOC] Enviando documento:", { to, mediaId, ctx });
+    console.log(
+      "[WHATSAPP][DOC] Enviando documento para",
+      to,
+      "mediaId=",
+      mediaId,
+      "params=",
+      params
+    );
 
-    const res = await postToWhatsapp(payload, ctx);
+    const res = await postToWhatsapp(payload, params);
 
     console.log("[WHATSAPP][DOC] Sucesso:", res?.data);
   } catch (err: any) {
@@ -206,12 +371,13 @@ type SaudacaoTemplateParams = {
   to: string;
   saudacao: string;
   idcliente?: number;
+  phoneNumberId?: string;
 };
 
 export async function sendSaudacaoPedirNomeTemplate(
   params: SaudacaoTemplateParams
 ) {
-  const { to, saudacao, idcliente } = params;
+  const { to, saudacao, idcliente, phoneNumberId } = params;
 
   try {
     const payload = {
@@ -243,10 +409,12 @@ export async function sendSaudacaoPedirNomeTemplate(
       "saudacao=",
       saudacao,
       "idcliente=",
-      idcliente
+      idcliente,
+      "phoneNumberId=",
+      phoneNumberId
     );
 
-    const res = await postToWhatsapp(payload, { idcliente });
+    const res = await postToWhatsapp(payload, { idcliente, phoneNumberId });
 
     console.log("[WHATSAPP_TEMPLATE saudacao_pedir_nome] Sucesso:", res?.data);
   } catch (err: any) {
@@ -261,7 +429,7 @@ export async function sendSaudacaoPedirNomeTemplate(
         to,
         `${saudacao}! 👋 Sou o assistente virtual do atendimento.\n` +
           "Por favor, me informe seu *nome completo* para iniciarmos o atendimento.",
-        { idcliente }
+        { idcliente, phoneNumberId }
       );
       console.log(
         "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Fallback de texto enviado com sucesso."
@@ -281,12 +449,14 @@ type NovoAtendimentoTemplateParams = {
   departmentName?: string;
   protocolo?: string;
   idcliente?: number;
+  phoneNumberId?: string;
 };
 
 export async function sendNovoAtendimentoTemplateToAgent(
   params: NovoAtendimentoTemplateParams
 ) {
-  const { to, citizenName, departmentName, protocolo, idcliente } = params;
+  const { to, citizenName, departmentName, protocolo, idcliente, phoneNumberId } =
+    params;
 
   try {
     const payload = {
@@ -330,10 +500,12 @@ export async function sendNovoAtendimentoTemplateToAgent(
       "protocolo=",
       protocolo,
       "idcliente=",
-      idcliente
+      idcliente,
+      "phoneNumberId=",
+      phoneNumberId
     );
 
-    const res = await postToWhatsapp(payload, { idcliente });
+    const res = await postToWhatsapp(payload, { idcliente, phoneNumberId });
 
     console.log("[WHATSAPP_TEMPLATE novo_atendimento] Sucesso:", res?.data);
   } catch (err: any) {
@@ -353,7 +525,7 @@ export async function sendNovoAtendimentoTemplateToAgent(
         `📩 Novo atendimento para o setor *${setor}*.\n` +
           `👤 Cidadão: *${nome}*\n` +
           `🔖 Protocolo: *${prot}*`,
-        { idcliente }
+        { idcliente, phoneNumberId }
       );
       console.log(
         "[WHATSAPP_TEMPLATE novo_atendimento] Fallback de texto enviado com sucesso."
@@ -373,12 +545,14 @@ type MenuComNomeTemplateParams = {
   saudacao?: string;
   menuTexto?: string;
   idcliente?: number;
+  phoneNumberId?: string;
 };
 
 export async function sendMenuComNomeTemplate(
   params: MenuComNomeTemplateParams
 ) {
-  const { to, citizenName, saudacao, menuTexto, idcliente } = params;
+  const { to, citizenName, saudacao, menuTexto, idcliente, phoneNumberId } =
+    params;
 
   try {
     if (!menuTexto) {
@@ -405,10 +579,12 @@ export async function sendMenuComNomeTemplate(
       "[WHATSAPP_TEMPLATE menu_com_nome] Enviando menu com nome para",
       to,
       "idcliente=",
-      idcliente
+      idcliente,
+      "phoneNumberId=",
+      phoneNumberId
     );
 
-    const res = await postToWhatsapp(payload, { idcliente });
+    const res = await postToWhatsapp(payload, { idcliente, phoneNumberId });
 
     console.log("[WHATSAPP_TEMPLATE menu_com_nome] Sucesso:", res?.data);
   } catch (err: any) {
@@ -425,7 +601,7 @@ export async function sendMenuComNomeTemplate(
           "Já encontrei seu cadastro aqui.\n\n" +
           `${menuTexto}\n\n` +
           "Responda apenas com o número do setor desejado.",
-        { idcliente }
+        { idcliente, phoneNumberId }
       );
       console.log(
         "[WHATSAPP_TEMPLATE menu_com_nome] Fallback de texto enviado com sucesso."
