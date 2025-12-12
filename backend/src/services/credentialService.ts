@@ -2,80 +2,116 @@
 import { AppDataSource } from "../database/data-source";
 import { Cliente } from "../entities/Cliente";
 
-// Cache simples em memória para não bater no banco em toda mensagem
-// Map<idcliente, Cliente>
-const clientCache = new Map<number, Cliente>();
-// Map<phoneNumberId, Cliente> - para busca rápida no webhook
-const phoneIdCache = new Map<string, Cliente>();
+export type WhatsappClientInfo = {
+  idcliente: number;
+  nome: string;
+  phoneNumberId: string;
+  accessToken: string;
+};
 
-// Tempo que os dados ficam na memória (10 minutos)
-const CACHE_TTL = 10 * 60 * 1000; 
-let lastCacheClear = Date.now();
-
-function checkCacheInvalidation() {
-  const now = Date.now();
-  if (now - lastCacheClear > CACHE_TTL) {
-    console.log("[CACHE] Limpando cache de credenciais de clientes...");
-    clientCache.clear();
-    phoneIdCache.clear();
-    lastCacheClear = now;
-  }
-}
+const cacheByPhoneNumberId = new Map<string, WhatsappClientInfo>();
+let defaultClientCache: WhatsappClientInfo | null = null;
 
 /**
- * Busca um cliente pelo ID (usado na hora de enviar mensagem)
+ * Busca cliente pelo phone_number_id vindo do WhatsApp.
+ * Se não informar phoneNumberId, cai no cliente "default" (primeiro ativo).
  */
-export async function getClienteById(idcliente: number): Promise<Cliente | null> {
-  checkCacheInvalidation();
-  
-  if (clientCache.has(idcliente)) {
-    return clientCache.get(idcliente)!;
-  }
-
+export async function getClientByPhoneNumberId(
+  phoneNumberId?: string | null
+): Promise<WhatsappClientInfo | null> {
   const repo = AppDataSource.getRepository(Cliente);
-  const cliente = await repo.findOne({ where: { id: idcliente, ativo: true } });
 
-  if (cliente) {
-    clientCache.set(idcliente, cliente);
-    if (cliente.whatsappPhoneNumberId) {
-      phoneIdCache.set(cliente.whatsappPhoneNumberId, cliente);
+  // 1) Quando vier o phone_number_id do webhook
+  if (phoneNumberId && phoneNumberId.trim()) {
+    const key = phoneNumberId.trim();
+
+    if (cacheByPhoneNumberId.has(key)) {
+      return cacheByPhoneNumberId.get(key)!;
     }
+
+    const cliente = await repo.findOne({
+      where: { whatsappPhoneNumberId: key },
+    });
+
+    if (!cliente) {
+      console.warn(
+        "[CREDENTIALS] Nenhum cliente encontrado com whatsapp_phone_number_id =",
+        key
+      );
+      return null;
+    }
+
+    const info: WhatsappClientInfo = {
+      idcliente: cliente.id,
+      nome: cliente.nome,
+      phoneNumberId: key,
+      accessToken: (cliente.whatsappAccessToken || "").trim(),
+    };
+
+    cacheByPhoneNumberId.set(key, info);
+    return info;
   }
 
-  return cliente;
+  // 2) Default (primeiro cliente ativo / primeiro da tabela)
+  if (defaultClientCache) return defaultClientCache;
+
+  let cliente: Cliente | null = null;
+
+  try {
+    cliente = await repo.findOne({
+      where: { ativo: true as any },
+      order: { id: "ASC" as any },
+    });
+  } catch (err) {
+    console.log(
+      "[CREDENTIALS] Erro ao buscar cliente ativo (talvez não exista coluna 'ativo').",
+      err
+    );
+  }
+
+  if (!cliente) {
+    cliente = await repo.findOne({
+      order: { id: "ASC" as any },
+    });
+  }
+
+  if (!cliente) {
+    console.error(
+      "[CREDENTIALS] Nenhum cliente encontrado na tabela 'clientes'."
+    );
+    return null;
+  }
+
+  const info: WhatsappClientInfo = {
+    idcliente: cliente.id,
+    nome: cliente.nome,
+    phoneNumberId: (cliente.whatsappPhoneNumberId || "").trim(),
+    accessToken: (cliente.whatsappAccessToken || "").trim(),
+  };
+
+  defaultClientCache = info;
+  return info;
 }
 
 /**
- * Busca um cliente pelo Phone Number ID vindo do Webhook (usado na hora de receber)
+ * Opcional: buscar cliente direto pelo idcliente (para uso no painel/recados).
  */
-export async function getClienteByPhoneNumberId(phoneId: string): Promise<Cliente | null> {
-  checkCacheInvalidation();
+export async function getClientById(
+  idcliente: number
+): Promise<WhatsappClientInfo | null> {
+  const repo = AppDataSource.getRepository(Cliente);
 
-  if (phoneIdCache.has(phoneId)) {
-    return phoneIdCache.get(phoneId)!;
+  const cliente = await repo.findOne({ where: { id: idcliente } });
+
+  if (!cliente) {
+    console.warn("[CREDENTIALS] Cliente não encontrado para id =", idcliente);
+    return null;
   }
 
-  const repo = AppDataSource.getRepository(Cliente);
-  const cliente = await repo.findOne({ 
-    where: { whatsappPhoneNumberId: phoneId, ativo: true } 
-  });
-
-  if (cliente) {
-    phoneIdCache.set(phoneId, cliente);
-    clientCache.set(cliente.id, cliente);
-  }
-
-  return cliente;
-}
-
-/**
- * Verifica se o token de verificação (hub.verify_token) bate com algum cliente ativo
- */
-export async function verificarTokenValidacao(tokenRecebido: string): Promise<boolean> {
-  const repo = AppDataSource.getRepository(Cliente);
-  // Busca se existe ALGUM cliente com esse verify_token
-  const count = await repo.count({ 
-    where: { whatsappVerifyToken: tokenRecebido, ativo: true } 
-  });
-  return count > 0;
+  return {
+    idcliente: cliente.id,
+    nome: cliente.nome,
+    phoneNumberId: (cliente.whatsappPhoneNumberId || "").trim(),
+    accessToken: (cliente.whatsappAccessToken || "").trim(),
+  };
 }

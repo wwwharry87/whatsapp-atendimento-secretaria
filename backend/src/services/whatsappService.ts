@@ -1,138 +1,56 @@
 // src/services/whatsappService.ts
 import axios from "axios";
 import { env } from "../config/env";
-import { AppDataSource } from "../database/data-source";
-import { Cliente } from "../entities/Cliente";
+import {
+  getClientByPhoneNumberId,
+  getClientById,
+  WhatsappClientInfo,
+} from "./credentialService";
 
-type WhatsappClientConfig = {
-  phoneNumberId: string;
-  accessToken: string;
-  idcliente: number;
-  nomeCliente?: string;
+type SendContext = {
+  phoneNumberId?: string | null;
+  idcliente?: number | null;
 };
 
-type PostOpts = {
-  idcliente?: number;
-};
-
-/**
- * Carrega a configuração do WhatsApp a partir da tabela `clientes`.
- *
- * - Se receber idcliente, busca EXATAMENTE esse cliente.
- *   (sem fallback para outro cliente, pra não vazar número)
- * - Se não receber idcliente, cai no comportamento antigo:
- *   primeiro cliente ativo, ou primeiro cliente da tabela.
- */
-async function loadWhatsappConfigFromDb(
-  idcliente?: number
-): Promise<WhatsappClientConfig | null> {
-  const repo = AppDataSource.getRepository(Cliente);
-  let cliente: Cliente | null = null;
-
-  if (idcliente) {
-    try {
-      cliente = await repo.findOne({
-        where: { id: idcliente as any },
-      });
-    } catch (err) {
-      console.error(
-        `[WHATSAPP_CONFIG] Erro ao buscar cliente id=${idcliente}:`,
-        err
-      );
-    }
-
-    if (!cliente) {
-      console.error(
-        `[WHATSAPP_CONFIG] Cliente com id=${idcliente} não encontrado ao carregar config do WhatsApp.`
-      );
-      return null;
-    }
-  } else {
-    // Comportamento "global" legado: pega primeiro cliente ativo,
-    // senão o primeiro da tabela
-    try {
-      cliente = await repo.findOne({
-        where: { ativo: true as any },
-        order: { id: "ASC" as any },
-      });
-    } catch (err) {
-      console.error(
-        "[WHATSAPP_CONFIG] Erro ao buscar cliente ativo na tabela 'clientes':",
-        err
-      );
-    }
-
-    if (!cliente) {
-      try {
-        cliente = await repo.findOne({
-          order: { id: "ASC" as any },
-        });
-      } catch (err) {
-        console.error(
-          "[WHATSAPP_CONFIG] Erro ao buscar primeiro cliente na tabela 'clientes':",
-          err
-        );
-      }
-    }
-
-    if (!cliente) {
-      console.error(
-        "[WHATSAPP_CONFIG] Nenhum registro encontrado na tabela 'clientes'."
-      );
-      return null;
-    }
+async function resolveClient(ctx?: SendContext): Promise<WhatsappClientInfo | null> {
+  // 1) Se veio o phone_number_id da mensagem WhatsApp, prioriza isso
+  if (ctx?.phoneNumberId) {
+    const c = await getClientByPhoneNumberId(ctx.phoneNumberId);
+    if (c) return c;
   }
 
-  const phoneNumberId = (cliente.whatsappPhoneNumberId || "").trim();
-  const accessToken = (cliente.whatsappAccessToken || "").trim();
-
-  if (!phoneNumberId || !accessToken) {
-    console.error(
-      "[WHATSAPP_CONFIG] Cliente encontrado, mas sem whatsapp_phone_number_id ou whatsapp_access_token preenchidos.",
-      {
-        id: cliente.id,
-        nome: cliente.nome,
-        whatsappPhoneNumberId: cliente.whatsappPhoneNumberId,
-        hasAccessToken: !!cliente.whatsappAccessToken,
-      }
-    );
-    return null;
+  // 2) Se veio idcliente (ex.: painel / recados), tenta por id
+  if (ctx?.idcliente) {
+    const c = await getClientById(ctx.idcliente);
+    if (c) return c;
   }
 
-  return {
-    phoneNumberId,
-    accessToken,
-    idcliente: cliente.id,
-    nomeCliente: cliente.nome,
-  };
+  // 3) Cai no cliente default (primeiro ativo)
+  return getClientByPhoneNumberId(null);
 }
 
-/**
- * Faz o POST para a API do WhatsApp usando:
- *  - apiVersion do env
- *  - phoneNumberId / accessToken do cliente certo
- */
-async function postToWhatsapp(payload: any, opts?: PostOpts) {
-  const cfg = await loadWhatsappConfigFromDb(opts?.idcliente);
-  if (!cfg) {
-    console.error(
-      "[WHATSAPP] Não foi possível obter configuração do WhatsApp para envio.",
-      { idcliente: opts?.idcliente }
-    );
+async function postToWhatsapp(payload: any, ctx?: SendContext) {
+  const client = await resolveClient(ctx);
+
+  if (!client || !client.phoneNumberId || !client.accessToken) {
+    console.error("[WHATSAPP] Nenhum cliente válido para envio.", {
+      ctx,
+      client,
+    });
     return null;
   }
 
-  const url = `https://graph.facebook.com/${env.whatsapp.apiVersion}/${cfg.phoneNumberId}/messages`;
+  const url = `https://graph.facebook.com/${env.whatsapp.apiVersion}/${client.phoneNumberId}/messages`;
 
   console.log("[WHATSAPP] Enviando via cliente:", {
-    idcliente: cfg.idcliente,
-    nome: cfg.nomeCliente,
+    idcliente: client.idcliente,
+    nome: client.nome,
     url,
   });
 
   return axios.post(url, payload, {
     headers: {
-      Authorization: `Bearer ${cfg.accessToken}`,
+      Authorization: `Bearer ${client.accessToken}`,
       "Content-Type": "application/json",
     },
   });
@@ -140,14 +58,10 @@ async function postToWhatsapp(payload: any, opts?: PostOpts) {
 
 // ====================== TEXTO / MÍDIA / TEMPLATES ======================
 
-type SendOpts = {
-  idcliente?: number;
-};
-
 export async function sendTextMessage(
   to: string,
   body: string,
-  opts?: SendOpts
+  ctx?: SendContext
 ) {
   try {
     const payload = {
@@ -165,11 +79,11 @@ export async function sendTextMessage(
       to,
       "body=",
       body,
-      "opts=",
-      opts
+      "ctx=",
+      ctx
     );
 
-    const res = await postToWhatsapp(payload, opts);
+    const res = await postToWhatsapp(payload, ctx);
 
     console.log("[WHATSAPP][TEXT] Sucesso:", res?.data);
   } catch (err: any) {
@@ -180,12 +94,10 @@ export async function sendTextMessage(
   }
 }
 
-// ========= ENVIO DE MÍDIA POR ID (REUTILIZANDO mediaId DO PRÓPRIO WHATSAPP) ========= //
-
 export async function sendAudioMessageById(
   to: string,
   mediaId: string,
-  opts?: SendOpts
+  ctx?: SendContext
 ) {
   try {
     const payload = {
@@ -197,16 +109,9 @@ export async function sendAudioMessageById(
       },
     };
 
-    console.log(
-      "[WHATSAPP][AUDIO] Enviando áudio para",
-      to,
-      "mediaId=",
-      mediaId,
-      "opts=",
-      opts
-    );
+    console.log("[WHATSAPP][AUDIO] Enviando áudio:", { to, mediaId, ctx });
 
-    const res = await postToWhatsapp(payload, opts);
+    const res = await postToWhatsapp(payload, ctx);
 
     console.log("[WHATSAPP][AUDIO] Sucesso:", res?.data);
   } catch (err: any) {
@@ -220,28 +125,19 @@ export async function sendAudioMessageById(
 export async function sendImageMessageById(
   to: string,
   mediaId: string,
-  opts?: SendOpts
+  ctx?: SendContext
 ) {
   try {
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "image",
-      image: {
-        id: mediaId,
-      },
+      image: { id: mediaId },
     };
 
-    console.log(
-      "[WHATSAPP][IMAGE] Enviando imagem para",
-      to,
-      "mediaId=",
-      mediaId,
-      "opts=",
-      opts
-    );
+    console.log("[WHATSAPP][IMAGE] Enviando imagem:", { to, mediaId, ctx });
 
-    const res = await postToWhatsapp(payload, opts);
+    const res = await postToWhatsapp(payload, ctx);
 
     console.log("[WHATSAPP][IMAGE] Sucesso:", res?.data);
   } catch (err: any) {
@@ -255,28 +151,19 @@ export async function sendImageMessageById(
 export async function sendVideoMessageById(
   to: string,
   mediaId: string,
-  opts?: SendOpts
+  ctx?: SendContext
 ) {
   try {
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "video",
-      video: {
-        id: mediaId,
-      },
+      video: { id: mediaId },
     };
 
-    console.log(
-      "[WHATSAPP][VIDEO] Enviando vídeo para",
-      to,
-      "mediaId=",
-      mediaId,
-      "opts=",
-      opts
-    );
+    console.log("[WHATSAPP][VIDEO] Enviando vídeo:", { to, mediaId, ctx });
 
-    const res = await postToWhatsapp(payload, opts);
+    const res = await postToWhatsapp(payload, ctx);
 
     console.log("[WHATSAPP][VIDEO] Sucesso:", res?.data);
   } catch (err: any) {
@@ -290,28 +177,19 @@ export async function sendVideoMessageById(
 export async function sendDocumentMessageById(
   to: string,
   mediaId: string,
-  opts?: SendOpts
+  ctx?: SendContext
 ) {
   try {
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "document",
-      document: {
-        id: mediaId,
-      },
+      document: { id: mediaId },
     };
 
-    console.log(
-      "[WHATSAPP][DOC] Enviando documento para",
-      to,
-      "mediaId=",
-      mediaId,
-      "opts=",
-      opts
-    );
+    console.log("[WHATSAPP][DOC] Enviando documento:", { to, mediaId, ctx });
 
-    const res = await postToWhatsapp(payload, opts);
+    const res = await postToWhatsapp(payload, ctx);
 
     console.log("[WHATSAPP][DOC] Sucesso:", res?.data);
   } catch (err: any) {

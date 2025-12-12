@@ -567,7 +567,7 @@ function buildOrgInfo(clienteNome?: string | null): OrgInfo {
 
   if (
     lower.includes("educação") ||
-    lower.includes("educacao") ||
+    lower.includes("semec") ||
     lower.includes("semed") ||
     lower.includes("secretaria municipal de educação")
   ) {

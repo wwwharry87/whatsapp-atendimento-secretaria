@@ -2,231 +2,194 @@
 import { Router, Request, Response } from "express";
 import { env } from "../config/env";
 import {
+  IncomingMessage,
   handleCitizenMessage,
   handleAgentMessage,
+  isAgentNumber,
 } from "../services/sessionService";
-import { MensagemTipo } from "../entities/Mensagem";
-import { AppDataSource } from "../database/data-source";
-import { Departamento } from "../entities/Departamento";
-import { Usuario } from "../entities/Usuario";
-import { Cliente } from "../entities/Cliente";
 
 const router = Router();
 
-function normalizePhone(num: string): string {
-  return num.replace(/\D/g, "");
+/**
+ * Normaliza um número de telefone para somente dígitos.
+ * Ex.: "+55 (94) 99123-4567" -> "559491234567"
+ */
+function normalizePhone(phone: string | undefined | null): string {
+  if (!phone) return "";
+  return phone.replace(/\D/g, "");
 }
 
-// ===================== VERIFICAÇÃO DO WEBHOOK (GET) =====================
+/**
+ * Mapeia a mensagem do WhatsApp (Cloud API) para nosso IncomingMessage.
+ * - extrai texto ou interativo
+ * - identifica tipo de mídia
+ * - traz o phone_number_id para o sessionService descobrir o cliente
+ */
+function mapMessageToIncoming(
+  rawMessage: any,
+  phoneNumberId?: string
+): IncomingMessage {
+  const from = normalizePhone(rawMessage.from);
 
-async function isValidVerifyToken(tokenRaw: unknown): Promise<boolean> {
-  const token = String(tokenRaw || "").trim();
-  if (!token) return false;
-
-  // 1) Confere com o valor opcional de env, se ainda existir
-  if (env.whatsapp.verifyToken && token === env.whatsapp.verifyToken) {
-    return true;
-  }
-
-  // 2) Confere na tabela `clientes` (coluna whatsapp_verify_token)
-  try {
-    const repo = AppDataSource.getRepository(Cliente);
-    const count = await repo.count({
-      where: { whatsappVerifyToken: token as any },
-    });
-
-    if (count > 0) {
-      return true;
-    }
-  } catch (err) {
-    console.error(
-      "[WEBHOOK][VERIFY] Erro ao consultar whatsapp_verify_token em clientes:",
-      err
-    );
-  }
-
-  return false;
-}
-
-router.get("/", async (req: Request, res: Response) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && (await isValidVerifyToken(token))) {
-    console.log("WEBHOOK_VERIFIED");
-    return res.status(200).send(challenge);
-  } else {
-    console.warn("Falha na verificação do webhook");
-    return res.sendStatus(403);
-  }
-});
-
-// ===================== CHECAGEM SE É AGENTE NO BANCO =====================
-
-async function isAgentFromDatabase(whatsappNumber: string): Promise<boolean> {
-  const normalized = normalizePhone(whatsappNumber);
-  const last8 = normalized.slice(-8); // ex: 91296984
-
-  const depRepo = AppDataSource.getRepository(Departamento);
-  const userRepo = AppDataSource.getRepository(Usuario);
-
-  // 1) Verifica se é responsável de algum departamento
-  const dep = await depRepo
-    .createQueryBuilder("d")
-    .where(
-      "right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8",
-      { last8 }
-    )
-    .getOne();
-
-  if (dep) {
-    console.log(
-      `Número ${whatsappNumber} reconhecido como AGENTE via Departamento (${dep.nome})`
-    );
-    return true;
-  }
-
-  // 2) Verifica se é um usuário cadastrado com TELEFONE
-  const usuario = await userRepo
-    .createQueryBuilder("u")
-    .where(
-      "right(regexp_replace(coalesce(u.telefone, ''), '\\D', '', 'g'), 8) = :last8",
-      { last8 }
-    )
-    .getOne();
-
-  if (usuario) {
-    console.log(
-      `Número ${whatsappNumber} reconhecido como AGENTE via Usuario (${usuario.nome})`
-    );
-    return true;
-  }
-
-  console.log(`Número ${whatsappNumber} NÃO encontrado como agente no banco.`);
-  return false;
-}
-
-// ===================== TIPAGEM SIMPLIFICADA DA MENSAGEM DO WHATSAPP =====================
-
-type WhatsappMessage = {
-  from: string;
-  id: string;
-  type: string;
-  text?: { body: string };
-  image?: { id: string; mime_type?: string; caption?: string };
-  audio?: { id: string; mime_type?: string };
-  video?: { id: string; mime_type?: string; caption?: string };
-  document?: {
-    id: string;
-    mime_type?: string;
-    filename?: string;
-    caption?: string;
-  };
-  interactive?: {
-    type: "button_reply" | "list_reply";
-    button_reply?: { id: string; title: string };
-    list_reply?: { id: string; title: string };
-  };
-};
-
-function mapMessageToIncoming(msg: WhatsappMessage) {
-  const { from, id, type } = msg;
-
-  let tipo: MensagemTipo = "TEXT";
   let text: string | undefined;
+  let tipo: IncomingMessage["tipo"] = "TEXT";
   let mediaId: string | undefined;
   let mimeType: string | undefined;
   let fileName: string | undefined;
 
-  if (type === "text" && msg.text) {
+  // Tipo padrão recebido da API
+  const waType: string = rawMessage.type;
+
+  if (waType === "text") {
     tipo = "TEXT";
-    text = msg.text.body;
-  } else if (type === "image" && msg.image) {
+    text = rawMessage.text?.body;
+  } else if (waType === "image") {
     tipo = "IMAGE";
-    mediaId = msg.image.id;
-    mimeType = msg.image.mime_type;
-    text = msg.image.caption;
-  } else if (type === "audio" && msg.audio) {
+    mediaId = rawMessage.image?.id;
+    mimeType = rawMessage.image?.mime_type;
+    text = rawMessage.image?.caption || undefined;
+  } else if (waType === "audio") {
     tipo = "AUDIO";
-    mediaId = msg.audio.id;
-    mimeType = msg.audio.mime_type;
-  } else if (type === "video" && msg.video) {
+    mediaId = rawMessage.audio?.id;
+    mimeType = rawMessage.audio?.mime_type;
+  } else if (waType === "video") {
     tipo = "VIDEO";
-    mediaId = msg.video.id;
-    mimeType = msg.video.mime_type;
-    text = msg.video.caption;
-  } else if (type === "document" && msg.document) {
+    mediaId = rawMessage.video?.id;
+    mimeType = rawMessage.video?.mime_type;
+    text = rawMessage.video?.caption || undefined;
+  } else if (waType === "document") {
     tipo = "DOCUMENT";
-    mediaId = msg.document.id;
-    mimeType = msg.document.mime_type;
-    fileName = msg.document.filename;
-    text = msg.document.caption;
-  } else if (type === "interactive" && msg.interactive) {
+    mediaId = rawMessage.document?.id;
+    mimeType = rawMessage.document?.mime_type;
+    fileName = rawMessage.document?.filename || undefined;
+  } else if (waType === "interactive") {
+    // Botões / listas -> tratamos como TEXTO
     tipo = "TEXT";
-    if (msg.interactive.type === "button_reply" && msg.interactive.button_reply) {
-      text = msg.interactive.button_reply.title || msg.interactive.button_reply.id;
-    } else if (msg.interactive.type === "list_reply" && msg.interactive.list_reply) {
-      text = msg.interactive.list_reply.title || msg.interactive.list_reply.id;
+    const interactive = rawMessage.interactive;
+    if (interactive?.type === "button_reply") {
+      text =
+        interactive.button_reply?.title ||
+        interactive.button_reply?.id ||
+        undefined;
+    } else if (interactive?.type === "list_reply") {
+      text =
+        interactive.list_reply?.title ||
+        interactive.list_reply?.id ||
+        undefined;
     }
   } else {
-    // tipos não mapeados a gente trata como TEXT genérico
+    // Qualquer outro tipo desconhecido: tratamos como TEXTO com fallback
     tipo = "TEXT";
-    text = "";
+    text = rawMessage.text?.body || undefined;
   }
 
-  return {
+  const incoming: IncomingMessage = {
     from,
     text,
     tipo,
-    whatsappMessageId: id,
+    whatsappMessageId: rawMessage.id,
     mediaId,
     mimeType,
     fileName,
+    phoneNumberId: phoneNumberId || undefined,
   };
+
+  return incoming;
 }
 
-// ===================== WEBHOOK DE MENSAGENS (POST) =====================
+/**
+ * GET /webhook
+ * Endpoint de verificação do Webhook do WhatsApp (Facebook).
+ * Ele envia hub.mode, hub.verify_token e hub.challenge.
+ */
+router.get("/", (req: Request, res: Response) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
+  const VERIFY_TOKEN = env.whatsapp.verifyToken;
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("[WEBHOOK] Verificação OK.");
+    return res.status(200).send(challenge);
+  }
+
+  console.warn(
+    "[WEBHOOK] Verificação falhou. mode=",
+    mode,
+    " token=",
+    token
+  );
+  return res.sendStatus(403);
+});
+
+/**
+ * POST /webhook
+ * Recebe eventos de mensagens do WhatsApp Cloud API.
+ */
 router.post("/", async (req: Request, res: Response) => {
+  const body = req.body;
+
+  // Estrutura padrão do WhatsApp Cloud API
+  if (!body || body.object !== "whatsapp_business_account") {
+    // Não é payload do WhatsApp, apenas responde 200 para não gerar erro.
+    return res.sendStatus(200);
+  }
+
   try {
-    const body = req.body;
+    const entries: any[] = body.entry || [];
 
-    if (!body || !body.entry || !Array.isArray(body.entry)) {
-      return res.sendStatus(200);
-    }
+    for (const entry of entries) {
+      const changes: any[] = entry.changes || [];
 
-    for (const entry of body.entry) {
-      const changes = entry.changes || [];
       for (const change of changes) {
         const value = change.value;
         if (!value) continue;
 
-        const messages: WhatsappMessage[] = value.messages || [];
-        if (!messages || !Array.isArray(messages) || messages.length === 0) {
-          continue;
-        }
+        const phoneNumberId: string | undefined =
+          value.metadata?.phone_number_id || undefined;
 
-        for (const message of messages) {
-          const from = message.from;
-          if (!from) continue;
+        const messages: any[] = value.messages || [];
 
-          const incoming = mapMessageToIncoming(message);
-          const isAgent = await isAgentFromDatabase(from);
+        for (const msg of messages) {
+          const fromRaw = msg.from;
+          const from = normalizePhone(fromRaw);
+
+          const incoming = mapMessageToIncoming(msg, phoneNumberId);
+
+          // Decide se é um AGENTE ou um CIDADÃO com base nas sessões já carregadas
+          const isAgent = isAgentNumber(from);
+
+          console.log(
+            `[WEBHOOK] Mensagem recebida de ${from} tipo=${msg.type} phone_number_id=${phoneNumberId} isAgent=${isAgent}`
+          );
 
           if (isAgent) {
+            // Fluxo de atendente (painel)
             await handleAgentMessage(incoming);
           } else {
+            // Fluxo de cidadão
             await handleCitizenMessage(incoming);
           }
+        }
+
+        // Podemos ignorar "statuses" aqui ou tratar depois
+        const statuses: any[] = value.statuses || [];
+        if (statuses.length > 0) {
+          console.log(
+            "[WEBHOOK] Recebidos statuses:",
+            JSON.stringify(statuses)
+          );
         }
       }
     }
 
-    res.sendStatus(200);
+    // WhatsApp exige resposta 200 rápida
+    return res.sendStatus(200);
   } catch (err) {
-    console.error("Erro no webhook:", err);
-    res.sendStatus(500);
+    console.error("[WEBHOOK] Erro ao processar payload:", err);
+    // Ainda assim retornamos 200 para não o WhatsApp não ficar re-tentando indefinidamente
+    return res.sendStatus(200);
   }
 });
 
