@@ -1,12 +1,10 @@
 // src/services/sessionState.ts
+import { AppDataSource } from "../database/data-source";
+import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
+import { Cliente } from "../entities/Cliente";
 
-/**
- * Representa os possíveis estados de uma sessão.
- *
- * Obs.: Mantemos as principais strings conhecidas e ainda
- * deixamos aberto para outros valores via (string & {}), para
- * não quebrar nada se você tiver mais status no projeto.
- */
+// ====================== TIPOS ======================
+
 export type SessionStatus =
   | "ASK_NAME"
   | "ASK_DEPARTMENT"
@@ -16,31 +14,26 @@ export type SessionStatus =
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
+  | "OFFLINE_POST_AGENT_RESPONSE" // Adicionado para fluxo offline
+  | "OFFLINE_RATING"              // Adicionado para fluxo offline
   | "ASK_SATISFACTION_RESOLUTION"
   | "ASK_SATISFACTION_RATING"
   | "FINISHED"
-  // permite outros status existentes sem dar erro de tipo
   | (string & {});
 
-/**
- * Estrutura em memória da sessão de atendimento.
- *
- * Obs.: adiciono um index signature [key: string]: any para
- * evitar quebrar se já houver campos extras no seu projeto.
- */
 export interface Session {
-  citizenNumber: string;        // WhatsApp do cidadão (normalizado)
+  citizenNumber: string; // WhatsApp do cidadão (normalizado)
   citizenName?: string;
   lastCitizenText?: string;
 
   departmentId?: number;
   departmentName?: string;
 
-  agentNumber?: string;         // WhatsApp do agente
+  agentNumber?: string; // WhatsApp do agente
   agentName?: string;
 
   status: SessionStatus;
-  atendimentoId: string;        // ID do atendimento no banco
+  atendimentoId: string; // ID do atendimento no banco
 
   busyReminderCount?: number;
   lastActiveAt?: number;
@@ -49,97 +42,231 @@ export interface Session {
   idcliente?: number;
   phoneNumberId?: string;
 
-  // usado no modo recado (LEAVE_MESSAGE)
+  // usado no modo recado / offline
   leaveMessageAckSent?: boolean;
   protocolHintSent?: boolean;
 
-  // quando a IA sugere departamento por índice/nome
+  // IA
   pendingDepartmentIndice?: number;
   pendingDepartmentName?: string;
-
-  // resumo inicial, se você estiver usando isso na IA
   initialSummary?: string;
 
-  // Campos adicionais que já existirem hoje na sua Session
-  // não vão quebrar por causa disso:
   [key: string]: any;
 }
 
-/**
- * Map principal: sessão por número do cidadão.
- */
-const sessionsByCitizen = new Map<string, Session>();
+// ====================== MAPS EM MEMÓRIA ======================
+
+export const sessionsByCitizen = new Map<string, Session>();
+export const sessionsByAgent = new Map<string, Session>();
+
+// ====================== HELPERS LOCALIZADOS ======================
+
+function normalizePhone(num?: string | null): string {
+  if (!num) return "";
+  return num.replace(/\D/g, "");
+}
 
 /**
- * Map auxiliar: sessão por número do agente humano.
+ * Retorna os últimos 8 dígitos para chave de agente,
+ * evitando problemas com nono dígito.
  */
-const sessionsByAgent = new Map<string, Session>();
+export function getAgentKey(num?: string | null): string {
+  const n = normalizePhone(num);
+  if (!n) return "";
+  return n.slice(-8);
+}
 
-/**
- * Exportamos os Maps caso você queira inspecionar em debug,
- * mas a ideia é usar sempre os helpers abaixo.
- */
-export { sessionsByCitizen, sessionsByAgent };
+// ====================== GERENCIAMENTO DE SESSÃO ======================
 
-/**
- * Obtém sessão pela chave do cidadão (número normalizado).
- */
-export function getSessionByCitizen(
-  citizenNumber: string
-): Session | undefined {
+export function getSessionByCitizen(citizenNumber: string): Session | undefined {
   return sessionsByCitizen.get(citizenNumber);
 }
 
-/**
- * Obtém sessão pela chave do agente (número normalizado do agente).
- */
-export function getSessionByAgent(agentNumber: string): Session | undefined {
-  return sessionsByAgent.get(agentNumber);
-}
-
-/**
- * Registra/atualiza uma sessão na memória.
- *
- * - Atualiza o Map de cidadãos.
- * - Se tiver agentNumber, atualiza também o Map de agentes.
- * - Remove mapeamento antigo de agente se ele tiver mudado.
- */
 export function setSession(session: Session): void {
   const existing = sessionsByCitizen.get(session.citizenNumber);
 
   // se o agente mudou, removemos o vínculo anterior
   if (existing?.agentNumber && existing.agentNumber !== session.agentNumber) {
-    sessionsByAgent.delete(existing.agentNumber);
+    const oldKey = getAgentKey(existing.agentNumber);
+    if (oldKey) sessionsByAgent.delete(oldKey);
   }
 
   sessionsByCitizen.set(session.citizenNumber, session);
 
   if (session.agentNumber) {
-    sessionsByAgent.set(session.agentNumber, session);
+    const agentKey = getAgentKey(session.agentNumber);
+    if (agentKey) sessionsByAgent.set(agentKey, session);
   }
 }
 
-/**
- * Invalida (remove) a sessão da memória a partir do número do cidadão.
- *
- * CRÍTICO: é essa função que o painel deve chamar depois de
- * concluir um atendimento (ex.: ao concluir um recado).
- */
 export function invalidateSessionCache(citizenNumber: string): void {
   const session = sessionsByCitizen.get(citizenNumber);
-
   if (session?.agentNumber) {
-    sessionsByAgent.delete(session.agentNumber);
+    const key = getAgentKey(session.agentNumber);
+    if (key) sessionsByAgent.delete(key);
   }
-
   sessionsByCitizen.delete(citizenNumber);
 }
 
 /**
- * (Opcional) Reseta tudo. Útil em testes ou se você quiser
- * um endpoint de debug/admin para limpar todas as sessões.
+ * Verifica se um número pertence a um agente que está em atendimento.
  */
-export function clearAllSessions(): void {
-  sessionsByCitizen.clear();
-  sessionsByAgent.clear();
+export function isAgentNumber(number: string): boolean {
+  const key = getAgentKey(number);
+  return sessionsByAgent.has(key);
+}
+
+// ====================== LÓGICA DE BANCO DE DADOS ======================
+
+/**
+ * Busca o cliente padrão ou pelo ID do canal (WhatsApp).
+ */
+async function resolveClienteId(phoneNumberId?: string): Promise<number> {
+  const repo = AppDataSource.getRepository(Cliente);
+
+  // 1. Tenta pelo phoneNumberId
+  if (phoneNumberId) {
+    const c = await repo.findOne({ where: { whatsappPhoneNumberId: phoneNumberId } });
+    if (c) return c.id;
+  }
+
+  // 2. Fallback: primeiro cliente ativo ou primeiro da tabela
+  const ativo = await repo.findOne({ where: { ativo: true as any }, order: { id: "ASC" as any } });
+  if (ativo) return ativo.id;
+
+  const primeiro = await repo.findOne({ order: { id: "ASC" as any } });
+  if (primeiro) return primeiro.id;
+
+  throw new Error("Nenhum cliente cadastrado no banco.");
+}
+
+/**
+ * Tenta recuperar uma sessão de AGENTE baseada no número dele.
+ * Útil se o servidor reiniciou e o agente mandou mensagem.
+ */
+export async function recoverAgentSession(agentNumberRaw: string): Promise<Session | undefined> {
+  const agentFull = normalizePhone(agentNumberRaw);
+  const last8 = getAgentKey(agentFull);
+  if (!last8) return undefined;
+
+  // Se já está na memória, retorna
+  if (sessionsByAgent.has(last8)) {
+    return sessionsByAgent.get(last8);
+  }
+
+  const repo = AppDataSource.getRepository(Atendimento);
+  
+  // Busca atendimento ativo vinculado a esse agente
+  const atendimento = await repo
+    .createQueryBuilder("a")
+    .leftJoinAndSelect("a.departamento", "d")
+    .where("a.status IN (:...statuses)", {
+      statuses: ["WAITING_AGENT_CONFIRMATION", "ACTIVE"],
+    })
+    .andWhere(
+      "(right(regexp_replace(coalesce(a.agente_numero, ''), '\\D', '', 'g'), 8) = :last8 " +
+      "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8)",
+      { last8 }
+    )
+    .orderBy("a.atualizado_em", "DESC")
+    .getOne();
+
+  if (!atendimento) return undefined;
+
+  // Reconstrói a sessão
+  const session: Session = {
+    citizenNumber: normalizePhone(atendimento.cidadaoNumero),
+    status: atendimento.status as SessionStatus,
+    atendimentoId: atendimento.id,
+    citizenName: atendimento.cidadaoNome ?? undefined,
+    departmentId: atendimento.departamentoId ?? undefined,
+    departmentName: atendimento.departamento?.nome ?? undefined,
+    agentNumber: normalizePhone(atendimento.agenteNumero ?? ""),
+    agentName: atendimento.agenteNome ?? undefined,
+    idcliente: atendimento.idcliente,
+    lastActiveAt: Date.now(),
+  };
+
+  // Salva no cache
+  setSession(session);
+  return session;
+}
+
+/**
+ * Cria ou recupera a sessão do CIDADÃO.
+ * Se não existir em memória, busca 'ACTIVE' no banco. Se não, cria novo.
+ */
+export async function getOrCreateSession(
+  citizenNumberRaw: string,
+  phoneNumberId?: string
+): Promise<Session> {
+  const citizenKey = normalizePhone(citizenNumberRaw);
+  
+  // 1. Memória
+  const existing = sessionsByCitizen.get(citizenKey);
+  if (existing) return existing;
+
+  const repo = AppDataSource.getRepository(Atendimento);
+  const idcliente = await resolveClienteId(phoneNumberId);
+
+  // 2. Banco (Atendimento em andamento)
+  const active = await repo.findOne({
+    where: {
+      cidadaoNumero: citizenKey,
+      status: "ACTIVE", // Apenas recupera se estiver realmente em chat
+      idcliente,
+    },
+    relations: ["departamento"],
+    order: { criadoEm: "DESC" },
+  });
+
+  if (active) {
+    const session: Session = {
+      citizenNumber: citizenKey,
+      status: active.status as SessionStatus,
+      atendimentoId: active.id,
+      citizenName: active.cidadaoNome ?? undefined,
+      departmentId: active.departamentoId ?? undefined,
+      departmentName: active.departamento?.nome ?? undefined,
+      agentNumber: active.agenteNumero ?? undefined,
+      agentName: active.agenteNome ?? undefined,
+      protocolo: active.protocolo ?? undefined,
+      idcliente: active.idcliente,
+      phoneNumberId,
+      lastActiveAt: Date.now(),
+    };
+    setSession(session);
+    return session;
+  }
+
+  // 3. Novo Atendimento
+  // Verifica se tem nome de um atendimento anterior para já pular ASK_NAME
+  const ultimo = await repo.findOne({
+    where: { cidadaoNumero: citizenKey, idcliente },
+    order: { criadoEm: "DESC" },
+  });
+
+  const temNome = !!ultimo?.cidadaoNome;
+  
+  const novo = repo.create({
+    idcliente,
+    cidadaoNumero: citizenKey,
+    cidadaoNome: temNome ? ultimo!.cidadaoNome : null,
+    status: temNome ? "ASK_DEPARTMENT" : "ASK_NAME",
+  });
+
+  await repo.save(novo);
+
+  const newSession: Session = {
+    citizenNumber: citizenKey,
+    status: novo.status as SessionStatus,
+    atendimentoId: novo.id,
+    citizenName: novo.cidadaoNome ?? undefined,
+    idcliente,
+    phoneNumberId,
+    lastActiveAt: Date.now(),
+  };
+
+  setSession(newSession);
+  return newSession;
 }
