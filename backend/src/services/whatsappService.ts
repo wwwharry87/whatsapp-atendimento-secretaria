@@ -3,6 +3,7 @@ import axios from "axios";
 import { env } from "../config/env";
 import { AppDataSource } from "../database/data-source";
 import { Cliente } from "../entities/Cliente";
+import { getOrganizationStyle, HumanMessagesService } from "./humanMessages";
 
 type WhatsappClientConfig = {
   idcliente: number;
@@ -434,12 +435,9 @@ export async function sendSaudacaoPedirNomeTemplate(
 
     // Fallback simples em texto
     try {
-      await sendTextMessage(
-        to,
-        `${saudacao}! 👋 Sou o assistente virtual do atendimento.\n` +
-          "Por favor, me informe seu *nome completo* para iniciarmos o atendimento.",
-        { idcliente, phoneNumberId }
-      );
+      const org = getOrganizationStyle({ displayName: "Atendimento", orgTipo: null });
+      const msg = HumanMessagesService.greetingAskName({ org, seed: to });
+      await sendTextMessage(to, msg, { idcliente, phoneNumberId });
       console.log(
         "[WHATSAPP_TEMPLATE saudacao_pedir_nome] Fallback de texto enviado com sucesso."
       );

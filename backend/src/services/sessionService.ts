@@ -27,6 +27,7 @@ import {
   gerarRespostaIA,
   iaEstaHabilitada,
 } from "./iaService";
+import { analyzeMessageTone, getOrganizationStyle, HumanMessagesService } from "./humanMessages";
 
 export type SessionStatus =
   | "ASK_NAME"
@@ -44,6 +45,8 @@ export type SessionStatus =
 export type Session = {
   citizenNumber: string;
   citizenName?: string;
+  /** última mensagem de texto do cidadão (memória volátil, não vai para o banco) */
+  lastCitizenText?: string;
   departmentId?: number;
   departmentName?: string;
   agentNumber?: string;
@@ -119,6 +122,18 @@ function truncateResumo(texto: string, max: number = 140): string {
   if (t.length <= max) return t;
   return t.slice(0, max - 1) + "…";
 }
+
+function sanitizeHorarioLabel(horarioTxt?: string | null): string | null {
+  const t = String(horarioTxt || "").trim();
+  if (!t) return null;
+  // remove emojis e marcações, e deixa em uma linha
+  return t
+    .replace(/[*_~`]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^🕘\s*/g, "")
+    .trim();
+}
+
 
 type SugestaoIndice = {
   indice: number;
@@ -1528,13 +1543,18 @@ function scheduleLeaveMessageAutoClose(session: Session) {
         ? `nossa equipe da *${clienteNome}*`
         : "nossa equipe responsável";
 
-      await waSendText(
-        current.citizenNumber,
-        `✅ Seu recado foi registrado e será analisado por ${orgFrase}.
-Protocolo: *${protocolo}*.
-Guarde este número para acompanhar sua solicitação.`,
-        current
-      );
+      const orgInfo = buildOrgInfo(clienteNome);
+      const org = getOrganizationStyle({ displayName: orgInfo.displayName, orgTipo: orgInfo.tipo });
+      const tone = analyzeMessageTone(current.lastCitizenText || "");
+      const ack = HumanMessagesService.leaveMessageRegisteredAck({
+        org,
+        citizenName: current.citizenName ?? null,
+        protocolo,
+        tone,
+        seed: current.citizenNumber,
+      });
+
+      await waSendText(current.citizenNumber, ack, current);
 
       current.leaveMessageAckSent = true;
     }
@@ -1920,6 +1940,12 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   const session = await getOrCreateSession(citizenKey, phoneNumberId);
   session.lastActiveAt = Date.now();
 
+  // Memória volátil para ajudar na análise de tom e contexto (sem persistir no banco)
+  if (tipo === "TEXT" && trimmed) {
+    session.lastCitizenText = trimmed;
+  }
+
+
   console.log(
     "[CITIZEN_MSG] Sessão atual: atendimentoId=",
     session.atendimentoId,
@@ -2144,24 +2170,24 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
       await atualizarAtendimento(session, { status: "ASK_DEPARTMENT" });
 
-      await waSendText(
-        session.citizenNumber,
-        `${saudacao}, *${session.citizenName ?? "Cidadão"}*! 👋
-` +
-          `Você está falando com *${orgInfo.displayName}*.
-` +
-          `${EXPEDIENTE_PADRAO_MENU}
+      const org = getOrganizationStyle({
+        displayName: orgInfo.displayName,
+        orgTipo: orgInfo.tipo,
+      });
 
-` +
-          `Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:
+      const menuText =
+        `${EXPEDIENTE_PADRAO_MENU}\n\n` +
+        `Você pode *escrever o que precisa* (ex: 'merenda', 'matrícula', 'transporte') ou escolher um setor:\n\n` +
+        `${menu}`;
 
-` +
-          `${menu}
+      const msg = HumanMessagesService.menuMessage({
+        org,
+        citizenName: session.citizenName ?? null,
+        menuText,
+        seed: session.citizenNumber,
+      });
 
-` +
-          `Como posso ajudar?`,
-        session
-      );
+      await waSendText(session.citizenNumber, msg, session);
     };
 
     // Atalhos por texto
@@ -2608,18 +2634,18 @@ session.citizenName = trimmed;
             const ia = await gerarRespostaIA(textoBaseIA, "whatsapp_cidadao", contexto);
 
             if (ia.sucesso && ia.resposta) {
-              await waSendText(
-                session.citizenNumber,
-                `${ia.resposta.trim()}
+              const org = getOrganizationStyle({ displayName: orgInfo.displayName, orgTipo: orgInfo.tipo });
+              const horarioLabel = sanitizeHorarioLabel(horarioTxt);
+              const decisionMsg = HumanMessagesService.outOfHoursDecision({
+                org,
+                citizenName: session.citizenName ?? null,
+                horarioLabel,
+                seed: session.citizenNumber,
+              });
 
-${horarioTxt}
+              await waSendText(session.citizenNumber, `${ia.resposta.trim()}
 
-Responda com:
-1 - Deixar recado detalhado
-2 - Ver lista de setores
-3 - Encerrar`,
-                session
-              );
+${decisionMsg}`, session);
 
               session.status = "LEAVE_MESSAGE_DECISION";
               session.leaveMessageAckSent = false;
@@ -2818,6 +2844,18 @@ ${EXPEDIENTE_PADRAO_MENU}
           phoneNumberId: session.phoneNumberId,
         });
 
+        const org = getOrganizationStyle({ displayName: orgInfo.displayName, orgTipo: orgInfo.tipo });
+        const tone = analyzeMessageTone(session.lastCitizenText || trimmed);
+        const ack = HumanMessagesService.sectorSelectedAck({
+          org,
+          citizenName: session.citizenName ?? null,
+          departamentoNome: departamento.nome ?? "Setor",
+          protocolo: session.protocolo ?? null,
+          tone,
+          seed: session.citizenNumber,
+        });
+        await waSendText(session.citizenNumber, ack, session);
+
         scheduleBusyReminder(session);
         return;
       }
@@ -2924,7 +2962,19 @@ ${EXPEDIENTE_PADRAO_MENU}
           phoneNumberId: session.phoneNumberId,
         });
 
-      scheduleBusyReminder(session);
+        const org = getOrganizationStyle({ displayName: orgInfo.displayName, orgTipo: orgInfo.tipo });
+        const tone = analyzeMessageTone(session.lastCitizenText || trimmed);
+        const ack = HumanMessagesService.sectorSelectedAck({
+          org,
+          citizenName: session.citizenName ?? null,
+          departamentoNome: departamento.nome ?? "Setor",
+          protocolo: session.protocolo ?? null,
+          tone,
+          seed: session.citizenNumber,
+        });
+        await waSendText(session.citizenNumber, ack, session);
+
+        scheduleBusyReminder(session);
       return;
     }
 
@@ -3010,6 +3060,18 @@ ${EXPEDIENTE_PADRAO_MENU}
           phoneNumberId: session.phoneNumberId,
         });
 
+        const org = getOrganizationStyle({ displayName: orgInfo.displayName, orgTipo: orgInfo.tipo });
+        const tone = analyzeMessageTone(session.lastCitizenText || trimmed);
+        const ack = HumanMessagesService.sectorSelectedAck({
+          org,
+          citizenName: session.citizenName ?? null,
+          departamentoNome: departamento.nome ?? "Setor",
+          protocolo: session.protocolo ?? null,
+          tone,
+          seed: session.citizenNumber,
+        });
+        await waSendText(session.citizenNumber, ack, session);
+
         scheduleBusyReminder(session);
         return;
       }
@@ -3092,7 +3154,19 @@ ${EXPEDIENTE_PADRAO_MENU}
           phoneNumberId: session.phoneNumberId,
         });
 
-          scheduleBusyReminder(session);
+        const org = getOrganizationStyle({ displayName: orgInfo.displayName, orgTipo: orgInfo.tipo });
+        const tone = analyzeMessageTone(session.lastCitizenText || trimmed);
+        const ack = HumanMessagesService.sectorSelectedAck({
+          org,
+          citizenName: session.citizenName ?? null,
+          departamentoNome: departamento.nome ?? "Setor",
+          protocolo: session.protocolo ?? null,
+          tone,
+          seed: session.citizenNumber,
+        });
+        await waSendText(session.citizenNumber, ack, session);
+
+        scheduleBusyReminder(session);
           return;
         }
       }

@@ -3,6 +3,7 @@ import { Router, Request, Response } from "express";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { Mensagem } from "../entities/Mensagem";
+import { Cliente } from "../entities/Cliente";
 import {
   sendTextMessage,
   sendImageMessageById,
@@ -10,6 +11,7 @@ import {
   sendAudioMessageById,
   sendVideoMessageById,
 } from "../services/whatsappService";
+import { getOrganizationStyle, HumanMessagesService } from "../services/humanMessages";
 import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
@@ -327,23 +329,30 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
     // Garante que exista protocolo para vincular o recado
     const protocolo = await ensureProtocolo(atendimento);
 
-    // 1) Mensagem de aviso ANTES do recado
-    let aviso = "";
-    if (protocolo) {
-      aviso =
-        `📄 Você recebeu um recado referente ao protocolo *${protocolo}*.\n` +
-        "Essa é uma atualização enviada pela equipe responsável. Você pode responder esta mensagem normalmente caso tenha dúvidas ou queira complementar informações, até que o atendimento seja marcado como concluído.";
-    } else {
-      aviso =
-        "📄 Você recebeu um recado da equipe responsável pelo seu atendimento.\n" +
-        "Você pode responder esta mensagem normalmente caso tenha dúvidas ou queira complementar informações, até que o atendimento seja marcado como concluído.";
-    }
+    // 1) Mensagem de aviso ANTES do recado (humanizada)
+    const clienteRepo = AppDataSource.getRepository(Cliente);
+    const cliente = await clienteRepo.findOne({
+      where: { id: Number(idcliente) },
+      select: ["id", "nome"],
+    });
+
+    const org = getOrganizationStyle({
+      displayName: cliente?.nome ?? null,
+      orgTipo: null,
+    });
+
+    const aviso = HumanMessagesService.recadoToCitizen({
+      org,
+      citizenName: (atendimento as any).cidadaoNome ?? null,
+      departamentoNome: (atendimento as any).departamento?.nome ?? null,
+      protocolo: protocolo ?? null,
+      seed: numeroCidadao,
+    });
 
     await sendTextMessage(numeroCidadao, aviso, {
       idcliente: Number(idcliente),
     });
-
-    // 2) Define tipo de mídia (se houver)
+// 2) Define tipo de mídia (se houver)
     let tipoMensagem: "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO" =
       "TEXT";
 
