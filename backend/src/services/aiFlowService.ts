@@ -15,6 +15,8 @@ export interface OfflineFlowContext {
   cidadaoNumero: string;
   canalNome: string | null;
   leaveMessageAckSent: boolean;
+  // NOVO: Histórico recente para a IA ter memória
+  lastMessages?: Array<{ sender: string; text: string }>;
 }
 
 export interface OfflineFlowDecision {
@@ -38,31 +40,33 @@ Responda SEMPRE JSON válido formato:
   "shouldCloseAttendance": boolean
 }
 
+CONTEXTO:
+Você receberá o texto atual do cidadão e um HISTÓRICO recente de mensagens.
+USE O HISTÓRICO para entender se o cidadão JÁ informou o que precisa.
+
 ESTADO ATUAL: LEAVE_MESSAGE (Modo Recado)
 O cidadão está enviando mensagens que serão lidas posteriormente pela equipe humana.
 
 Regras para LEAVE_MESSAGE:
-1. Se a mensagem do cidadão contiver uma solicitação, denúncia ou pedido (ex: "preciso de material", "falta luz"):
-   - Responda confirmando que foi registrado.
-   - Use o nome do cidadão se houver.
-   - Pergunte se ele deseja acrescentar mais alguma informação ou foto.
-   - NÃO pergunte "qual é a sua demanda" se ele JÁ DISSE a demanda.
-   - Mantenha nextState = "LEAVE_MESSAGE".
+1. Analise o HISTÓRICO + Texto Atual.
+2. Se o cidadão JÁ detalhou o problema anteriormente (no histórico) e agora só mandou um complemento:
+   - Apenas confirme o recebimento.
+   - NÃO pergunte novamente "qual é a sua demanda".
+   - Diga algo como: "Entendido, adicionei essa informação ao registro."
 
-2. Se a mensagem for curta ou vaga (ex: "oi", "bom dia"):
-   - Peça para ele descrever detalhadamente o que precisa.
-   - Mantenha nextState = "LEAVE_MESSAGE".
+3. Se é a primeira vez que ele explica o problema (não está no histórico):
+   - Confirme que registrou.
+   - Pergunte se ele deseja enviar fotos ou mais detalhes.
 
-3. Se o cidadão disser que terminou (ex: "só isso", "pode encerrar", "obrigado"):
-   - Agradeça e informe que o atendimento foi registrado.
-   - nextState = "LEAVE_MESSAGE" (O sistema cuidará do encerramento via Timer ou o cidadão espera). 
-   - *Nota*: Você não precisa encerrar explicitamente aqui, o timer do sistema fará isso, mas seja cordial.
+4. Se o cidadão disser que terminou (ex: "só isso", "pode encerrar", "obrigado"):
+   - Agradeça e diga que a equipe analisará.
+   - nextState = "LEAVE_MESSAGE". (O sistema encerrará por timer).
 
 ESTADO ATUAL: OFFLINE_POST_AGENT_RESPONSE (Pós Atendimento)
 O agente encerrou o chamado.
 1. Pergunte se foi resolvido (Sim/Não).
    - Se Sim: nextState = "OFFLINE_RATING", replyText = "Que bom! Nota de 1 a 5?"
-   - Se Não: replyText = "Entendo. Pode detalhar o que faltou?", nextState = "LEAVE_MESSAGE" (reabre recado).
+   - Se Não: replyText = "Entendo. Pode detalhar o que faltou?", nextState = "LEAVE_MESSAGE".
 
 ESTADO ATUAL: OFFLINE_RATING (Avaliação)
 1. Se número 1-5: shouldSaveRating = true, shouldCloseAttendance = true, nextState = "CLOSED".
