@@ -13,12 +13,11 @@ import {
   invalidateSessionCache,
   Session,
   SessionStatus,
-  // Importando as funções que agora vivem no state
   getOrCreateSession,
   recoverAgentSession,
   sessionsByAgent,
   getAgentKey,
-  isAgentNumber as isAgentNumberState, // Renomeamos para re-exportar
+  isAgentNumber as isAgentNumberState,
 } from "./sessionState";
 import {
   fecharAtendimentoComProtocolo,
@@ -34,6 +33,7 @@ import {
 import {
   isOutOfBusinessHoursDB,
   getSaudacaoPorHorario,
+  getHorarioAtendimentoTexto,
 } from "./horarioService";
 import {
   classificarDepartamentoPorIntencaoIA,
@@ -42,13 +42,11 @@ import {
 import { callOfflineFlowEngine, OfflineFlowContext } from "./aiFlowService";
 
 // ====================== RE-EXPORT PARA O WEBHOOK ======================
-// O webhook.ts importa isAgentNumber daqui, então vamos manter o contrato.
 export function isAgentNumber(num: string): boolean {
   return isAgentNumberState(num);
 }
 
 // ====================== TIPOS ======================
-
 export type IncomingMessage = {
   from: string;
   text?: string;
@@ -60,15 +58,20 @@ export type IncomingMessage = {
   phoneNumberId?: string;
 };
 
+// Map para guardar os timers de inatividade (Memória Volátil)
+const inactivityTimers = new Map<string, NodeJS.Timeout>();
+const warningTimers = new Map<string, NodeJS.Timeout>();
+
 // ====================== ORQUESTRADOR PRINCIPAL ======================
 
 export async function handleCitizenMessage(msg: IncomingMessage) {
   const { from, text = "", tipo, phoneNumberId } = msg;
-
   const citizenKey = from.replace(/\D/g, "");
   const trimmed = text.trim();
   
-  // Agora chama do sessionState
+  // Limpa timers anteriores ao receber nova mensagem
+  clearTimers(citizenKey);
+
   const session = await getOrCreateSession(citizenKey, phoneNumberId);
   session.lastActiveAt = Date.now();
   if (trimmed) session.lastCitizenText = trimmed;
@@ -88,10 +91,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     idcliente: session.idcliente,
   });
 
-  if (await tentarTratarConsultaProtocolo(session, trimmed)) {
-    return; 
-  }
+  // Tratamento de Protocolo
+  if (await tentarTratarConsultaProtocolo(session, trimmed)) return;
 
+  // ROTEAMENTO DE ESTADOS
   switch (session.status) {
     case "ACTIVE":
     case "WAITING_AGENT_CONFIRMATION":
@@ -111,7 +114,11 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       break;
 
     case "LEAVE_MESSAGE":
-    case "LEAVE_MESSAGE_DECISION":
+      // Modo Recado: IA inteligente + Timers
+      await processLeaveMessageFlow(session, trimmed);
+      break;
+
+    case "LEAVE_MESSAGE_DECISION": // Caso antigo/fallback
     case "OFFLINE_POST_AGENT_RESPONSE":
     case "OFFLINE_RATING":
     case "CLOSED":
@@ -127,7 +134,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   setSession(session);
 }
 
-// ====================== FLUXOS ======================
+// ====================== FLUXOS ESPECÍFICOS ======================
 
 async function processActiveChat(session: Session, msg: IncomingMessage) {
   if (msg.text?.toLowerCase() === "encerrar" || msg.text === "3") {
@@ -180,9 +187,12 @@ async function processAskName(session: Session, text: string) {
   const foraHorario = await isOutOfBusinessHoursDB({ idcliente: session.idcliente });
   
   if (foraHorario) {
-    session.status = "LEAVE_MESSAGE_DECISION";
-    await repo.update(session.atendimentoId, { status: "LEAVE_MESSAGE_DECISION" });
-    await processOfflineFlow(session, text);
+    // === MUDANÇA: Se estiver fora do horário, avisa MAS mostra o menu ===
+    const horarioTxt = await getHorarioAtendimentoTexto({ idcliente: session.idcliente });
+    const msg = `Olá, ${text}. No momento não temos atendentes disponíveis.\n${horarioTxt}\n\nPorém, você pode deixar um recado. Por favor, escolha para qual **Setor** deseja encaminhar sua mensagem:`;
+    
+    // Força mostrar o menu para ele rotear o recado
+    await sendMenuInicial(session, msg);
   } else {
     await sendMenuInicial(session);
   }
@@ -192,44 +202,96 @@ async function processAskDepartment(session: Session, text: string) {
   const idcliente = session.idcliente || 1;
   const num = parseInt(text, 10);
 
+  // Tenta pegar o departamento (seja por número ou IA)
+  let depAlvo = null;
+
   if (!isNaN(num) && num > 0) {
-    const dep = await getDepartamentoPorIndice(idcliente, num);
-    if (dep) {
-      await direcionarParaDepartamento(session, dep);
-      return;
-    }
-  }
-
-  const deps = await listarDepartamentos({ idcliente, somenteAtivos: true });
-  
-  if (deps.length === 1) {
-    await direcionarParaDepartamento(session, deps[0]);
-    return;
-  }
-
-  if (iaEstaHabilitada() && text.length > 3) {
-    const classificacao = await classificarDepartamentoPorIntencaoIA({
-      mensagemUsuario: text,
-      // CORREÇÃO DO ERRO DE TIPO: nome nunca será null
-      departamentos: deps.map(d => ({ 
-        id: d.id, 
-        nome: d.nome ?? "Setor", 
-        descricao: d.descricao 
-      }))
-    });
-
-    if (classificacao.indice && (classificacao.confianca === "ALTA" || classificacao.confianca === "MEDIA")) {
-      const depAlvo = await getDepartamentoPorIndice(idcliente, classificacao.indice);
-      if (depAlvo) {
-         await direcionarParaDepartamento(session, depAlvo);
-         return;
+    depAlvo = await getDepartamentoPorIndice(idcliente, num);
+  } else {
+    // Tenta IA se não for numero
+    const deps = await listarDepartamentos({ idcliente, somenteAtivos: true });
+    if (iaEstaHabilitada() && text.length > 3) {
+      const classif = await classificarDepartamentoPorIntencaoIA({
+        mensagemUsuario: text,
+        departamentos: deps.map(d => ({ id: d.id, nome: d.nome ?? "Setor", descricao: d.descricao }))
+      });
+      if (classif.indice && (classif.confianca === "ALTA" || classif.confianca === "MEDIA")) {
+        depAlvo = await getDepartamentoPorIndice(idcliente, classif.indice);
       }
     }
   }
 
-  await sendMenuInicial(session, "Não entendi qual setor você deseja. Por favor, escolha uma opção abaixo:");
+  if (depAlvo) {
+    // Verifica se esse setor específico está fechado
+    const foraHorario = await isOutOfBusinessHoursDB({ idcliente, departamentoId: depAlvo.id });
+
+    if (foraHorario) {
+      // === MUDANÇA: Roteia para Modo Recado (LEAVE_MESSAGE) ===
+      session.status = "LEAVE_MESSAGE";
+      session.departmentId = depAlvo.id;
+      session.departmentName = depAlvo.nome ?? undefined;
+      session.leaveMessageAckSent = false; // Reset para IA dar oi
+
+      const repo = AppDataSource.getRepository(Atendimento);
+      await repo.update(session.atendimentoId, { 
+        departamentoId: depAlvo.id,
+        status: "LEAVE_MESSAGE" 
+      });
+
+      await sendTextMessage(
+        session.citizenNumber, 
+        `Entendido, encaminharei para o setor *${depAlvo.nome}*.\n\nPode escrever sua mensagem, áudio ou foto agora, que deixarei registrado para a equipe.`, 
+        { idcliente: session.idcliente }
+      );
+      
+      // Inicia os timers de silêncio
+      scheduleInactivityTimers(session);
+      return;
+    }
+
+    // Se estiver aberto, segue fluxo normal de chamar agente
+    await direcionarParaDepartamento(session, depAlvo);
+    return;
+  }
+
+  // Se não entendeu o setor
+  await sendMenuInicial(session, "Não entendi qual setor você deseja. Por favor, escolha o número abaixo:");
 }
 
+/**
+ * Novo Fluxo de Recado Inteligente
+ */
+async function processLeaveMessageFlow(session: Session, text: string) {
+  // Garante protocolo se ainda não tem
+  if (!session.protocolo) {
+    await ensureProtocolForSession(session);
+  }
+
+  // 1. Processa a resposta com a IA (aiFlowService)
+  // A IA vai agradecer e perguntar se tem mais algo, mas NÃO vai repetir "qual sua demanda"
+  const context: OfflineFlowContext = {
+    state: "LEAVE_MESSAGE",
+    atendimentoStatus: "LEAVE_MESSAGE",
+    protocolo: session.protocolo || null,
+    cidadaoNome: session.citizenName || null,
+    cidadaoNumero: session.citizenNumber,
+    canalNome: "Atendimento",
+    leaveMessageAckSent: session.leaveMessageAckSent || false
+  };
+
+  const decision = await callOfflineFlowEngine(context, text);
+
+  if (decision.replyText) {
+    await sendTextMessage(session.citizenNumber, decision.replyText, { idcliente: session.idcliente });
+  }
+
+  session.leaveMessageAckSent = true; // Marca que já falamos "oi/recebido"
+
+  // 2. Renova os Timers de Silêncio
+  scheduleInactivityTimers(session);
+}
+
+// Fallback para outros status offline (encerramento, pesquisa)
 async function processOfflineFlow(session: Session, text: string) {
   const context: OfflineFlowContext = {
     state: session.status,
@@ -244,31 +306,69 @@ async function processOfflineFlow(session: Session, text: string) {
   const decision = await callOfflineFlowEngine(context, text);
 
   if (decision.replyText) {
-    await sendTextMessage(session.citizenNumber, decision.replyText, { 
-      idcliente: session.idcliente 
-    });
+    await sendTextMessage(session.citizenNumber, decision.replyText, { idcliente: session.idcliente });
   }
 
   if (decision.nextState !== session.status) {
     session.status = decision.nextState as SessionStatus;
-    const repo = AppDataSource.getRepository(Atendimento);
-    await repo.update(session.atendimentoId, { status: decision.nextState as any });
+    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, { status: decision.nextState as any });
   }
 
   if (decision.shouldSaveRating && decision.rating) {
-     const repo = AppDataSource.getRepository(Atendimento);
-     await repo.update(session.atendimentoId, { notaSatisfacao: decision.rating });
+     await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, { notaSatisfacao: decision.rating });
   }
 
   if (decision.shouldCloseAttendance) {
     await fecharAtendimentoComProtocolo(session);
     invalidateSessionCache(session.citizenNumber); 
   }
+}
 
-  if (session.status === "LEAVE_MESSAGE" && !session.protocolo) {
-    await ensureProtocolForSession(session);
-    session.leaveMessageAckSent = true; 
+// ====================== TIMERS LOGIC ======================
+
+function clearTimers(citizenKey: string) {
+  if (warningTimers.has(citizenKey)) {
+    clearTimeout(warningTimers.get(citizenKey)!);
+    warningTimers.delete(citizenKey);
   }
+  if (inactivityTimers.has(citizenKey)) {
+    clearTimeout(inactivityTimers.get(citizenKey)!);
+    inactivityTimers.delete(citizenKey);
+  }
+}
+
+function scheduleInactivityTimers(session: Session) {
+  const key = session.citizenNumber;
+  const idcliente = session.idcliente;
+
+  // Timer 1: Aviso após 2 minutos (120000 ms)
+  const warnTime = 2 * 60 * 1000;
+  // Timer 2: Encerramento após +1 minuto (total 3 min do inicio)
+  const closeTime = 3 * 60 * 1000; 
+
+  // Aviso
+  const warnTimer = setTimeout(async () => {
+    // Checa se a sessão ainda existe e está em LEAVE_MESSAGE
+    const current = await getOrCreateSession(key);
+    if (current.status === "LEAVE_MESSAGE") {
+      await sendTextMessage(key, "⏳ Ainda está por aí? Deseja acrescentar mais alguma informação ou posso encerrar e gerar seu protocolo?", { idcliente });
+    }
+  }, warnTime);
+
+  // Encerramento
+  const closeTimer = setTimeout(async () => {
+    const current = await getOrCreateSession(key);
+    if (current.status === "LEAVE_MESSAGE") {
+      // Gera protocolo final
+      const protocolo = await fecharAtendimentoComProtocolo(current);
+      await sendTextMessage(key, `✅ Como não houve interação, estou encerrando o registro.\nProtocolo: *${protocolo}*.\n\nSua demanda foi encaminhada para a equipe.`, { idcliente });
+      invalidateSessionCache(key);
+    }
+    clearTimers(key);
+  }, closeTime);
+
+  warningTimers.set(key, warnTimer);
+  inactivityTimers.set(key, closeTimer);
 }
 
 // ====================== HELPERS ======================
@@ -282,24 +382,6 @@ async function sendMenuInicial(session: Session, headerText?: string) {
 
 async function direcionarParaDepartamento(session: Session, departamento: any) {
   const repo = AppDataSource.getRepository(Atendimento);
-  
-  const foraHorario = await isOutOfBusinessHoursDB({ 
-    idcliente: session.idcliente, 
-    departamentoId: departamento.id 
-  });
-
-  if (foraHorario) {
-    session.status = "LEAVE_MESSAGE_DECISION";
-    session.departmentId = departamento.id;
-    session.departmentName = departamento.nome;
-    await repo.update(session.atendimentoId, { 
-      departamentoId: departamento.id,
-      status: "LEAVE_MESSAGE_DECISION" 
-    });
-    await processOfflineFlow(session, ""); 
-    return;
-  }
-
   session.departmentId = departamento.id;
   session.departmentName = departamento.nome;
   session.agentNumber = departamento.responsavelNumero;
@@ -344,14 +426,9 @@ async function tentarTratarConsultaProtocolo(session: Session, text: string): Pr
 export async function handleAgentMessage(msg: IncomingMessage) {
   const { from, text = "" } = msg;
   const agentKey = from.replace(/\D/g, "");
-  
-  // Agora chama do sessionState
   let session = sessionsByAgent.get(getAgentKey(agentKey));
   
-  if (!session) {
-      session = await recoverAgentSession(agentKey);
-  }
-
+  if (!session) session = await recoverAgentSession(agentKey);
   if (!session) return;
 
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
