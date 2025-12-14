@@ -17,7 +17,6 @@ import {
   SessionStatus,
   getOrCreateSession,
   recoverAgentSession,
-  // sessionsByAgent, // REMOVIDO: Não usamos mais memória RAM
   isAgentNumber as isAgentNumberState,
 } from "./sessionState";
 
@@ -57,7 +56,7 @@ export function isAgentNumber(num: string): boolean {
 
 export async function detectIsAgent(from: string, phoneNumberId?: string): Promise<boolean> {
   const normalized = normalizePhone(from);
-  // 1) verificação rápida (pode conectar no Redis futuramente)
+  // 1) verificação rápida
   if (isAgentNumberState(normalized)) return true;
 
   // 2) recovery DB/Redis
@@ -76,9 +75,6 @@ export type IncomingMessage = {
   phoneNumberId?: string;
 };
 
-// Mapas de timers locais (Node.js) ainda são ok para timeouts curtos, 
-// mas em "World Class" idealmente usaríamos BullMQ (Delayed Jobs).
-// Por enquanto, mantemos em memória para simplicidade do MVP robusto.
 const inactivityTimers = new Map<string, NodeJS.Timeout>();
 const warningTimers = new Map<string, NodeJS.Timeout>();
 
@@ -176,24 +172,29 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   clearTimers(citizenKey);
 
-  // ✅ AWAIT AQUI: Redis é async
-  const session = await getOrCreateSession(citizenKey, phoneNumberId);
+  // 1. Recupera sessão do Redis
+  let session = await getOrCreateSession(citizenKey, phoneNumberId);
   
+  // ===========================================================================
+  // 🛡️ CORREÇÃO CRÍTICA: MATADOR DE SESSÃO ZUMBI
+  // Se a sessão recuperada estiver "FINISHED" ou presa em "OFFLINE_RATING" antigo,
+  // nós a destruímos e começamos uma nova LIMPA imediatamente.
+  // ===========================================================================
+  if (session.status === "FINISHED") {
+    console.log(`[SESSION] Sessão Zumbi detectada (FINISHED) para ${citizenKey}. Resetando...`);
+    await invalidateSessionCache(citizenKey);
+    session = await getOrCreateSession(citizenKey, phoneNumberId); // Recria do zero
+  }
+
+  // Atualiza timestamp
   session.lastActiveAt = Date.now();
   session.phoneNumberId = phoneNumberId || session.phoneNumberId;
   if (trimmed) session.lastCitizenText = trimmed;
 
   console.log(`[SESSION] Status: ${session.status} | Cidadão: ${citizenKey} | idcliente=${session.idcliente}`);
 
-  // Se não tiver atendimentoId (sessão nova/perdida), tenta recuperar ou criar dummy
-  // (Na prática o getOrCreateSession já deveria lidar, mas garantimos aqui se necessário)
-  if (!session.atendimentoId) {
-      // Lógica de fallback se necessário, ou assumimos que o fluxo ASK_NAME criará
-  }
-
-  // Salva msg do cidadão 
-  // (Se session.atendimentoId for undefined, o salvarMensagem vai chiar ou criar um novo se a lógica permitir. 
-  //  Idealmente a sessão já nasce com um ID ou cria no primeiro passo)
+  // Se for uma sessão nova recém-criada, session.atendimentoId pode ser undefined até o ASK_NAME criar no banco.
+  // Mas se já tiver ID, salvamos a mensagem.
   if (session.atendimentoId) {
     await salvarMensagem({
       atendimentoId: session.atendimentoId,
@@ -246,8 +247,13 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     case "LEAVE_MESSAGE_DECISION":
     case "OFFLINE_POST_AGENT_RESPONSE":
     case "OFFLINE_RATING":
-    case "FINISHED":
+      // Removido "FINISHED" daqui para garantir que não processe lógica se estiver finalizado
       await processOfflineFlow(session, trimmed);
+      break;
+
+    case "FINISHED":
+      // Se cair aqui (o que o "Matador de Zumbis" deve evitar), forçamos reinício
+      await processAskName(session, trimmed);
       break;
 
     default:
@@ -255,7 +261,8 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       break;
   }
 
-  // ✅ AWAIT AQUI: Persiste o estado atualizado no Redis
+  // ✅ Só salva no Redis se NÃO estiver finalizado.
+  // Se estiver finished, a própria função de fluxo já deve ter chamado invalidateSessionCache.
   if (session.status !== "FINISHED") {
     await setSession(session);
   }
@@ -266,6 +273,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 async function processActiveChat(session: Session, msg: IncomingMessage) {
   const text = (msg.text || "").trim();
 
+  // Encerramento pelo cidadão durante chat
   if (msg.tipo === "TEXT" && (text.toLowerCase() === "encerrar" || text === "3")) {
     const protocolo = await fecharAtendimentoComProtocolo(session);
 
@@ -313,16 +321,15 @@ async function processAskName(session: Session, text: string) {
 
     await sendTextMessage(session.citizenNumber, saudacao, { idcliente: session.idcliente });
     await logIAMessage(session, saudacao);
-    
-    // Se ainda não tinha atendimento criado, cria agora (ASK_NAME é entrypoint)
-    // No model original a sessão já vinha com atendimentoId? 
-    // Se não, aqui seria um bom lugar para garantir.
     return;
   }
 
   session.citizenName = text;
   session.status = "ASK_PROFILE";
 
+  // Se já existe um atendimento (sessão zumbi ressuscitada), atualizamos.
+  // Se não existe, podemos criar agora ou esperar o profile.
+  // Pelo logica atual, ASK_NAME é o inicio, então cria se n tiver.
   if (session.atendimentoId) {
     await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
       cidadaoNome: text,
@@ -518,11 +525,13 @@ async function processOfflineFlow(session: Session, text: string) {
 
   const decision = await callOfflineFlowEngine(context, text);
 
+  // Envia a resposta (Ex: "Que bom! Avalie com uma nota...")
   if (decision.replyText) {
     await sendTextMessage(session.citizenNumber, decision.replyText, { idcliente: session.idcliente });
     await logIAMessage(session, decision.replyText);
   }
 
+  // Atualiza o estado da sessão (Ex: muda de OFFLINE_POST_AGENT_RESPONSE para OFFLINE_RATING)
   if (decision.nextState && decision.nextState !== session.status) {
     session.status = decision.nextState as SessionStatus;
     if (session.atendimentoId) {
@@ -532,18 +541,26 @@ async function processOfflineFlow(session: Session, text: string) {
     }
   }
 
+  // Se salvou uma nota, forçamos o encerramento se o fluxo sugerir ou se já for nota
   if (decision.shouldSaveRating && decision.rating) {
     if (session.atendimentoId) {
       await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
         notaSatisfacao: decision.rating,
       } as any);
     }
+    // ✅ FORÇA ENCERRAR AGORA para evitar loop de "Só para confirmar..."
+    // Assumimos que se deu nota, acabou.
+    await fecharAtendimentoComProtocolo(session);
+    session.status = "FINISHED";
+    await invalidateSessionCache(session.citizenNumber);
+    return;
   }
 
+  // Se o motor de IA decidiu encerrar
   if (decision.shouldCloseAttendance) {
     await fecharAtendimentoComProtocolo(session);
     session.status = "FINISHED";
-    await invalidateSessionCache(session.citizenNumber); // ✅ Await
+    await invalidateSessionCache(session.citizenNumber); // ✅ Await e limpeza garantida
     return;
   }
 }
@@ -575,7 +592,6 @@ function scheduleInactivityTimers(session: Session) {
 
   // ✅ Timer callback agora é async
   const warnTimer = setTimeout(async () => {
-    // Busca sessão no Redis para ver status atual
     const current = await getOrCreateSession(key); 
 
     if (current.status === "LEAVE_MESSAGE") {
@@ -604,7 +620,6 @@ function scheduleInactivityTimers(session: Session) {
       await sendTextMessage(key, msgFinal, { idcliente });
       await logIAMessage(current, msgFinal);
 
-      // muda status no banco pra "aguardando humano"
       if (current.atendimentoId) {
         await AppDataSource.getRepository(Atendimento).update(current.atendimentoId, {
           status: "WAITING_AGENT" as any,
@@ -695,21 +710,15 @@ async function tentarTratarConsultaProtocolo(session: Session, text: string): Pr
 
 // ====================== ORQUESTRADOR AGENTE ======================
 
-// REMOVIDO: findCachedAgentSession (não iteramos mais chaves de memória)
-
 export async function handleAgentMessage(msg: IncomingMessage) {
   const from = normalizePhone(msg.from);
   const text = (msg.text || "").trim();
   const phoneNumberId = msg.phoneNumberId;
 
   // 1) tenta recover no banco/redis com phoneNumberId (multi-tenant correto)
-  // NOTA: recoverAgentSession precisa estar implementado no sessionState.ts
   let session = await recoverAgentSession(from, phoneNumberId);
 
   if (!session) {
-    // Se não achou sessão ativa vinculada a este agente, paramos.
-    // Em arquitetura Stateless/Redis, não varremos todas as sessões.
-    // O agente precisa ter o ID da sessão gravado em algum lugar (ex: chave "agent:NUM:current_session")
     console.log(`[AGENT] Nenhuma sessão ativa encontrada para agente ${from}`);
     return;
   }
