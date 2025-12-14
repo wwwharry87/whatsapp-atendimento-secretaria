@@ -40,7 +40,6 @@ import {
   iaEstaHabilitada,
 } from "./iaService";
 import { callOfflineFlowEngine, OfflineFlowContext } from "./aiFlowService";
-// NOVOS IMPORTS PARA O FLUXO DE PERFIL
 import { getClientById } from "./credentialService";
 import { getOrganizationStyle, HumanMessagesService } from "./humanMessages";
 
@@ -82,22 +81,17 @@ async function logIAMessage(session: Session, texto: string) {
   }
 }
 
-/**
- * Busca as últimas 6 mensagens para dar contexto à IA
- */
 async function getRecentHistory(
   atendimentoId: string
 ): Promise<Array<{ sender: string; text: string }>> {
   try {
     const repo = AppDataSource.getRepository(Mensagem);
-    // Busca as últimas 6 mensagens
     const msgs = await repo.find({
       where: { atendimentoId },
-      order: { criadoEm: "DESC" }, // pega as mais recentes
+      order: { criadoEm: "DESC" },
       take: 6,
     });
 
-    // Inverte para ficar cronológico (antiga -> nova)
     return msgs.reverse().map((m) => ({
       sender: m.direcao === "CITIZEN" ? "Cidadão" : "Sistema/Agente",
       text: m.conteudoTexto || "[Mídia/Arquivo]",
@@ -114,6 +108,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   const { from, text = "", tipo, phoneNumberId } = msg;
   const citizenKey = from.replace(/\D/g, "");
   const trimmed = text.trim();
+
+  if (tipo === "TEXT" && !trimmed) {
+    return;
+  }
 
   clearTimers(citizenKey);
 
@@ -156,7 +154,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       await processAskName(session, trimmed);
       break;
 
-    case "ASK_PROFILE": // <--- NOVO: Processa a escolha do perfil
+    case "ASK_PROFILE":
       await processAskProfile(session, trimmed);
       break;
 
@@ -223,32 +221,23 @@ async function processActiveChat(session: Session, msg: IncomingMessage) {
   }
 }
 
-// 1. Processar Nome -> Vai para Perfil
 async function processAskName(session: Session, text: string) {
   if (!text || text.length < 3) {
-    // Busca nome do cliente para saudação mais rica
     const clientInfo = await getClientById(session.idcliente || 0);
     const org = getOrganizationStyle({ displayName: clientInfo?.nome, orgTipo: null });
     
-    // Usa HumanMessages para saudação
     const saudacao = HumanMessagesService.greetingAskName({
       org,
       seed: session.citizenNumber,
       now: new Date()
     });
 
-    // Se preferir o template oficial:
-    // await sendSaudacaoPedirNomeTemplate(...)
-    
-    // Vou usar texto direto para ficar mais "humanizado" conforme pedido:
     await sendTextMessage(session.citizenNumber, saudacao, { idcliente: session.idcliente });
     await logIAMessage(session, saudacao);
     return;
   }
 
   session.citizenName = text;
-  
-  // Atualiza nome e muda status para ASK_PROFILE
   session.status = "ASK_PROFILE"; 
   const repo = AppDataSource.getRepository(Atendimento);
   await repo.update(session.atendimentoId, { 
@@ -256,7 +245,6 @@ async function processAskName(session: Session, text: string) {
     status: "ASK_PROFILE" 
   });
 
-  // Envia pergunta de perfil
   const clientInfo = await getClientById(session.idcliente || 0);
   const org = getOrganizationStyle({ displayName: clientInfo?.nome, orgTipo: null });
   
@@ -267,12 +255,10 @@ async function processAskName(session: Session, text: string) {
   });
 
   const opcoes = `\n1 - Sou Funcionário/Servidor\n2 - Sou da Comunidade (Pai/Aluno/Cidadão)`;
-  
   await sendTextMessage(session.citizenNumber, msgPerfil + opcoes, { idcliente: session.idcliente });
   await logIAMessage(session, msgPerfil + opcoes);
 }
 
-// 2. Processar Perfil -> Vai para Verificação de Horário/Menu
 async function processAskProfile(session: Session, text: string) {
   const num = text.replace(/\D/g, "");
   const cleanText = text.toLowerCase();
@@ -296,13 +282,12 @@ async function processAskProfile(session: Session, text: string) {
   session.status = "ASK_DEPARTMENT";
   
   const repo = AppDataSource.getRepository(Atendimento);
-  // Se tiver coluna perfil no banco: await repo.update(session.atendimentoId, { perfil, status: "ASK_DEPARTMENT" });
-  await repo.update(session.atendimentoId, { status: "ASK_DEPARTMENT" });
+  // Se tiver a coluna perfil no banco: await repo.update(session.atendimentoId, { perfil });
+  await repo.update(session.atendimentoId, { status: "ASK_DEPARTMENT" }); 
 
   await verificarHorarioEMostrarMenu(session);
 }
 
-// Helper: Verifica horário e mostra Menu (ou aviso de fechado + menu recado)
 async function verificarHorarioEMostrarMenu(session: Session) {
   const foraHorario = await isOutOfBusinessHoursDB({ idcliente: session.idcliente });
   
@@ -311,7 +296,6 @@ async function verificarHorarioEMostrarMenu(session: Session) {
     const clienteNomeInfo = await getClientById(session.idcliente || 0);
     const org = getOrganizationStyle({ displayName: clienteNomeInfo?.nome, orgTipo: null });
 
-    // Mensagem inteligente dependendo do perfil
     const primeiroNome = session.citizenName?.split(' ')[0] || "";
     let msgIntro = `No momento estamos fechados, ${primeiroNome}.`;
     
@@ -338,9 +322,14 @@ async function processAskDepartment(session: Session, text: string) {
 
   if (!isNaN(num) && num > 0) {
     depAlvo = await getDepartamentoPorIndice(idcliente, num);
-  } else {
+  } 
+  
+  if (!depAlvo) {
     const deps = await listarDepartamentos({ idcliente, somenteAtivos: true });
-    if (iaEstaHabilitada() && text.length > 3) {
+    const matchExato = deps.find(d => d.nome?.toLowerCase() === text.toLowerCase());
+    if (matchExato) {
+      depAlvo = matchExato;
+    } else if (iaEstaHabilitada() && text.length > 2) {
       const classif = await classificarDepartamentoPorIntencaoIA({
         mensagemUsuario: text,
         departamentos: deps.map((d) => ({
@@ -349,10 +338,7 @@ async function processAskDepartment(session: Session, text: string) {
           descricao: d.descricao,
         })),
       });
-      if (
-        classif.indice &&
-        (classif.confianca === "ALTA" || classif.confianca === "MEDIA")
-      ) {
+      if (classif.indice && (classif.confianca === "ALTA" || classif.confianca === "MEDIA")) {
         depAlvo = await getDepartamentoPorIndice(idcliente, classif.indice);
       }
     }
@@ -393,7 +379,7 @@ async function processAskDepartment(session: Session, text: string) {
     return;
   }
 
-  await sendMenuInicial(session, "Não entendi qual setor você deseja. Por favor, escolha o número abaixo:");
+  await sendMenuInicial(session, "Não entendi qual setor você deseja. Por favor, escolha o número abaixo ou digite o nome do setor:");
 }
 
 async function processLeaveMessageFlow(session: Session, text: string) {
@@ -491,13 +477,7 @@ function scheduleInactivityTimers(session: Session) {
   const warnTimer = setTimeout(async () => {
     const current = await getOrCreateSession(key);
     if (current.status === "LEAVE_MESSAGE") {
-      let msgWarn =
-        "⏳ Ainda está por aí? Deseja acrescentar mais alguma informação ou posso encerrar e gerar seu protocolo?";
-
-      if (current.protocolo) {
-        msgWarn = `⏳ Ainda está por aí? Caso tenha concluído, posso encerrar o protocolo *${current.protocolo}*?`;
-      }
-
+      let msgWarn = "⏳ Ainda está por aí? Se já terminou de enviar os dados, pode fechar a conversa ou apenas aguardar.";
       await sendTextMessage(key, msgWarn, { idcliente });
       await logIAMessage(current, msgWarn);
     }
@@ -506,11 +486,17 @@ function scheduleInactivityTimers(session: Session) {
   const closeTimer = setTimeout(async () => {
     const current = await getOrCreateSession(key);
     if (current.status === "LEAVE_MESSAGE") {
-      const protocolo = await fecharAtendimentoComProtocolo(current);
-      const msgClose = `✅ Como não houve interação, estou encerrando este atendimento.\nProtocolo: *${protocolo}*.\n\nSua demanda foi encaminhada para a equipe.`;
+      // AQUI MUDOU: Não encerra (não muda DB para FINISHED). Apenas limpa a RAM.
+      const protocolo = current.protocolo || "registrado";
+      const msgFinal = `✅ Recebemos suas mensagens.
+Protocolo: *${protocolo}*.
 
-      await sendTextMessage(key, msgClose, { idcliente });
-      await logIAMessage(current, msgClose);
+Nossa equipe irá analisar e entrar em contato. Se precisar enviar mais algo depois, basta responder aqui.`;
+
+      await sendTextMessage(key, msgFinal, { idcliente });
+      await logIAMessage(current, msgFinal);
+      
+      // Limpa da memória RAM, mas deixa 'LEAVE_MESSAGE' no banco.
       invalidateSessionCache(key);
     }
     clearTimers(key);
@@ -531,8 +517,6 @@ async function sendMenuInicial(session: Session, headerText?: string) {
   const clientInfo = await getClientById(idcliente);
   const org = getOrganizationStyle({ displayName: clientInfo?.nome, orgTipo: null });
 
-  // Se veio um texto específico (ex: aviso de fechado), usa ele.
-  // Se não, usa a saudação bonita do HumanMessages.
   let body = "";
   if (headerText) {
     body = `${headerText}\n\n${menuText}\n\nDigite o número ou o nome da escola/setor.`;

@@ -1,4 +1,5 @@
 // src/services/sessionState.ts
+import { In } from "typeorm"; // <--- Importado corretamente aqui
 import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { Cliente } from "../entities/Cliente";
@@ -15,29 +16,27 @@ export type SessionStatus =
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
-  | "OFFLINE_POST_AGENT_RESPONSE" // Adicionado para fluxo offline
-  | "OFFLINE_RATING"              // Adicionado para fluxo offline
+  | "OFFLINE_POST_AGENT_RESPONSE" 
+  | "OFFLINE_RATING"              
   | "ASK_SATISFACTION_RESOLUTION"
   | "ASK_SATISFACTION_RATING"
   | "FINISHED"
   | (string & {});
 
 export interface Session {
-  citizenNumber: string; // WhatsApp do cidadão (normalizado)
+  citizenNumber: string; 
   citizenName?: string;
-  userProfile?: "FUNCIONARIO" | "COMUNIDADE"; // <--- NOVO CAMPO
+  userProfile?: "FUNCIONARIO" | "COMUNIDADE";
   lastCitizenText?: string;
-
-  
 
   departmentId?: number;
   departmentName?: string;
 
-  agentNumber?: string; // WhatsApp do agente
+  agentNumber?: string; 
   agentName?: string;
 
   status: SessionStatus;
-  atendimentoId: string; // ID do atendimento no banco
+  atendimentoId: string; 
 
   busyReminderCount?: number;
   lastActiveAt?: number;
@@ -46,11 +45,9 @@ export interface Session {
   idcliente?: number;
   phoneNumberId?: string;
 
-  // usado no modo recado / offline
   leaveMessageAckSent?: boolean;
   protocolHintSent?: boolean;
 
-  // IA
   pendingDepartmentIndice?: number;
   pendingDepartmentName?: string;
   initialSummary?: string;
@@ -70,10 +67,6 @@ function normalizePhone(num?: string | null): string {
   return num.replace(/\D/g, "");
 }
 
-/**
- * Retorna os últimos 8 dígitos para chave de agente,
- * evitando problemas com nono dígito.
- */
 export function getAgentKey(num?: string | null): string {
   const n = normalizePhone(num);
   if (!n) return "";
@@ -89,7 +82,6 @@ export function getSessionByCitizen(citizenNumber: string): Session | undefined 
 export function setSession(session: Session): void {
   const existing = sessionsByCitizen.get(session.citizenNumber);
 
-  // se o agente mudou, removemos o vínculo anterior
   if (existing?.agentNumber && existing.agentNumber !== session.agentNumber) {
     const oldKey = getAgentKey(existing.agentNumber);
     if (oldKey) sessionsByAgent.delete(oldKey);
@@ -112,9 +104,6 @@ export function invalidateSessionCache(citizenNumber: string): void {
   sessionsByCitizen.delete(citizenNumber);
 }
 
-/**
- * Verifica se um número pertence a um agente que está em atendimento.
- */
 export function isAgentNumber(number: string): boolean {
   const key = getAgentKey(number);
   return sessionsByAgent.has(key);
@@ -122,19 +111,14 @@ export function isAgentNumber(number: string): boolean {
 
 // ====================== LÓGICA DE BANCO DE DADOS ======================
 
-/**
- * Busca o cliente padrão ou pelo ID do canal (WhatsApp).
- */
 async function resolveClienteId(phoneNumberId?: string): Promise<number> {
   const repo = AppDataSource.getRepository(Cliente);
 
-  // 1. Tenta pelo phoneNumberId
   if (phoneNumberId) {
     const c = await repo.findOne({ where: { whatsappPhoneNumberId: phoneNumberId } });
     if (c) return c.id;
   }
 
-  // 2. Fallback: primeiro cliente ativo ou primeiro da tabela
   const ativo = await repo.findOne({ where: { ativo: true as any }, order: { id: "ASC" as any } });
   if (ativo) return ativo.id;
 
@@ -144,23 +128,17 @@ async function resolveClienteId(phoneNumberId?: string): Promise<number> {
   throw new Error("Nenhum cliente cadastrado no banco.");
 }
 
-/**
- * Tenta recuperar uma sessão de AGENTE baseada no número dele.
- * Útil se o servidor reiniciou e o agente mandou mensagem.
- */
 export async function recoverAgentSession(agentNumberRaw: string): Promise<Session | undefined> {
   const agentFull = normalizePhone(agentNumberRaw);
   const last8 = getAgentKey(agentFull);
   if (!last8) return undefined;
 
-  // Se já está na memória, retorna
   if (sessionsByAgent.has(last8)) {
     return sessionsByAgent.get(last8);
   }
 
   const repo = AppDataSource.getRepository(Atendimento);
   
-  // Busca atendimento ativo vinculado a esse agente
   const atendimento = await repo
     .createQueryBuilder("a")
     .leftJoinAndSelect("a.departamento", "d")
@@ -177,7 +155,6 @@ export async function recoverAgentSession(agentNumberRaw: string): Promise<Sessi
 
   if (!atendimento) return undefined;
 
-  // Reconstrói a sessão
   const session: Session = {
     citizenNumber: normalizePhone(atendimento.cidadaoNumero),
     status: atendimento.status as SessionStatus,
@@ -191,33 +168,28 @@ export async function recoverAgentSession(agentNumberRaw: string): Promise<Sessi
     lastActiveAt: Date.now(),
   };
 
-  // Salva no cache
   setSession(session);
   return session;
 }
 
-/**
- * Cria ou recupera a sessão do CIDADÃO.
- * Se não existir em memória, busca 'ACTIVE' no banco. Se não, cria novo.
- */
 export async function getOrCreateSession(
   citizenNumberRaw: string,
   phoneNumberId?: string
 ): Promise<Session> {
   const citizenKey = normalizePhone(citizenNumberRaw);
   
-  // 1. Memória
   const existing = sessionsByCitizen.get(citizenKey);
   if (existing) return existing;
 
   const repo = AppDataSource.getRepository(Atendimento);
   const idcliente = await resolveClienteId(phoneNumberId);
 
-  // 2. Banco (Atendimento em andamento)
+  // 2. Banco: Busca atendimentos EM ANDAMENTO ou RECADO ABERTO
   const active = await repo.findOne({
     where: {
       cidadaoNumero: citizenKey,
-      status: "ACTIVE", // Apenas recupera se estiver realmente em chat
+      // CORREÇÃO AQUI: Usando o operador In importado do typeorm
+      status: In(["ACTIVE", "LEAVE_MESSAGE", "IN_QUEUE", "WAITING_AGENT_CONFIRMATION"]), 
       idcliente,
     },
     relations: ["departamento"],
@@ -237,6 +209,8 @@ export async function getOrCreateSession(
       protocolo: active.protocolo ?? undefined,
       idcliente: active.idcliente,
       phoneNumberId,
+      // Se já estava em recado, assume que já demos o "oi" inicial
+      leaveMessageAckSent: active.status === "LEAVE_MESSAGE", 
       lastActiveAt: Date.now(),
     };
     setSession(session);
@@ -244,7 +218,6 @@ export async function getOrCreateSession(
   }
 
   // 3. Novo Atendimento
-  // Verifica se tem nome de um atendimento anterior para já pular ASK_NAME
   const ultimo = await repo.findOne({
     where: { cidadaoNumero: citizenKey, idcliente },
     order: { criadoEm: "DESC" },
@@ -256,7 +229,7 @@ export async function getOrCreateSession(
     idcliente,
     cidadaoNumero: citizenKey,
     cidadaoNome: temNome ? ultimo!.cidadaoNome : null,
-    status: temNome ? "ASK_DEPARTMENT" : "ASK_NAME",
+    status: temNome ? "ASK_PROFILE" : "ASK_NAME",
   });
 
   await repo.save(novo);
