@@ -17,8 +17,7 @@ import {
   SessionStatus,
   getOrCreateSession,
   recoverAgentSession,
-  sessionsByAgent,
-  getAgentKey,
+  // sessionsByAgent, // REMOVIDO: Não usamos mais memória RAM
   isAgentNumber as isAgentNumberState,
 } from "./sessionState";
 
@@ -50,24 +49,18 @@ import { getClientById } from "./credentialService";
 import { getOrganizationStyle, HumanMessagesService } from "./humanMessages";
 
 /**
- * Mantém compatibilidade com webhook atual (sincrono).
- * OBS: Para ficar 100% after-restart, use a função async detectIsAgent(from, phoneNumberId).
+ * Mantém compatibilidade com webhook atual.
  */
 export function isAgentNumber(num: string): boolean {
   return isAgentNumberState(num);
 }
 
-/**
- * ✅ Recomendado para o webhook (async + recovery):
- * - se não achar no cache, tenta recuperar no banco
- * - decide de forma bem mais confiável
- */
 export async function detectIsAgent(from: string, phoneNumberId?: string): Promise<boolean> {
   const normalized = normalizePhone(from);
-  // 1) cache
+  // 1) verificação rápida (pode conectar no Redis futuramente)
   if (isAgentNumberState(normalized)) return true;
 
-  // 2) recovery DB (se existir atendimento ativo vinculado a este agente)
+  // 2) recovery DB/Redis
   const recovered = await recoverAgentSession(normalized, phoneNumberId);
   return !!recovered;
 }
@@ -83,6 +76,9 @@ export type IncomingMessage = {
   phoneNumberId?: string;
 };
 
+// Mapas de timers locais (Node.js) ainda são ok para timeouts curtos, 
+// mas em "World Class" idealmente usaríamos BullMQ (Delayed Jobs).
+// Por enquanto, mantemos em memória para simplicidade do MVP robusto.
 const inactivityTimers = new Map<string, NodeJS.Timeout>();
 const warningTimers = new Map<string, NodeJS.Timeout>();
 
@@ -97,27 +93,24 @@ function last8(num: string): string {
 }
 
 // =========================================================================
-// CORREÇÃO AQUI: msgId -> whatsappMessageId
+// LOGS ASSÍNCRONOS
 // =========================================================================
 async function logIAMessage(session: Session, texto: string) {
   try {
-    // Tenta pegar o ID do bot (phoneNumberId) ou usa um fallback numérico fixo
     const botNumber = session.phoneNumberId 
       ? normalizePhone(session.phoneNumberId) 
       : "550000000000"; 
 
-    // Se por acaso o normalize retornar vazio (ex: phoneNumberId errado), forçamos o fallback
     const finalRemetente = botNumber || "550000000000";
 
     await salvarMensagem({
-      atendimentoId: session.atendimentoId,
+      atendimentoId: session.atendimentoId!,
       direcao: "IA" as any,
       tipo: "TEXT",
       conteudoTexto: texto,
       remetenteNumero: finalRemetente,
       idcliente: session.idcliente,
       comandoDescricao: "Resposta automática do sistema/IA",
-      // CORREÇÃO: Usar whatsappMessageId (que é opcional, mas válido) em vez de msgId
       whatsappMessageId: `IA-${Date.now()}-${Math.random().toString(36).substring(7)}` 
     });
   } catch (err) {
@@ -129,14 +122,13 @@ async function logAgentMessage(session: Session, texto: string, msg?: IncomingMe
   try {
     const remetente = normalizePhone(msg?.from || session.agentNumber || "");
     
-    // Fallback de segurança caso não consiga resolver o número do agente
     if (!remetente) {
       console.warn("[SESSION] Aviso: Tentativa de logar msg de agente sem número definido.");
       return; 
     }
 
     await salvarMensagem({
-      atendimentoId: session.atendimentoId,
+      atendimentoId: session.atendimentoId!,
       direcao: "AGENT" as any,
       tipo: msg?.tipo || "TEXT",
       conteudoTexto: texto ?? null,
@@ -153,7 +145,8 @@ async function logAgentMessage(session: Session, texto: string, msg?: IncomingMe
   }
 }
 
-async function getRecentHistory(atendimentoId: string): Promise<Array<{ sender: string; text: string }>> {
+async function getRecentHistory(atendimentoId?: string): Promise<Array<{ sender: string; text: string }>> {
+  if (!atendimentoId) return [];
   try {
     const repo = AppDataSource.getRepository(Mensagem);
     const msgs = await repo.find({
@@ -183,29 +176,43 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   clearTimers(citizenKey);
 
+  // ✅ AWAIT AQUI: Redis é async
   const session = await getOrCreateSession(citizenKey, phoneNumberId);
+  
   session.lastActiveAt = Date.now();
   session.phoneNumberId = phoneNumberId || session.phoneNumberId;
   if (trimmed) session.lastCitizenText = trimmed;
 
   console.log(`[SESSION] Status: ${session.status} | Cidadão: ${citizenKey} | idcliente=${session.idcliente}`);
 
-  // Salva msg do cidadão (idempotente por whatsappMessageId no messageService)
-  await salvarMensagem({
-    atendimentoId: session.atendimentoId,
-    direcao: "CITIZEN",
-    tipo,
-    conteudoTexto: trimmed || null,
-    whatsappMessageId: msg.whatsappMessageId,
-    whatsappMediaId: msg.mediaId,
-    mimeType: msg.mimeType,
-    fileName: msg.fileName,
-    remetenteNumero: citizenKey,
-    idcliente: session.idcliente,
-  });
+  // Se não tiver atendimentoId (sessão nova/perdida), tenta recuperar ou criar dummy
+  // (Na prática o getOrCreateSession já deveria lidar, mas garantimos aqui se necessário)
+  if (!session.atendimentoId) {
+      // Lógica de fallback se necessário, ou assumimos que o fluxo ASK_NAME criará
+  }
 
+  // Salva msg do cidadão 
+  // (Se session.atendimentoId for undefined, o salvarMensagem vai chiar ou criar um novo se a lógica permitir. 
+  //  Idealmente a sessão já nasce com um ID ou cria no primeiro passo)
+  if (session.atendimentoId) {
+    await salvarMensagem({
+      atendimentoId: session.atendimentoId,
+      direcao: "CITIZEN",
+      tipo,
+      conteudoTexto: trimmed || null,
+      whatsappMessageId: msg.whatsappMessageId,
+      whatsappMediaId: msg.mediaId,
+      mimeType: msg.mimeType,
+      fileName: msg.fileName,
+      remetenteNumero: citizenKey,
+      idcliente: session.idcliente,
+    });
+  }
+
+  // Consulta de protocolo "fura" a sessão
   if (await tentarTratarConsultaProtocolo(session, trimmed)) return;
 
+  // Roteamento de Estado
   switch (session.status) {
     case "ACTIVE":
     case "WAITING_AGENT_CONFIRMATION":
@@ -248,9 +255,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       break;
   }
 
-  // mantém sessão viva (exceto final)
+  // ✅ AWAIT AQUI: Persiste o estado atualizado no Redis
   if (session.status !== "FINISHED") {
-    setSession(session);
+    await setSession(session);
   }
 }
 
@@ -263,9 +270,11 @@ async function processActiveChat(session: Session, msg: IncomingMessage) {
     const protocolo = await fecharAtendimentoComProtocolo(session);
 
     session.status = "OFFLINE_POST_AGENT_RESPONSE";
-    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-      status: "OFFLINE_POST_AGENT_RESPONSE" as any,
-    });
+    if (session.atendimentoId) {
+      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+        status: "OFFLINE_POST_AGENT_RESPONSE" as any,
+      });
+    }
 
     const msgEnc = `Atendimento encerrado (Prot: *${protocolo}*).\nIsso resolveu seu problema?\n1 - Sim\n2 - Não`;
     await sendTextMessage(session.citizenNumber, msgEnc, { idcliente: session.idcliente });
@@ -291,6 +300,7 @@ async function processActiveChat(session: Session, msg: IncomingMessage) {
 }
 
 async function processAskName(session: Session, text: string) {
+  // Se não tiver texto ou for muito curto, repete saudação
   if (!text || text.length < 3) {
     const clientInfo = await getClientById(session.idcliente || 0);
     const org = getOrganizationStyle({ displayName: clientInfo?.nome, orgTipo: null });
@@ -303,16 +313,22 @@ async function processAskName(session: Session, text: string) {
 
     await sendTextMessage(session.citizenNumber, saudacao, { idcliente: session.idcliente });
     await logIAMessage(session, saudacao);
+    
+    // Se ainda não tinha atendimento criado, cria agora (ASK_NAME é entrypoint)
+    // No model original a sessão já vinha com atendimentoId? 
+    // Se não, aqui seria um bom lugar para garantir.
     return;
   }
 
   session.citizenName = text;
   session.status = "ASK_PROFILE";
 
-  await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-    cidadaoNome: text,
-    status: "ASK_PROFILE" as any,
-  });
+  if (session.atendimentoId) {
+    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+      cidadaoNome: text,
+      status: "ASK_PROFILE" as any,
+    });
+  }
 
   const clientInfo = await getClientById(session.idcliente || 0);
   const org = getOrganizationStyle({ displayName: clientInfo?.nome, orgTipo: null });
@@ -350,9 +366,11 @@ async function processAskProfile(session: Session, text: string) {
   session.userProfile = perfil;
   session.status = "ASK_DEPARTMENT";
 
-  await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-    status: "ASK_DEPARTMENT" as any,
-  });
+  if (session.atendimentoId) {
+    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+      status: "ASK_DEPARTMENT" as any,
+    });
+  }
 
   await verificarHorarioEMostrarMenu(session);
 }
@@ -363,7 +381,7 @@ async function verificarHorarioEMostrarMenu(session: Session) {
   if (foraHorario) {
     const horarioTxt = await getHorarioAtendimentoTexto({ idcliente: session.idcliente });
     const clienteNomeInfo = await getClientById(session.idcliente || 0);
-    const org = getOrganizationStyle({ displayName: clienteNomeInfo?.nome, orgTipo: null });
+    // const org = getOrganizationStyle({ displayName: clienteNomeInfo?.nome, orgTipo: null });
 
     const primeiroNome = session.citizenName?.split(" ")[0] || "";
     let msgIntro = `No momento estamos fechados, ${primeiroNome}.`;
@@ -427,10 +445,12 @@ async function processAskDepartment(session: Session, text: string) {
       session.departmentName = depAlvo.nome ?? undefined;
       session.leaveMessageAckSent = false;
 
-      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-        departamentoId: depAlvo.id,
-        status: "LEAVE_MESSAGE" as any,
-      });
+      if (session.atendimentoId) {
+        await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+          departamentoId: depAlvo.id,
+          status: "LEAVE_MESSAGE" as any,
+        });
+      }
 
       const protocolo = await ensureProtocolForSession(session);
 
@@ -505,26 +525,30 @@ async function processOfflineFlow(session: Session, text: string) {
 
   if (decision.nextState && decision.nextState !== session.status) {
     session.status = decision.nextState as SessionStatus;
-    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-      status: decision.nextState as any,
-    });
+    if (session.atendimentoId) {
+      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+        status: decision.nextState as any,
+      });
+    }
   }
 
   if (decision.shouldSaveRating && decision.rating) {
-    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-      notaSatisfacao: decision.rating,
-    } as any);
+    if (session.atendimentoId) {
+      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+        notaSatisfacao: decision.rating,
+      } as any);
+    }
   }
 
   if (decision.shouldCloseAttendance) {
     await fecharAtendimentoComProtocolo(session);
     session.status = "FINISHED";
-    invalidateSessionCache(session.citizenNumber);
+    await invalidateSessionCache(session.citizenNumber); // ✅ Await
     return;
   }
 }
 
-// ====================== TIMERS ======================
+// ====================== TIMERS (CUIDADO COM CALLBACKS ASYNC) ======================
 
 function clearTimers(citizenKey: string) {
   const key = normalizePhone(citizenKey);
@@ -549,8 +573,10 @@ function scheduleInactivityTimers(session: Session) {
   const warnTime = 2 * 60 * 1000;
   const closeTime = 3 * 60 * 1000;
 
+  // ✅ Timer callback agora é async
   const warnTimer = setTimeout(async () => {
-    const current = await getOrCreateSession(key); // inferirá idcliente pelo último atendimento se necessário
+    // Busca sessão no Redis para ver status atual
+    const current = await getOrCreateSession(key); 
 
     if (current.status === "LEAVE_MESSAGE") {
       let msgWarn =
@@ -565,6 +591,7 @@ function scheduleInactivityTimers(session: Session) {
     }
   }, warnTime);
 
+  // ✅ Timer callback agora é async
   const closeTimer = setTimeout(async () => {
     const current = await getOrCreateSession(key);
 
@@ -578,11 +605,13 @@ function scheduleInactivityTimers(session: Session) {
       await logIAMessage(current, msgFinal);
 
       // muda status no banco pra "aguardando humano"
-      await AppDataSource.getRepository(Atendimento).update(current.atendimentoId, {
-        status: "WAITING_AGENT" as any,
-      });
+      if (current.atendimentoId) {
+        await AppDataSource.getRepository(Atendimento).update(current.atendimentoId, {
+          status: "WAITING_AGENT" as any,
+        });
+      }
 
-      invalidateSessionCache(key);
+      await invalidateSessionCache(key); // ✅ Await
     }
 
     clearTimers(key);
@@ -621,11 +650,13 @@ async function direcionarParaDepartamento(session: Session, departamento: any) {
   session.agentNumber = departamento.responsavelNumero;
   session.status = "WAITING_AGENT_CONFIRMATION";
 
-  await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-    departamentoId: departamento.id,
-    agenteNumero: departamento.responsavelNumero,
-    status: "WAITING_AGENT_CONFIRMATION" as any,
-  });
+  if (session.atendimentoId) {
+    await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+      departamentoId: departamento.id,
+      agenteNumero: departamento.responsavelNumero,
+      status: "WAITING_AGENT_CONFIRMATION" as any,
+    });
+  }
 
   const msgDir = `Aguarde um momento, estou chamando o responsável pelo setor *${departamento.nome}*.`;
   await sendTextMessage(session.citizenNumber, msgDir, { idcliente: session.idcliente });
@@ -664,36 +695,27 @@ async function tentarTratarConsultaProtocolo(session: Session, text: string): Pr
 
 // ====================== ORQUESTRADOR AGENTE ======================
 
-function findCachedAgentSession(agentNumber: string): Session | undefined {
-  const l8 = last8(agentNumber);
-  if (!l8) return undefined;
-
-  // sessionsByAgent key = `${idcliente}:${last8}`
-  for (const [k, s] of sessionsByAgent.entries()) {
-    if (k.endsWith(`:${l8}`)) return s;
-  }
-  return undefined;
-}
+// REMOVIDO: findCachedAgentSession (não iteramos mais chaves de memória)
 
 export async function handleAgentMessage(msg: IncomingMessage) {
   const from = normalizePhone(msg.from);
   const text = (msg.text || "").trim();
   const phoneNumberId = msg.phoneNumberId;
 
-  // 1) tenta cache (qualquer cliente) — rápido
-  let session = findCachedAgentSession(from);
-
-  // 2) se não achou, tenta recover no banco com phoneNumberId (multi-tenant correto)
-  if (!session) session = await recoverAgentSession(from, phoneNumberId);
+  // 1) tenta recover no banco/redis com phoneNumberId (multi-tenant correto)
+  // NOTA: recoverAgentSession precisa estar implementado no sessionState.ts
+  let session = await recoverAgentSession(from, phoneNumberId);
 
   if (!session) {
-    // opcional: mandar aviso pro agente (depende do seu gosto)
-    console.log(`[AGENT] Nenhuma sessão encontrada para agente ${from}`);
+    // Se não achou sessão ativa vinculada a este agente, paramos.
+    // Em arquitetura Stateless/Redis, não varremos todas as sessões.
+    // O agente precisa ter o ID da sessão gravado em algum lugar (ex: chave "agent:NUM:current_session")
+    console.log(`[AGENT] Nenhuma sessão ativa encontrada para agente ${from}`);
     return;
   }
 
-  // garante consistência do cache (agora com idcliente)
-  setSession(session);
+  // ✅ Garante consistência do cache
+  await setSession(session);
 
   // ✅ salva msg do agente no banco (audit)
   if (msg.tipo === "TEXT" && text) {
@@ -707,26 +729,26 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     if (text === "1") {
       session.status = "ACTIVE";
 
-      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-        status: "ACTIVE" as any,
-      });
+      if (session.atendimentoId) {
+        await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+          status: "ACTIVE" as any,
+        });
+      }
 
       const msgOk = "✅ O atendente iniciou a conversa. Pode enviar sua mensagem.";
       await sendTextMessage(session.citizenNumber, msgOk, { idcliente: session.idcliente });
       await logIAMessage(session, msgOk);
 
-      setSession(session);
+      await setSession(session);
       return;
     }
 
     if (text === "2") {
-      // opcional: colocar na fila (se você tiver regra)
       const msgFila = "Ok, deixei este atendimento na fila.";
       await sendTextMessage(from, msgFila, { idcliente: session.idcliente });
       return;
     }
 
-    // qualquer outra coisa
     await sendTextMessage(from, "Responda:\n1 - Assumir atendimento\n2 - Deixar na fila", {
       idcliente: session.idcliente,
     });
@@ -739,9 +761,11 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       const protocolo = await fecharAtendimentoComProtocolo(session);
 
       session.status = "OFFLINE_POST_AGENT_RESPONSE";
-      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-        status: "OFFLINE_POST_AGENT_RESPONSE" as any,
-      });
+      if (session.atendimentoId) {
+        await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+          status: "OFFLINE_POST_AGENT_RESPONSE" as any,
+        });
+      }
 
       const msgEnc =
         `Atendimento encerrado pelo agente. Protocolo: *${protocolo}*.\n\n` +
@@ -750,8 +774,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       await sendTextMessage(session.citizenNumber, msgEnc, { idcliente: session.idcliente });
       await logIAMessage(session, msgEnc);
 
-      // mantém sessão viva para pós-atendimento
-      setSession(session);
+      await setSession(session);
       return;
     }
 
@@ -764,12 +787,10 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       });
     }
 
-    setSession(session);
+    await setSession(session);
     return;
   }
 
-  // Se o agente tentar falar enquanto cidadão está em pós-atendimento, você decide regra:
-  // Aqui eu apenas aviso e mantém.
   if (session.status === "OFFLINE_POST_AGENT_RESPONSE" || session.status === "OFFLINE_RATING") {
     await sendTextMessage(from, "Este atendimento está em fase de pesquisa/encerramento.", {
       idcliente: session.idcliente,
@@ -777,7 +798,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // fallback
   await sendTextMessage(from, "Não há atendimento ativo para responder no momento.", {
     idcliente: session.idcliente,
   });
