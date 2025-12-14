@@ -1,5 +1,5 @@
 // src/services/sessionState.ts
-import { In } from "typeorm";
+import { In, MoreThan } from "typeorm"; // <--- Adicionado MoreThan
 import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { Cliente } from "../entities/Cliente";
@@ -119,15 +119,12 @@ async function resolveClienteId(phoneNumberId?: string): Promise<number> {
     if (c) return c.id;
   }
 
-  // Fallback: Tenta pegar o primeiro ativo, senão o primeiro da tabela
   const ativo = await repo.findOne({ where: { ativo: true as any }, order: { id: "ASC" as any } });
   if (ativo) return ativo.id;
 
   const primeiro = await repo.findOne({ order: { id: "ASC" as any } });
   if (primeiro) return primeiro.id;
 
-  // Se não tem cliente nenhum no banco, retorna 1 como padrão de segurança para não quebrar
-  // Mas o ideal é ter cliente cadastrado.
   return 1; 
 }
 
@@ -181,19 +178,21 @@ export async function getOrCreateSession(
 ): Promise<Session> {
   const citizenKey = normalizePhone(citizenNumberRaw);
   
-  // 1. Memória
   const existing = sessionsByCitizen.get(citizenKey);
   if (existing) return existing;
 
   const repo = AppDataSource.getRepository(Atendimento);
   const idcliente = await resolveClienteId(phoneNumberId);
 
-  // 2. Banco: Busca atendimentos ABERTOS
-  // Usamos In do typeorm para buscar vários status
+  // 2. Banco: Busca atendimentos ABERTOS ou AGUARDANDO NOTA
   const active = await repo.findOne({
     where: {
       cidadaoNumero: citizenKey,
-      status: In(["ACTIVE", "LEAVE_MESSAGE", "IN_QUEUE", "WAITING_AGENT_CONFIRMATION", "LEAVE_MESSAGE_DECISION", "ASK_NAME", "ASK_PROFILE", "ASK_DEPARTMENT"]), 
+      status: In([
+        "ACTIVE", "LEAVE_MESSAGE", "IN_QUEUE", "WAITING_AGENT_CONFIRMATION", 
+        "LEAVE_MESSAGE_DECISION", "ASK_NAME", "ASK_PROFILE", "ASK_DEPARTMENT", 
+        "OFFLINE_POST_AGENT_RESPONSE", "OFFLINE_RATING"
+      ]), 
       idcliente,
     },
     relations: ["departamento"],
@@ -220,8 +219,43 @@ export async function getOrCreateSession(
     return session;
   }
 
-  // 3. Novo Atendimento (Se não achou nenhum aberto)
-  // Verifica se esse cidadão já teve um atendimento anterior (mesmo concluído) para pegar o nome
+  // 3. NOVO: Busca atendimento RECENTEMENTE ENCERRADO (últimas 24h)
+  // Isso permite responder à pesquisa de satisfação se o cidadão demorar
+  const ontem = new Date();
+  ontem.setDate(ontem.getDate() - 1);
+
+  const recentFinished = await repo.findOne({
+    where: {
+      cidadaoNumero: citizenKey,
+      // Se não funcionar 'FINISHED' as any, pode ser necessário ajustar o tipo ou casting
+      status: "FINISHED" as any, 
+      idcliente,
+      // IMPORTANTE: Verifique se sua coluna no banco é 'atualizadoEm' ou 'updatedAt'
+      // O typeorm mapeia camelCase para snake_case, mas na query findOne usamos o nome da propriedade da classe
+      atualizadoEm: MoreThan(ontem) as any, 
+    },
+    order: { atualizadoEm: "DESC" } as any,
+  });
+
+  if (recentFinished) {
+    console.log(`[SESSION] Recuperando atendimento ENCERRADO recente: ID=${recentFinished.id}`);
+    
+    // Reabre sessão apenas na memória para processar a nota
+    // Forçamos o status OFFLINE_POST_AGENT_RESPONSE para a IA saber que é pós-atendimento
+    const session: Session = {
+      citizenNumber: citizenKey,
+      status: "OFFLINE_POST_AGENT_RESPONSE", 
+      atendimentoId: recentFinished.id,
+      citizenName: recentFinished.cidadaoNome ?? undefined,
+      idcliente: recentFinished.idcliente,
+      phoneNumberId,
+      lastActiveAt: Date.now(),
+    };
+    setSession(session);
+    return session;
+  }
+
+  // 4. Novo Atendimento
   const ultimo = await repo.findOne({
     where: { cidadaoNumero: citizenKey, idcliente },
     order: { criadoEm: "DESC" },
@@ -229,7 +263,6 @@ export async function getOrCreateSession(
 
   const temNome = !!ultimo?.cidadaoNome;
   
-  // Cria o objeto Atendimento
   const novoAtendimento = repo.create({
     idcliente,
     cidadaoNumero: citizenKey,
@@ -239,8 +272,6 @@ export async function getOrCreateSession(
     atualizadoEm: new Date(),
   });
 
-  // *** CRUCIAL: SALVA NO BANCO ***
-  // Isso gera o ID que será usado na chave estrangeira da tabela mensagens
   await repo.save(novoAtendimento);
 
   console.log(`[SESSION] Novo atendimento criado no banco: ID=${novoAtendimento.id} Status=${novoAtendimento.status}`);

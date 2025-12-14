@@ -27,7 +27,7 @@ export const AppDataSource = new DataSource({
     HorarioAtendimento,
     Cliente,
   ],
-  synchronize: false, // usamos a DDL que você já aplicou
+  synchronize: true, // usamos a DDL que você já aplicou
   logging: false,
   ssl: {
     rejectUnauthorized: false,
