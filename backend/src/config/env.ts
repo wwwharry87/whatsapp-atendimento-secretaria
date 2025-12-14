@@ -43,9 +43,25 @@ const isProd = nodeEnv === "production";
 const databaseUrl = str("DATABASE_URL", "");
 
 // WhatsApp
+// Como o projeto é multi-tenant, as credenciais do WhatsApp normalmente ficam na tabela `clientes`.
+// Se você quiser usar ENV (modo legado / single-tenant), defina:
+//   WHATSAPP_CREDENTIALS_SOURCE=env
+// Caso contrário (padrão), usamos:
+//   WHATSAPP_CREDENTIALS_SOURCE=db
+const whatsappCredentialsSource = str(
+  "WHATSAPP_CREDENTIALS_SOURCE",
+  isProd ? "db" : "env"
+);
+
+const whatsappApiVersion = str("WHATSAPP_API_VERSION", "v24.0");
+
 const whatsappAccessToken = str("WHATSAPP_ACCESS_TOKEN", "");
 const whatsappPhoneNumberId = str("WHATSAPP_PHONE_NUMBER_ID", "");
-const whatsappVerifyToken = str("WHATSAPP_VERIFY_TOKEN", "verify_token_teste");
+
+// O verify token precisa existir em produção, pois o Meta valida o webhook.
+const whatsappVerifyToken = isProd
+  ? required("WHATSAPP_VERIFY_TOKEN", "Token de verificação do Webhook")
+  : str("WHATSAPP_VERIFY_TOKEN", "verify_token_teste");
 
 // Se você quiser validar assinatura do webhook (x-hub-signature-256)
 const whatsappAppSecret = str("WHATSAPP_APP_SECRET", "");
@@ -85,9 +101,12 @@ if (isProd) {
     required("DB_DATABASE");
   }
 
-  // WhatsApp: token e phone_number_id precisam existir
-  if (!whatsappAccessToken) required("WHATSAPP_ACCESS_TOKEN");
-  if (!whatsappPhoneNumberId) required("WHATSAPP_PHONE_NUMBER_ID");
+  // WhatsApp: em modo "env" exigimos token e phone_number_id.
+  // Em modo "db" (padrão), as credenciais vêm da tabela `clientes`.
+  if (String(whatsappCredentialsSource).toLowerCase() === "env") {
+    if (!whatsappAccessToken) required("WHATSAPP_ACCESS_TOKEN");
+    if (!whatsappPhoneNumberId) required("WHATSAPP_PHONE_NUMBER_ID");
+  }
 
   // Verify token deve ser configurado (evitar default em prod)
   if (!process.env.WHATSAPP_VERIFY_TOKEN) {
@@ -123,7 +142,8 @@ export const env = {
   },
 
   whatsapp: {
-    apiVersion: str("WHATSAPP_API_VERSION", "v24.0"),
+    credentialsSource: whatsappCredentialsSource,
+    apiVersion: whatsappApiVersion,
     phoneNumberId: whatsappPhoneNumberId,
     accessToken: whatsappAccessToken,
     verifyToken: whatsappVerifyToken,
