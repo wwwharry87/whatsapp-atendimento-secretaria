@@ -403,26 +403,26 @@ export async function getOrCreateSession(
 
     const temNome = !!ultimo?.cidadaoNome;
 
+    // ⚠️ Evitar `as any` aqui: com TypeORM, isso pode fazer o TS escolher o overload
+    // de "array" e tipar o retorno como Atendimento[] (quebrando `.id`, `.status`, etc.).
     const novoAtendimento = repo.create({
       idcliente,
       cidadaoNumero: citizenKey,
       cidadaoNome: temNome ? ultimo!.cidadaoNome : null,
       status: temNome ? "ASK_PROFILE" : "ASK_NAME",
-      criadoEm: new Date(),
-      atualizadoEm: new Date(),
-    } as any);
+    });
 
-    await repo.save(novoAtendimento);
+    const savedAtendimento = await repo.save(novoAtendimento);
 
     console.log(
-      `[SESSION] Novo atendimento criado no banco: ID=${novoAtendimento.id} Status=${novoAtendimento.status} idcliente=${idcliente}`
+      `[SESSION] Novo atendimento criado no banco: ID=${savedAtendimento.id} Status=${savedAtendimento.status} idcliente=${idcliente}`
     );
 
     const newSession: Session = {
       citizenNumber: citizenKey,
-      status: novoAtendimento.status as SessionStatus,
-      atendimentoId: novoAtendimento.id,
-      citizenName: novoAtendimento.cidadaoNome ?? undefined,
+      status: savedAtendimento.status as SessionStatus,
+      atendimentoId: savedAtendimento.id,
+      citizenName: savedAtendimento.cidadaoNome ?? undefined,
       idcliente,
       phoneNumberId,
       lastActiveAt: Date.now(),
