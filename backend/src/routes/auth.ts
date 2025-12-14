@@ -1,7 +1,7 @@
 // src/routes/auth.ts
 import { Router, Request, Response } from "express";
 import crypto from "crypto";
-import jwt, { JwtPayload, SignOptions } from "jsonwebtoken";
+import jwt, { JwtPayload } from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { AppDataSource } from "../database/data-source";
 import { Usuario } from "../entities/Usuario";
@@ -302,14 +302,11 @@ router.post("/login", async (req: Request, res: Response): Promise<Response> => 
       idcliente: usuario.idcliente,
     };
 
-    const signOptions: SignOptions = {
-      // Os tipos mais novos do jsonwebtoken podem exigir StringValue (ms). Cast seguro.
-      expiresIn: JWT_EXPIRES_IN as SignOptions["expiresIn"],
+    const token = jwt.sign(payload, JWT_SECRET, {
+      expiresIn: JWT_EXPIRES_IN,
       subject: String(usuario.id),
       algorithm: "HS256",
-    };
-
-    const token = jwt.sign(payload, JWT_SECRET, signOptions);
+    });
 
     return res.json({
       token,

@@ -1,5 +1,5 @@
 // src/services/sessionState.ts
-import { In, MoreThan, DeepPartial } from "typeorm";
+import { In, MoreThan } from "typeorm";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento } from "../entities/Atendimento";
 import { Cliente } from "../entities/Cliente";
@@ -403,7 +403,6 @@ export async function getOrCreateSession(
 
     const temNome = !!ultimo?.cidadaoNome;
 
-    // Força o overload de create/save para 1 entidade (evita inferir Atendimento[])
     const novoAtendimento = repo.create({
       idcliente,
       cidadaoNumero: citizenKey,
@@ -411,7 +410,7 @@ export async function getOrCreateSession(
       status: temNome ? "ASK_PROFILE" : "ASK_NAME",
       criadoEm: new Date(),
       atualizadoEm: new Date(),
-    } as DeepPartial<Atendimento>);
+    } as any);
 
     await repo.save(novoAtendimento);
 
