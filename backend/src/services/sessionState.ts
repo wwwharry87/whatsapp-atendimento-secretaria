@@ -1,5 +1,5 @@
 // src/services/sessionState.ts
-import { In, MoreThan } from "typeorm"; // <--- Adicionado MoreThan
+import { In, MoreThan } from "typeorm";
 import { AppDataSource } from "../database/data-source";
 import { Atendimento, AtendimentoStatus } from "../entities/Atendimento";
 import { Cliente } from "../entities/Cliente";
@@ -16,6 +16,7 @@ export type SessionStatus =
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
+  | "WAITING_AGENT"               // <--- NOVO: Aguardando agente (pós-timer)
   | "OFFLINE_POST_AGENT_RESPONSE" 
   | "OFFLINE_RATING"              
   | "ASK_SATISFACTION_RESOLUTION"
@@ -184,14 +185,15 @@ export async function getOrCreateSession(
   const repo = AppDataSource.getRepository(Atendimento);
   const idcliente = await resolveClienteId(phoneNumberId);
 
-  // 2. Banco: Busca atendimentos ABERTOS ou AGUARDANDO NOTA
+  // 2. Banco: Busca atendimentos ABERTOS ou AGUARDANDO AGENTE/NOTA
   const active = await repo.findOne({
     where: {
       cidadaoNumero: citizenKey,
       status: In([
         "ACTIVE", "LEAVE_MESSAGE", "IN_QUEUE", "WAITING_AGENT_CONFIRMATION", 
         "LEAVE_MESSAGE_DECISION", "ASK_NAME", "ASK_PROFILE", "ASK_DEPARTMENT", 
-        "OFFLINE_POST_AGENT_RESPONSE", "OFFLINE_RATING"
+        "OFFLINE_POST_AGENT_RESPONSE", "OFFLINE_RATING",
+        "WAITING_AGENT" // <--- CRUCIAL: Recupera sessão se estiver esperando agente
       ]), 
       idcliente,
     },
@@ -220,18 +222,14 @@ export async function getOrCreateSession(
   }
 
   // 3. NOVO: Busca atendimento RECENTEMENTE ENCERRADO (últimas 24h)
-  // Isso permite responder à pesquisa de satisfação se o cidadão demorar
   const ontem = new Date();
   ontem.setDate(ontem.getDate() - 1);
 
   const recentFinished = await repo.findOne({
     where: {
       cidadaoNumero: citizenKey,
-      // Se não funcionar 'FINISHED' as any, pode ser necessário ajustar o tipo ou casting
       status: "FINISHED" as any, 
       idcliente,
-      // IMPORTANTE: Verifique se sua coluna no banco é 'atualizadoEm' ou 'updatedAt'
-      // O typeorm mapeia camelCase para snake_case, mas na query findOne usamos o nome da propriedade da classe
       atualizadoEm: MoreThan(ontem) as any, 
     },
     order: { atualizadoEm: "DESC" } as any,
@@ -240,8 +238,7 @@ export async function getOrCreateSession(
   if (recentFinished) {
     console.log(`[SESSION] Recuperando atendimento ENCERRADO recente: ID=${recentFinished.id}`);
     
-    // Reabre sessão apenas na memória para processar a nota
-    // Forçamos o status OFFLINE_POST_AGENT_RESPONSE para a IA saber que é pós-atendimento
+    // Reabre sessão para processar pós-atendimento se necessário
     const session: Session = {
       citizenNumber: citizenKey,
       status: "OFFLINE_POST_AGENT_RESPONSE", 

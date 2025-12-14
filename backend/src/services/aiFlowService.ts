@@ -4,7 +4,8 @@ import axios from "axios";
 export type OfflineState =
   | "LEAVE_MESSAGE"               
   | "OFFLINE_POST_AGENT_RESPONSE" 
-  | "OFFLINE_RATING"              
+  | "OFFLINE_RATING"
+  | "WAITING_AGENT"               // <--- NOVO STATUS
   | "CLOSED";                     
 
 export interface OfflineFlowContext {
@@ -15,7 +16,6 @@ export interface OfflineFlowContext {
   cidadaoNumero: string;
   canalNome: string | null;
   leaveMessageAckSent: boolean;
-  // NOVO: Histórico recente para a IA ter memória
   lastMessages?: Array<{ sender: string; text: string }>;
 }
 
@@ -34,7 +34,7 @@ Sua função é gerar JSON de controle de fluxo e resposta.
 Responda SEMPRE JSON válido formato:
 {
   "replyText": "string",
-  "nextState": "LEAVE_MESSAGE | OFFLINE_POST_AGENT_RESPONSE | OFFLINE_RATING | CLOSED",
+  "nextState": "LEAVE_MESSAGE | WAITING_AGENT | OFFLINE_POST_AGENT_RESPONSE | OFFLINE_RATING | CLOSED",
   "shouldSaveRating": boolean,
   "rating": number | null,
   "shouldCloseAttendance": boolean
@@ -42,31 +42,29 @@ Responda SEMPRE JSON válido formato:
 
 CONTEXTO:
 Você receberá o texto atual do cidadão e um HISTÓRICO recente de mensagens.
-USE O HISTÓRICO para entender se o cidadão JÁ informou o que precisa.
 
-ESTADO ATUAL: LEAVE_MESSAGE (Modo Recado)
-O cidadão está enviando mensagens que serão lidas posteriormente pela equipe humana.
-
-Regras para LEAVE_MESSAGE:
+ESTADO ATUAL: LEAVE_MESSAGE (Modo Recado Ativo)
+O cidadão está enviando mensagens que serão lidas posteriormente.
 1. Analise o HISTÓRICO + Texto Atual.
-2. Se o cidadão JÁ detalhou o problema anteriormente (no histórico) e agora só mandou um complemento:
-   - Apenas confirme o recebimento.
-   - NÃO pergunte novamente "qual é a sua demanda".
-   - Diga algo como: "Entendido, adicionei essa informação ao registro."
+2. Se o cidadão JÁ detalhou o problema e agora só complementou: Confirme o recebimento ("Adicionado ao registro").
+3. Se é a primeira vez: Confirme que registrou e pergunte se quer enviar mais detalhes.
+4. Se o cidadão disser que terminou ("só isso", "obrigado"): Agradeça e mantenha nextState="LEAVE_MESSAGE". (O sistema encerrará por timer).
 
-3. Se é a primeira vez que ele explica o problema (não está no histórico):
-   - Confirme que registrou.
-   - Pergunte se ele deseja enviar fotos ou mais detalhes.
-
-4. Se o cidadão disser que terminou (ex: "só isso", "pode encerrar", "obrigado"):
-   - Agradeça e diga que a equipe analisará.
-   - nextState = "LEAVE_MESSAGE". (O sistema encerrará por timer).
+ESTADO ATUAL: WAITING_AGENT (Recado Finalizado / Aguardando Agente)
+O sistema já encerrou a coleta de recado pelo timer. O cidadão mandou mensagem de novo.
+1. Se for apenas saudação ("oi", "olá", "bom dia") ou cobrança ("já viram?"):
+   - Informe gentilmente que o protocolo já foi registrado e está na fila para análise.
+   - Peça para aguardar o retorno da equipe.
+   - nextState = "WAITING_AGENT".
+2. Se for uma NOVA informação útil:
+   - Diga que a informação foi adicionada ao protocolo existente.
+   - nextState = "WAITING_AGENT".
 
 ESTADO ATUAL: OFFLINE_POST_AGENT_RESPONSE (Pós Atendimento)
 O agente encerrou o chamado.
 1. Pergunte se foi resolvido (Sim/Não).
    - Se Sim: nextState = "OFFLINE_RATING", replyText = "Que bom! Nota de 1 a 5?"
-   - Se Não: replyText = "Entendo. Pode detalhar o que faltou?", nextState = "LEAVE_MESSAGE".
+   - Se Não: replyText = "Entendo. Pode detalhar o que faltou?", nextState = "LEAVE_MESSAGE" (reabre recado).
 
 ESTADO ATUAL: OFFLINE_RATING (Avaliação)
 1. Se número 1-5: shouldSaveRating = true, shouldCloseAttendance = true, nextState = "CLOSED".
@@ -133,7 +131,7 @@ export async function callOfflineFlowEngine(
   } catch (err) {
     console.error("[AI_FLOW] Erro:", err);
     return {
-      replyText: "Recebido. Se tiver mais detalhes, pode enviar.",
+      replyText: "Recebido.",
       nextState: context.state as OfflineState,
       shouldSaveRating: false,
       shouldCloseAttendance: false,

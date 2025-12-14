@@ -1,6 +1,6 @@
 // src/services/sessionService.ts
 import { AppDataSource } from "../database/data-source";
-import { Atendimento } from "../entities/Atendimento";
+import { Atendimento, AtendimentoStatus } from "../entities/Atendimento"; // Certifique-se que WAITING_AGENT está no entity
 import { Mensagem, MensagemTipo } from "../entities/Mensagem";
 import {
   sendTextMessage,
@@ -43,12 +43,10 @@ import { callOfflineFlowEngine, OfflineFlowContext } from "./aiFlowService";
 import { getClientById } from "./credentialService";
 import { getOrganizationStyle, HumanMessagesService } from "./humanMessages";
 
-// ====================== RE-EXPORT PARA O WEBHOOK ======================
 export function isAgentNumber(num: string): boolean {
   return isAgentNumberState(num);
 }
 
-// ====================== TIPOS ======================
 export type IncomingMessage = {
   from: string;
   text?: string;
@@ -62,8 +60,6 @@ export type IncomingMessage = {
 
 const inactivityTimers = new Map<string, NodeJS.Timeout>();
 const warningTimers = new Map<string, NodeJS.Timeout>();
-
-// ====================== HELPERS DE LOG / HISTÓRICO ======================
 
 async function logIAMessage(session: Session, texto: string) {
   try {
@@ -109,7 +105,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   const citizenKey = from.replace(/\D/g, "");
   const trimmed = text.trim();
 
-  // Ignora mensagens vazias
   if (tipo === "TEXT" && !trimmed) {
     return;
   }
@@ -167,27 +162,26 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       await processLeaveMessageFlow(session, trimmed);
       break;
 
-    case "LEAVE_MESSAGE_DECISION":
-    case "OFFLINE_POST_AGENT_RESPONSE":
-    case "OFFLINE_RATING":
+    // === TRATAMENTO PÓS-TIMER (NOVO) ===
+    case "WAITING_AGENT": 
+      // Se caiu aqui, o timer já encerrou a coleta e mudou o status no banco.
+      // A IA vai apenas dizer "Já recebemos, aguarde".
       await processOfflineFlow(session, trimmed);
       break;
 
+    case "LEAVE_MESSAGE_DECISION":
+    case "OFFLINE_POST_AGENT_RESPONSE":
+    case "OFFLINE_RATING":
     case "CLOSED":
     case "FINISHED":
-      // Se caiu aqui, é porque o usuário mandou mensagem num ticket fechado
-      // e o getOrCreateSession não reabriu (passou de 24h ou lógica específica).
-      // Mandamos iniciar de novo.
-      await sendTextMessage(session.citizenNumber, "Olá! Para iniciar um novo atendimento, por favor digite 'Oi' novamente.", { idcliente: session.idcliente });
-      invalidateSessionCache(citizenKey);
-      return; // Sai sem salvar sessão
+      await processOfflineFlow(session, trimmed);
+      break;
 
     default:
       await processAskDepartment(session, trimmed);
       break;
   }
 
-  // Só atualiza a sessão se ela não foi finalizada/invalidada durante o fluxo
   if (session.status !== "FINISHED" && session.status !== "CLOSED") {
     setSession(session);
   }
@@ -294,7 +288,7 @@ async function processAskProfile(session: Session, text: string) {
   session.status = "ASK_DEPARTMENT";
   
   const repo = AppDataSource.getRepository(Atendimento);
-  await repo.update(session.atendimentoId, { status: "ASK_DEPARTMENT" }); // Se tiver coluna perfil, salve aqui também
+  await repo.update(session.atendimentoId, { status: "ASK_DEPARTMENT" });
 
   await verificarHorarioEMostrarMenu(session);
 }
@@ -337,10 +331,7 @@ async function processAskDepartment(session: Session, text: string) {
   
   if (!depAlvo) {
     const deps = await listarDepartamentos({ idcliente, somenteAtivos: true });
-    
-    // Busca exata pelo nome
     const matchExato = deps.find(d => d.nome?.toLowerCase() === text.toLowerCase());
-    
     if (matchExato) {
       depAlvo = matchExato;
     } else if (iaEstaHabilitada() && text.length > 2) {
@@ -447,7 +438,6 @@ async function processOfflineFlow(session: Session, text: string) {
     await logIAMessage(session, decision.replyText);
   }
 
-  // Atualiza status se mudou
   if (decision.nextState !== session.status) {
     session.status = decision.nextState as SessionStatus;
     await AppDataSource.getRepository(Atendimento).update(
@@ -456,7 +446,6 @@ async function processOfflineFlow(session: Session, text: string) {
     );
   }
 
-  // Salva nota
   if (decision.shouldSaveRating && decision.rating) {
     await AppDataSource.getRepository(Atendimento).update(
       session.atendimentoId,
@@ -464,18 +453,9 @@ async function processOfflineFlow(session: Session, text: string) {
     );
   }
 
-  // ENCERRAMENTO FINAL (Sem Loops)
   if (decision.shouldCloseAttendance) {
-    // 1. Marca no banco
     await fecharAtendimentoComProtocolo(session);
-    
-    // 2. Limpa memória RAM (invalida sessão)
     invalidateSessionCache(session.citizenNumber);
-    
-    // 3. Muda status da variavel local para FINISHED apenas para a checagem no fim da funcao
-    session.status = "FINISHED";
-    
-    // 4. Retorna para parar processamento
     return;
   }
 }
@@ -497,8 +477,8 @@ function scheduleInactivityTimers(session: Session) {
   const key = session.citizenNumber;
   const idcliente = session.idcliente;
 
-  const warnTime = 2 * 60 * 1000; // 2 minutos
-  const closeTime = 3 * 60 * 1000; // 3 minutos totais
+  const warnTime = 2 * 60 * 1000; 
+  const closeTime = 3 * 60 * 1000;
 
   const warnTimer = setTimeout(async () => {
     const current = await getOrCreateSession(key);
@@ -519,15 +499,16 @@ function scheduleInactivityTimers(session: Session) {
     const current = await getOrCreateSession(key);
     if (current.status === "LEAVE_MESSAGE") {
       const protocolo = current.protocolo || "registrado";
-      const msgFinal = `✅ Recebemos suas mensagens.
-Protocolo: *${protocolo}*.
-
-Nossa equipe irá analisar e entrar em contato. Se precisar enviar mais algo depois, basta responder aqui.`;
+      const msgFinal = `✅ Recebemos suas mensagens.\nProtocolo: *${protocolo}*.\n\nNossa equipe irá analisar e entrar em contato. Se precisar enviar mais algo depois, basta responder aqui.`;
 
       await sendTextMessage(key, msgFinal, { idcliente });
       await logIAMessage(current, msgFinal);
       
-      // Limpa cache da sessão, mas mantem status LEAVE_MESSAGE no banco para o agente
+      // MUDANÇA: Define como WAITING_AGENT no banco
+      await AppDataSource.getRepository(Atendimento).update(current.atendimentoId, {
+        status: "WAITING_AGENT" as any
+      });
+      
       invalidateSessionCache(key);
     }
     clearTimers(key);
@@ -656,10 +637,10 @@ export async function handleAgentMessage(msg: IncomingMessage) {
   if (session.status === "ACTIVE") {
     if (text.toLowerCase() === "encerrar" || text === "3") {
       const protocolo = await fecharAtendimentoComProtocolo(session);
-      // Aqui usamos o mesmo fluxo da rota: vai para Pós-Atendimento
+      // Fluxo Pós-Atendimento
       session.status = "OFFLINE_POST_AGENT_RESPONSE";
       await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
-        status: "OFFLINE_POST_AGENT_RESPONSE"
+        status: "OFFLINE_POST_AGENT_RESPONSE" as any
       });
 
       const msgEnc = `Atendimento encerrado pelo agente. Protocolo: *${protocolo}*.\n\nSua solicitação foi resolvida?\n1 - Sim\n2 - Não`;
@@ -668,7 +649,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       });
       await logIAMessage(session, msgEnc);
       
-      // NÃO invalida cache aqui, pois queremos que o cidadão responda 1 ou 2
       return;
     }
     await sendTextMessage(session.citizenNumber, text, {

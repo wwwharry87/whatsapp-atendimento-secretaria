@@ -21,6 +21,7 @@ export type AtendimentoStatus =
   | "ASK_ANOTHER_DEPARTMENT"
   | "LEAVE_MESSAGE_DECISION"
   | "LEAVE_MESSAGE"
+  | "WAITING_AGENT"               // <--- NOVO: Recado finalizado pelo cidadão/timer, aguardando agente
   | "OFFLINE_POST_AGENT_RESPONSE" // <--- ADICIONADO: Fluxo pós-conclusão do painel
   | "OFFLINE_RATING"              // <--- ADICIONADO: Coleta de nota pela IA
   | "ASK_SATISFACTION_RESOLUTION"
