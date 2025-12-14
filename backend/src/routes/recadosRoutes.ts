@@ -100,9 +100,12 @@ router.get("/", async (req: Request, res: Response) => {
       );
     }
 
-    // ✅ Ordena por atualizadoEm primeiro (mais útil pro painel)
-    qb.orderBy("a.atualizado_em", "DESC")
-      .addOrderBy("a.criado_em", "DESC")
+    // =========================================================================
+    // CORREÇÃO AQUI: Use o nome da PROPRIEDADE da classe, não da coluna do banco.
+    // O TypeORM se perde na paginação (take/skip) se usar nome da coluna.
+    // =========================================================================
+    qb.orderBy("a.atualizadoEm", "DESC") // <-- era "a.atualizado_em"
+      .addOrderBy("a.criadoEm", "DESC")  // <-- era "a.criado_em"
       .skip((page - 1) * perPage)
       .take(perPage);
 
@@ -218,22 +221,6 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       protocolo: (atendimento as any).protocolo,
       status: atendimento.status,
     });
-
-    // Opcional: aviso humanizado antes da resposta (se quiser reativar)
-    /*
-    const clienteRepo = AppDataSource.getRepository(Cliente);
-    const cliente = await clienteRepo.findOne({ where: { id: Number(idcliente) } });
-    const org = getOrganizationStyle({ displayName: cliente?.nome ?? null, orgTipo: null });
-
-    const aviso = HumanMessagesService.recadoToCitizen({
-      org,
-      citizenName: (atendimento as any).cidadaoNome,
-      departamentoNome: (atendimento as any).departamento?.nome,
-      protocolo: protocolo,
-      seed: numeroCidadao,
-    });
-    await sendTextMessage(numeroCidadao, aviso, { idcliente });
-    */
 
     // Determina tipo de mensagem
     let tipoMensagem = "TEXT";
@@ -386,7 +373,7 @@ async function concluirHandler(req: Request, res: Response) {
       direcao: "IA",
       tipo: "TEXT",
       conteudoTexto: msgSatisfacao,
-      remetenteNumero: "SISTEMA",
+      remetenteNumero: "550000000000", // CORREÇÃO: Força numérico aqui também
       comandoDescricao: "Disparo automático de Pesquisa de Satisfação",
     } as any);
 

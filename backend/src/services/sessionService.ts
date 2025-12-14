@@ -96,16 +96,29 @@ function last8(num: string): string {
   return n.length > 8 ? n.slice(-8) : n;
 }
 
+// =========================================================================
+// CORREÇÃO AQUI: msgId -> whatsappMessageId
+// =========================================================================
 async function logIAMessage(session: Session, texto: string) {
   try {
+    // Tenta pegar o ID do bot (phoneNumberId) ou usa um fallback numérico fixo
+    const botNumber = session.phoneNumberId 
+      ? normalizePhone(session.phoneNumberId) 
+      : "550000000000"; 
+
+    // Se por acaso o normalize retornar vazio (ex: phoneNumberId errado), forçamos o fallback
+    const finalRemetente = botNumber || "550000000000";
+
     await salvarMensagem({
       atendimentoId: session.atendimentoId,
       direcao: "IA" as any,
       tipo: "TEXT",
       conteudoTexto: texto,
-      remetenteNumero: "IA",
+      remetenteNumero: finalRemetente,
       idcliente: session.idcliente,
       comandoDescricao: "Resposta automática do sistema/IA",
+      // CORREÇÃO: Usar whatsappMessageId (que é opcional, mas válido) em vez de msgId
+      whatsappMessageId: `IA-${Date.now()}-${Math.random().toString(36).substring(7)}` 
     });
   } catch (err) {
     console.error("[SESSION] Erro ao salvar mensagem da IA no banco:", err);
@@ -114,6 +127,14 @@ async function logIAMessage(session: Session, texto: string) {
 
 async function logAgentMessage(session: Session, texto: string, msg?: IncomingMessage) {
   try {
+    const remetente = normalizePhone(msg?.from || session.agentNumber || "");
+    
+    // Fallback de segurança caso não consiga resolver o número do agente
+    if (!remetente) {
+      console.warn("[SESSION] Aviso: Tentativa de logar msg de agente sem número definido.");
+      return; 
+    }
+
     await salvarMensagem({
       atendimentoId: session.atendimentoId,
       direcao: "AGENT" as any,
@@ -123,7 +144,7 @@ async function logAgentMessage(session: Session, texto: string, msg?: IncomingMe
       whatsappMediaId: msg?.mediaId,
       mimeType: msg?.mimeType,
       fileName: msg?.fileName,
-      remetenteNumero: normalizePhone(msg?.from || session.agentNumber || ""),
+      remetenteNumero: remetente,
       idcliente: session.idcliente,
       comandoDescricao: "Mensagem do atendente",
     });
