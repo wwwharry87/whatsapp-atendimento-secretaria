@@ -7,6 +7,7 @@ import { Cliente } from "../entities/Cliente";
 
 export type SessionStatus =
   | "ASK_NAME"
+  | "ASK_PROFILE"
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
@@ -24,7 +25,10 @@ export type SessionStatus =
 export interface Session {
   citizenNumber: string; // WhatsApp do cidadão (normalizado)
   citizenName?: string;
+  userProfile?: "FUNCIONARIO" | "COMUNIDADE"; // <--- NOVO CAMPO
   lastCitizenText?: string;
+
+  
 
   departmentId?: number;
   departmentName?: string;

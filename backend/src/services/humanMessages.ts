@@ -183,13 +183,30 @@ export class HumanMessagesService {
     const { org, seed } = args;
     const g = greetingByHour(args.now);
 
+    // Variantes mais amigáveis e menos robóticas
     const variants = [
-      `${g}! 👋 Você está falando com ${orgLabel(org)}.\nComo posso te chamar? 🙂`,
-      `${g}! 👋 Bem-vindo(a) ao ${orgLabel(org)}.\nMe diz seu nome, por favor 🙂`,
-      `${g}! 👋 Pra eu te atender direitinho aqui no WhatsApp, qual é seu nome?`,
+      `${g}! 👋 Sou o assistente virtual da ${orgLabel(org)}.\nPara começarmos, qual é o seu nome? 🙂`,
+      `${g}! 👋 Bem-vindo(a) ao atendimento da ${orgLabel(org)}.\nComo posso te chamar?`,
+      `${g}! 👋 Aqui é do atendimento digital da ${orgLabel(org)}.\nMe diz seu nome para eu registrar aqui, por favor? 🙂`,
     ];
 
     return pickVariant("greetingAskName", variants, seed);
+  }
+
+  /**
+   * Pergunta se é funcionário ou comunidade (Novo)
+   */
+  static askProfile(args: { citizenName: string; org: OrganizationStyle; seed?: string | number }): string {
+    const { citizenName, org, seed } = args;
+    const name = safeName(citizenName) || "cidadão";
+
+    const variants = [
+      `Prazer, ${name}! Para eu te direcionar melhor, me conta uma coisa:\n\nVocê faz parte da equipe da *${org.displayName}* ou é da comunidade (pai, aluno, cidadão)?`,
+      `Obrigado, ${name}. Antes de prosseguirmos: você é servidor/funcionário da casa ou busca atendimento como cidadão?`,
+      `Certo, ${name}! 📝\nPara agilizar seu atendimento, selecione seu perfil abaixo:`
+    ];
+
+    return pickVariant("askProfile", variants, seed);
   }
 
   /** Menu humanizado (varia texto e inclui nome se houver) */
@@ -200,23 +217,18 @@ export class HumanMessagesService {
     seed?: string | number;
   }): string {
     const name = safeName(args.citizenName);
+    
+    // Saudação mais rica
     const headerVariants = [
-      `${greetingByHour()}${name ? `, ${name}` : ""}! 🙂`,
-      `${greetingByHour()}${name ? `, ${name}` : ""}! 👋`,
-      `Olá${name ? `, ${name}` : ""}! 🙂`,
+      `Tudo pronto, ${name}. Aqui estão os setores disponíveis para te ajudar:`,
+      `Agora sim! ${name}, com qual setor você gostaria de falar?`,
+      `Perfeito. Veja onde podemos te atender hoje:`
     ];
-
     const header = pickVariant("menuHeader", headerVariants, args.seed);
 
-    const hintVariants = [
-      `Me diga o número do setor que você quer falar 📝`,
-      `Escolhe uma opção pelo número e me responde aqui 🙂`,
-      `É só responder com o número do setor 😉`,
-    ];
+    const hint = "\n💡 *Dica:* Se você sabe o nome da escola ou setor específico, pode escrever direto (ex: 'Escola Dom Pedro').";
 
-    const hint = pickVariant("menuHint", hintVariants, args.seed);
-
-    return joinLines([header, `Você está falando com ${orgLabel(args.org)}.`, "", args.menuText, "", hint]);
+    return joinLines([header, "", args.menuText, hint]);
   }
 
   /** Confirmação de setor selecionado */

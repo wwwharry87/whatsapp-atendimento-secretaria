@@ -13,6 +13,7 @@ import { Cliente } from "./Cliente";
 
 export type AtendimentoStatus =
   | "ASK_NAME"
+  | "ASK_PROFILE"
   | "ASK_DEPARTMENT"
   | "WAITING_AGENT_CONFIRMATION"
   | "ACTIVE"
