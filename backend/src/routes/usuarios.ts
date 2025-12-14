@@ -1,73 +1,46 @@
 // src/routes/usuarios.ts
 import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { AppDataSource } from "../database/data-source";
 import { Usuario, PerfilUsuario } from "../entities/Usuario";
-import { Cliente } from "../entities/Cliente";
 import { UsuarioDepartamento } from "../entities/UsuarioDepartamento";
+import { Departamento } from "../entities/Departamento";
 import { AuthRequest } from "../middlewares/authMiddleware";
 
 const router = Router();
 
-// ====== Helpers de cliente ======
-let defaultClienteIdCache: number | null = null;
-
 /**
- * Usado apenas como fallback (quando não vier idcliente no token),
- * por exemplo em um cenário legado ou usuário "global" de configuração.
+ * 🔒 Multi-tenant: SEMPRE do token.
+ * (Não usamos header/query/body/env/default para tenant em rotas autenticadas)
  */
-async function getDefaultClienteId(): Promise<number> {
-  if (defaultClienteIdCache !== null) return defaultClienteIdCache;
+function getTenant(req: Request): number {
+  const r = req as AuthRequest;
+  const idcliente = r.user?.idcliente ?? r.idcliente;
 
-  const repo = AppDataSource.getRepository(Cliente);
-  let cliente: Cliente | null = null;
-
-  try {
-    cliente = await repo.findOne({
-      where: { ativo: true as any },
-      order: { id: "ASC" as any },
-    });
-  } catch (err) {
-    console.log(
-      "[USUARIOS] Erro ao buscar cliente ativo (talvez coluna não exista ainda).",
-      err
-    );
+  if (typeof idcliente !== "number" || Number.isNaN(idcliente) || idcliente <= 0) {
+    throw new Error("TENANT_MISSING");
   }
-
-  if (!cliente) {
-    cliente = await repo.findOne({
-      order: { id: "ASC" as any },
-    });
-  }
-
-  if (!cliente) {
-    throw new Error(
-      "Nenhum cliente encontrado na tabela 'clientes'. Cadastre pelo menos um registro."
-    );
-  }
-
-  defaultClienteIdCache = cliente.id;
-  return defaultClienteIdCache;
+  return idcliente;
 }
 
 /**
- * Sempre que possível, usa o idcliente do token (authMiddleware).
- * Só cai no default (primeiro cliente) se não tiver nada no token.
+ * 🔒 Autorização simples.
+ * Ajuste os perfis conforme seu enum real.
+ * - ADMIN: pode gerenciar usuários
+ * - ATENDENTE: apenas listar (se você quiser)
  */
-async function getIdClienteFromRequest(req: Request): Promise<number> {
-  const authReq = req as AuthRequest;
+function ensureAdmin(req: Request) {
+  const r = req as AuthRequest;
+  const tipo = (r.user?.tipo ?? r.userTipo ?? "").toUpperCase();
 
-  if (authReq.idcliente && !Number.isNaN(Number(authReq.idcliente))) {
-    return Number(authReq.idcliente);
+  // Ajuste se seus perfis forem outros
+  const allowed = ["ADMIN", "GESTOR", "SUPERVISOR"];
+  if (!allowed.includes(tipo)) {
+    const err = new Error("FORBIDDEN");
+    (err as any).code = "FORBIDDEN";
+    throw err;
   }
-
-  // fallback legado
-  const envVal = process.env.DEFAULT_CLIENTE_ID;
-  if (envVal && !Number.isNaN(Number(envVal))) {
-    return Number(envVal);
-  }
-
-  return getDefaultClienteId();
 }
 
 // ====== Helpers gerais ======
@@ -79,42 +52,84 @@ function normalizarTelefone(telefone?: string | null): string | null {
 }
 
 function validarEmail(email?: string | null): boolean {
-  if (!email) return true; // se não informar, não travamos aqui
+  if (!email) return true;
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return re.test(email.trim());
+}
+
+function gerarSenhaTemporaria(): string {
+  // 10 chars base36 (boa e simples pro WhatsApp)
+  return crypto.randomBytes(8).toString("base64url").slice(0, 10);
+}
+
+async function validarDepartamentosDoCliente(idcliente: number, departamentosIds: number[]) {
+  if (!departamentosIds.length) return;
+
+  const repoDep = AppDataSource.getRepository(Departamento);
+
+  const deps = await repoDep
+    .createQueryBuilder("d")
+    .select(["d.id"])
+    .where("d.idcliente = :idcliente", { idcliente })
+    .andWhere("d.id IN (:...ids)", { ids: departamentosIds })
+    .getMany();
+
+  if (deps.length !== departamentosIds.length) {
+    throw new Error("DEPARTAMENTO_INVALIDO");
+  }
+}
+
+async function emailJaExisteNoCliente(params: {
+  idcliente: number;
+  email: string;
+  ignoreUserId?: string;
+}) {
+  const repo = AppDataSource.getRepository(Usuario);
+
+  const qb = repo
+    .createQueryBuilder("u")
+    .select(["u.id"])
+    .where("u.idcliente = :idcliente", { idcliente: params.idcliente })
+    .andWhere("LOWER(u.email) = :email", { email: params.email.toLowerCase() });
+
+  if (params.ignoreUserId) {
+    qb.andWhere("u.id <> :id", { id: params.ignoreUserId });
+  }
+
+  const found = await qb.getOne();
+  return !!found;
 }
 
 type UsuarioCreateBody = {
   nome: string;
   telefone?: string;
   email?: string;
-  senha?: string; // opcional na tela
+  senha?: string;
   perfil?: PerfilUsuario;
   ativo?: boolean;
-  departamentosIds?: number[]; // vínculos com setores
+  departamentosIds?: number[];
 };
 
 type UsuarioUpdateBody = {
   nome?: string;
   telefone?: string;
   email?: string;
-  senha?: string; // se enviado, troca a senha
+  senha?: string;
   perfil?: PerfilUsuario;
   ativo?: boolean;
   departamentosIds?: number[];
 };
 
-// ====== LISTAR USUÁRIOS ======
-
+// ====== LISTAR ======
+// (se quiser restringir a ADMIN também, é só descomentar ensureAdmin)
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const idcliente = await getIdClienteFromRequest(req);
+    const idcliente = getTenant(req);
     const repo = AppDataSource.getRepository(Usuario);
 
     const usuarios = await repo.find({
       where: { idcliente: idcliente as any },
       order: { criadoEm: "ASC" as any },
-      relations: ["cliente"],
     });
 
     return res.json(
@@ -130,16 +145,20 @@ router.get("/", async (req: Request, res: Response) => {
         atualizadoEm: u.atualizadoEm,
       }))
     );
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.message === "TENANT_MISSING") {
+      return res.status(401).json({ message: "Token inválido (idcliente ausente)." });
+    }
     console.error("[USUARIOS] Erro ao listar:", err);
     return res.status(500).json({ message: "Erro ao listar usuários." });
   }
 });
 
-// ====== CRIAR USUÁRIO ======
-
+// ====== CRIAR ======
 router.post("/", async (req: Request, res: Response) => {
   try {
+    ensureAdmin(req);
+
     const {
       nome,
       telefone,
@@ -151,39 +170,51 @@ router.post("/", async (req: Request, res: Response) => {
     } = req.body as UsuarioCreateBody;
 
     if (!nome || nome.trim().length < 3) {
-      return res
-        .status(400)
-        .json({ message: "Nome do usuário deve ter pelo menos 3 caracteres." });
+      return res.status(400).json({ message: "Nome do usuário deve ter pelo menos 3 caracteres." });
     }
 
     if (email && !validarEmail(email)) {
       return res.status(400).json({ message: "E-mail inválido." });
     }
 
-    const idcliente = await getIdClienteFromRequest(req);
+    const idcliente = getTenant(req);
     const repo = AppDataSource.getRepository(Usuario);
     const udRepo = AppDataSource.getRepository(UsuarioDepartamento);
 
-    // Se não informar senha pela tela, usamos uma senha padrão temporária
-    const senhaEmTexto =
-      (senha && senha.trim()) || "123456"; // <<< senha padrão TEMPORÁRIA
+    const emailNorm = email ? email.trim().toLowerCase() : null;
+
+    if (emailNorm) {
+      const exists = await emailJaExisteNoCliente({ idcliente, email: emailNorm });
+      if (exists) {
+        return res.status(409).json({ message: "Já existe um usuário com esse e-mail neste município." });
+      }
+    }
+
+    // ✅ senha temporária segura (não fixa 123456)
+    const senhaEmTexto = (senha && senha.trim()) ? senha.trim() : gerarSenhaTemporaria();
     const senhaHash = await bcrypt.hash(senhaEmTexto, 10);
 
     const usuario = repo.create({
       nome: nome.trim().toUpperCase(),
       telefone: normalizarTelefone(telefone),
-      email: email ? email.trim().toLowerCase() : null,
+      email: emailNorm,
       senhaHash,
       perfil: (perfil ?? "ATENDENTE") as PerfilUsuario,
-      ativo: ativo !== false, // default true
+      ativo: ativo !== false,
       idcliente,
     });
 
     await repo.save(usuario);
 
-    // Vincular aos departamentos, se foi enviado
-    if (Array.isArray(departamentosIds) && departamentosIds.length > 0) {
-      const vinculos: UsuarioDepartamento[] = departamentosIds.map((depId) =>
+    // Departamentos: valida se pertencem ao mesmo idcliente
+    const depsIds = Array.isArray(departamentosIds)
+      ? departamentosIds.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+      : [];
+
+    if (depsIds.length > 0) {
+      await validarDepartamentosDoCliente(idcliente, depsIds);
+
+      const vinculos = depsIds.map((depId) =>
         udRepo.create({
           usuarioId: usuario.id,
           departamentoId: depId,
@@ -191,16 +222,8 @@ router.post("/", async (req: Request, res: Response) => {
           principal: false,
         })
       );
-
       await udRepo.save(vinculos);
     }
-
-    console.log(
-      "[USUARIOS] Usuário criado com sucesso:",
-      usuario.id,
-      "idcliente=",
-      idcliente
-    );
 
     return res.status(201).json({
       id: usuario.id,
@@ -210,18 +233,29 @@ router.post("/", async (req: Request, res: Response) => {
       perfil: usuario.perfil,
       ativo: usuario.ativo,
       idcliente: usuario.idcliente,
+      // retorna apenas se foi gerada automaticamente (pra você mostrar UMA vez no painel)
       senhaTemporaria: senha ? undefined : senhaEmTexto,
     });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === "FORBIDDEN" || err?.message === "FORBIDDEN") {
+      return res.status(403).json({ message: "Sem permissão para gerenciar usuários." });
+    }
+    if (err?.message === "TENANT_MISSING") {
+      return res.status(401).json({ message: "Token inválido (idcliente ausente)." });
+    }
+    if (err?.message === "DEPARTAMENTO_INVALIDO") {
+      return res.status(400).json({ message: "Um ou mais departamentos são inválidos para este município." });
+    }
     console.error("[USUARIOS] Erro ao criar:", err);
     return res.status(500).json({ message: "Erro ao criar usuário." });
   }
 });
 
-// ====== ATUALIZAR USUÁRIO ======
-
+// ====== ATUALIZAR ======
 router.put("/:id", async (req: Request, res: Response) => {
   try {
+    ensureAdmin(req);
+
     const { id } = req.params;
     const {
       nome,
@@ -233,11 +267,10 @@ router.put("/:id", async (req: Request, res: Response) => {
       departamentosIds,
     } = req.body as UsuarioUpdateBody;
 
-    const idcliente = await getIdClienteFromRequest(req);
+    const idcliente = getTenant(req);
     const repo = AppDataSource.getRepository(Usuario);
     const udRepo = AppDataSource.getRepository(UsuarioDepartamento);
 
-    // Garante que o usuário seja do MESMO cliente
     const usuario = await repo.findOne({
       where: { id, idcliente: idcliente as any },
     });
@@ -247,9 +280,7 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
 
     if (nome && nome.trim().length < 3) {
-      return res
-        .status(400)
-        .json({ message: "Nome do usuário deve ter pelo menos 3 caracteres." });
+      return res.status(400).json({ message: "Nome do usuário deve ter pelo menos 3 caracteres." });
     }
 
     if (email && !validarEmail(email)) {
@@ -257,54 +288,53 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
 
     if (nome) usuario.nome = nome.trim().toUpperCase();
+
     if (telefone !== undefined) {
-      usuario.telefone = normalizarTelefone(telefone) ?? "";
-    }
-    if (email !== undefined) {
-      usuario.email = email ? email.trim().toLowerCase() : null;
-    }
-    if (perfil) {
-      usuario.perfil = perfil;
-    }
-    if (typeof ativo === "boolean") {
-      usuario.ativo = ativo;
+      usuario.telefone = normalizarTelefone(telefone);
     }
 
+    if (email !== undefined) {
+      const emailNorm = email ? email.trim().toLowerCase() : null;
+
+      if (emailNorm) {
+        const exists = await emailJaExisteNoCliente({ idcliente, email: emailNorm, ignoreUserId: usuario.id });
+        if (exists) {
+          return res.status(409).json({ message: "Já existe um usuário com esse e-mail neste município." });
+        }
+      }
+
+      usuario.email = emailNorm;
+    }
+
+    if (perfil) usuario.perfil = perfil;
+    if (typeof ativo === "boolean") usuario.ativo = ativo;
+
     if (senha && senha.trim()) {
-      const novaHash = await bcrypt.hash(senha.trim(), 10);
-      usuario.senhaHash = novaHash;
+      usuario.senhaHash = await bcrypt.hash(senha.trim(), 10);
     }
 
     await repo.save(usuario);
 
-    // Atualizar vínculos com departamentos, se veio no corpo
+    // Atualiza vínculos
     if (Array.isArray(departamentosIds)) {
-      // apaga vínculos antigos deste usuário para ESTE cliente
-      await udRepo.delete({
-        usuarioId: usuario.id,
-        idcliente: idcliente as any,
-      });
+      const depsIds = departamentosIds.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0);
 
-      if (departamentosIds.length > 0) {
-        const novosVinculos: UsuarioDepartamento[] = departamentosIds.map(
-          (depId) =>
-            udRepo.create({
-              usuarioId: usuario.id,
-              departamentoId: depId,
-              idcliente,
-              principal: false,
-            })
+      await udRepo.delete({ usuarioId: usuario.id, idcliente: idcliente as any });
+
+      if (depsIds.length > 0) {
+        await validarDepartamentosDoCliente(idcliente, depsIds);
+
+        const novos = depsIds.map((depId) =>
+          udRepo.create({
+            usuarioId: usuario.id,
+            departamentoId: depId,
+            idcliente,
+            principal: false,
+          })
         );
-        await udRepo.save(novosVinculos);
+        await udRepo.save(novos);
       }
     }
-
-    console.log(
-      "[USUARIOS] Usuário atualizado:",
-      usuario.id,
-      "idcliente=",
-      idcliente
-    );
 
     return res.json({
       id: usuario.id,
@@ -315,20 +345,30 @@ router.put("/:id", async (req: Request, res: Response) => {
       ativo: usuario.ativo,
       idcliente: usuario.idcliente,
     });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === "FORBIDDEN" || err?.message === "FORBIDDEN") {
+      return res.status(403).json({ message: "Sem permissão para gerenciar usuários." });
+    }
+    if (err?.message === "TENANT_MISSING") {
+      return res.status(401).json({ message: "Token inválido (idcliente ausente)." });
+    }
+    if (err?.message === "DEPARTAMENTO_INVALIDO") {
+      return res.status(400).json({ message: "Um ou mais departamentos são inválidos para este município." });
+    }
     console.error("[USUARIOS] Erro ao atualizar:", err);
     return res.status(500).json({ message: "Erro ao atualizar usuário." });
   }
 });
 
-// ====== DESATIVAR / REATIVAR RÁPIDO ======
-
+// ====== STATUS ======
 router.patch("/:id/status", async (req: Request, res: Response) => {
   try {
+    ensureAdmin(req);
+
     const { id } = req.params;
     const { ativo } = req.body as { ativo: boolean };
 
-    const idcliente = await getIdClienteFromRequest(req);
+    const idcliente = getTenant(req);
     const repo = AppDataSource.getRepository(Usuario);
 
     const usuario = await repo.findOne({
@@ -339,14 +379,17 @@ router.patch("/:id/status", async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Usuário não encontrado." });
     }
 
-    usuario.ativo = ativo;
+    usuario.ativo = !!ativo;
     await repo.save(usuario);
 
-    return res.json({
-      id: usuario.id,
-      ativo: usuario.ativo,
-    });
-  } catch (err) {
+    return res.json({ id: usuario.id, ativo: usuario.ativo });
+  } catch (err: any) {
+    if (err?.code === "FORBIDDEN" || err?.message === "FORBIDDEN") {
+      return res.status(403).json({ message: "Sem permissão para gerenciar usuários." });
+    }
+    if (err?.message === "TENANT_MISSING") {
+      return res.status(401).json({ message: "Token inválido (idcliente ausente)." });
+    }
     console.error("[USUARIOS] Erro ao alterar status:", err);
     return res.status(500).json({ message: "Erro ao alterar status." });
   }

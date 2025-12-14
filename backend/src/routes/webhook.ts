@@ -1,34 +1,99 @@
 // src/routes/webhook.ts
 import { Router, Request, Response } from "express";
+import crypto from "crypto";
 import { env } from "../config/env";
 import {
   IncomingMessage,
   handleCitizenMessage,
   handleAgentMessage,
-  isAgentNumber,
+  isAgentNumber,detectIsAgent
 } from "../services/sessionService";
+
+
+
 
 const router = Router();
 
 /**
- * Normaliza um número de telefone para somente dígitos.
- * Ex.: "+55 (94) 99123-4567" -> "559491234567"
+ * =========================
+ * Helpers
+ * =========================
  */
 function normalizePhone(phone: string | undefined | null): string {
   if (!phone) return "";
   return phone.replace(/\D/g, "");
 }
 
+function safeString(v: any): string {
+  if (v === null || v === undefined) return "";
+  return String(v);
+}
+
 /**
- * Mapeia a mensagem do WhatsApp (Cloud API) para nosso IncomingMessage.
- * - extrai texto ou interativo
- * - identifica tipo de mídia
- * - traz o phone_number_id para o sessionService descobrir o cliente
+ * Opcional: valida assinatura do Meta/WhatsApp.
+ * Para funcionar, você precisa ter o APP_SECRET no env, ex:
+ * env.whatsapp.appSecret (adicione no seu config/env)
+ *
+ * Header esperado: "x-hub-signature-256: sha256=<hash>"
  */
-function mapMessageToIncoming(
-  rawMessage: any,
-  phoneNumberId?: string
-): IncomingMessage {
+function verifyMetaSignature(req: Request): boolean {
+  const appSecret = (env as any)?.whatsapp?.appSecret || process.env.WHATSAPP_APP_SECRET;
+  if (!appSecret) return true; // se não configurou, não bloqueia
+
+  const header = req.headers["x-hub-signature-256"];
+  if (!header || typeof header !== "string") return false;
+
+  const [algo, signature] = header.split("=");
+  if (algo !== "sha256" || !signature) return false;
+
+  // ⚠️ IMPORTANTE: precisa do rawBody pra validar corretamente.
+  // Se você ainda não captura rawBody no express.json, então aqui
+  // tentamos um fallback usando JSON.stringify(body), que NÃO é perfeito.
+  // O ideal: configurar express.json({ verify: (req,res,buf)=> req.rawBody = buf })
+  const rawBody: Buffer | undefined = (req as any).rawBody;
+  const bodyForHmac = rawBody ? rawBody : Buffer.from(JSON.stringify(req.body || {}));
+
+  const expected = crypto
+    .createHmac("sha256", appSecret)
+    .update(bodyForHmac)
+    .digest("hex");
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Dedup simples em memória (TTL).
+ * - Evita processamento duplicado em reentregas.
+ * - Em multi-instância, o ideal é garantir dedupe também no banco (unique index).
+ */
+const DEDUPE_TTL_MS = 10 * 60 * 1000; // 10 min
+const dedupeMap = new Map<string, number>(); // msgId -> expiresAt
+
+function cleanupDedupe() {
+  const now = Date.now();
+  for (const [k, exp] of dedupeMap.entries()) {
+    if (exp <= now) dedupeMap.delete(k);
+  }
+}
+
+function alreadyProcessed(whatsappMessageId: string | undefined): boolean {
+  if (!whatsappMessageId) return false;
+  cleanupDedupe();
+  const now = Date.now();
+  const exp = dedupeMap.get(whatsappMessageId);
+  if (exp && exp > now) return true;
+  dedupeMap.set(whatsappMessageId, now + DEDUPE_TTL_MS);
+  return false;
+}
+
+/**
+ * Mapeia a mensagem do WhatsApp (Cloud API) para IncomingMessage.
+ */
+function mapMessageToIncoming(rawMessage: any, phoneNumberId?: string): IncomingMessage {
   const from = normalizePhone(rawMessage.from);
 
   let text: string | undefined;
@@ -37,8 +102,7 @@ function mapMessageToIncoming(
   let mimeType: string | undefined;
   let fileName: string | undefined;
 
-  // Tipo padrão recebido da API
-  const waType: string = rawMessage.type;
+  const waType: string = safeString(rawMessage.type);
 
   if (waType === "text") {
     tipo = "TEXT";
@@ -63,7 +127,6 @@ function mapMessageToIncoming(
     mimeType = rawMessage.document?.mime_type;
     fileName = rawMessage.document?.filename || undefined;
   } else if (waType === "interactive") {
-    // Botões / listas -> tratamos como TEXTO
     tipo = "TEXT";
     const interactive = rawMessage.interactive;
     if (interactive?.type === "button_reply") {
@@ -78,12 +141,11 @@ function mapMessageToIncoming(
         undefined;
     }
   } else {
-    // Qualquer outro tipo desconhecido: tratamos como TEXTO com fallback
     tipo = "TEXT";
     text = rawMessage.text?.body || undefined;
   }
 
-  const incoming: IncomingMessage = {
+  return {
     from,
     text,
     tipo,
@@ -93,14 +155,12 @@ function mapMessageToIncoming(
     fileName,
     phoneNumberId: phoneNumberId || undefined,
   };
-
-  return incoming;
 }
 
 /**
- * GET /webhook
- * Endpoint de verificação do Webhook do WhatsApp (Facebook).
- * Ele envia hub.mode, hub.verify_token e hub.challenge.
+ * =========================
+ * GET /webhook (verificação)
+ * =========================
  */
 router.get("/", (req: Request, res: Response) => {
   const mode = req.query["hub.mode"];
@@ -114,83 +174,99 @@ router.get("/", (req: Request, res: Response) => {
     return res.status(200).send(challenge);
   }
 
-  console.warn(
-    "[WEBHOOK] Verificação falhou. mode=",
-    mode,
-    " token=",
-    token
-  );
+  console.warn("[WEBHOOK] Verificação falhou.", { mode, token });
   return res.sendStatus(403);
 });
 
 /**
+ * =========================
  * POST /webhook
- * Recebe eventos de mensagens do WhatsApp Cloud API.
+ * =========================
+ *
+ * Estratégia:
+ * 1) Valida payload mínimo
+ * 2) RESPONDE 200 IMEDIATO (WhatsApp exige rápido)
+ * 3) Processa mensagens de forma assíncrona (setImmediate)
  */
-router.post("/", async (req: Request, res: Response) => {
+router.post("/", (req: Request, res: Response) => {
   const body = req.body;
 
-  // Estrutura padrão do WhatsApp Cloud API
+  // (Opcional) valida assinatura se você configurar APP_SECRET
+  // Se você quiser forçar, troque para: if (!verifyMetaSignature(req)) return res.sendStatus(403);
+  if (!verifyMetaSignature(req)) {
+    console.warn("[WEBHOOK] Assinatura inválida (x-hub-signature-256).");
+    // Para evitar travar sua operação se ainda não configurou rawBody, eu não bloqueio.
+    // Se quiser travar, descomente abaixo:
+    // return res.sendStatus(403);
+  }
+
+  // Não é WhatsApp payload? responde 200 e sai
   if (!body || body.object !== "whatsapp_business_account") {
-    // Não é payload do WhatsApp, apenas responde 200 para não gerar erro.
     return res.sendStatus(200);
   }
 
-  try {
-    const entries: any[] = body.entry || [];
+  // ✅ RESPONDE 200 AGORA (muito importante)
+  res.sendStatus(200);
 
-    for (const entry of entries) {
-      const changes: any[] = entry.changes || [];
+  // Processa depois de responder
+  setImmediate(async () => {
+    try {
+      const entries: any[] = body.entry || [];
 
-      for (const change of changes) {
-        const value = change.value;
-        if (!value) continue;
+      for (const entry of entries) {
+        const changes: any[] = entry.changes || [];
 
-        const phoneNumberId: string | undefined =
-          value.metadata?.phone_number_id || undefined;
+        for (const change of changes) {
+          const value = change.value;
+          if (!value) continue;
 
-        const messages: any[] = value.messages || [];
+          const phoneNumberId: string | undefined =
+            value.metadata?.phone_number_id || undefined;
 
-        for (const msg of messages) {
-          const fromRaw = msg.from;
-          const from = normalizePhone(fromRaw);
+          const messages: any[] = value.messages || [];
 
-          const incoming = mapMessageToIncoming(msg, phoneNumberId);
+          // Se vier somente statuses (sem messages), só loga de leve
+          const statuses: any[] = value.statuses || [];
+          if ((!messages || messages.length === 0) && statuses.length > 0) {
+            console.log("[WEBHOOK] Status recebido. count=", statuses.length);
+          }
 
-          // Decide se é um AGENTE ou um CIDADÃO com base nas sessões já carregadas
-          const isAgent = isAgentNumber(from);
+          for (const msg of messages) {
+            try {
+              const from = normalizePhone(msg.from);
+              const incoming = mapMessageToIncoming(msg, phoneNumberId);
 
-          console.log(
-            `[WEBHOOK] Mensagem recebida de ${from} tipo=${msg.type} phone_number_id=${phoneNumberId} isAgent=${isAgent}`
-          );
+              // Dedup por whatsappMessageId
+              if (alreadyProcessed(incoming.whatsappMessageId)) {
+                console.log(
+                  `[WEBHOOK] DEDUPE messageId=${incoming.whatsappMessageId} from=${from}`
+                );
+                continue;
+              }
 
-          if (isAgent) {
-            // Fluxo de atendente (painel)
-            await handleAgentMessage(incoming);
-          } else {
-            // Fluxo de cidadão
-            await handleCitizenMessage(incoming);
+              // Decide se é AGENTE ou CIDADÃO
+              const isAgent = await detectIsAgent(from, phoneNumberId);
+
+              console.log(
+                `[WEBHOOK] Mensagem recebida de ${from} tipo=${msg.type} phone_number_id=${phoneNumberId} isAgent=${isAgent} msgId=${incoming.whatsappMessageId}`
+              );
+
+              if (isAgent) {
+                await handleAgentMessage(incoming);
+              } else {
+                await handleCitizenMessage(incoming);
+              }
+            } catch (err) {
+              console.error("[WEBHOOK] Erro ao processar mensagem individual:", err);
+              // continua para a próxima mensagem
+            }
           }
         }
-
-        // Podemos ignorar "statuses" aqui ou tratar depois
-        const statuses: any[] = value.statuses || [];
-        if (statuses.length > 0) {
-          console.log(
-            "[WEBHOOK] Recebidos statuses:",
-            JSON.stringify(statuses)
-          );
-        }
       }
+    } catch (err) {
+      console.error("[WEBHOOK] Erro ao processar payload:", err);
     }
-
-    // WhatsApp exige resposta 200 rápida
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("[WEBHOOK] Erro ao processar payload:", err);
-    // Ainda assim retornamos 200 para não o WhatsApp não ficar re-tentando indefinidamente
-    return res.sendStatus(200);
-  }
+  });
 });
 
 export default router;

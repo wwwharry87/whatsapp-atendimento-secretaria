@@ -3,14 +3,31 @@ import { AppDataSource } from "../database/data-source";
 import { HorarioAtendimento } from "../entities/HorarioAtendimento";
 import { Cliente } from "../entities/Cliente";
 
-// ====================== CLIENTE (LOCAL AO MÓDULO) ======================
+// ====================== CACHE (TTL curto) ======================
+
+type CacheEntry = {
+  expiresAt: number;
+  registros: HorarioAtendimento[];
+  source: "DEPARTAMENTO" | "GERAL" | "NONE";
+};
+
+const CACHE_TTL_MS = 60 * 1000; // 60s (ajustável)
+const horariosCache = new Map<string, CacheEntry>();
+
+function cacheKey(idcliente: number, departamentoId?: number | null) {
+  return `${idcliente}::${departamentoId ?? "GERAL"}`;
+}
+
+export function clearHorarioCache() {
+  horariosCache.clear();
+}
+
+// ====================== CLIENTE (APENAS FALLBACK) ======================
 
 let defaultClienteIdCache: number | null = null;
 
 async function getDefaultClienteId(): Promise<number> {
-  if (defaultClienteIdCache !== null) {
-    return defaultClienteIdCache;
-  }
+  if (defaultClienteIdCache !== null) return defaultClienteIdCache;
 
   const repo = AppDataSource.getRepository(Cliente);
 
@@ -29,9 +46,7 @@ async function getDefaultClienteId(): Promise<number> {
   }
 
   if (!cliente) {
-    cliente = await repo.findOne({
-      order: { id: "ASC" as any },
-    });
+    cliente = await repo.findOne({ order: { id: "ASC" as any } });
   }
 
   if (!cliente) {
@@ -44,40 +59,71 @@ async function getDefaultClienteId(): Promise<number> {
   return defaultClienteIdCache;
 }
 
-// ====================== HELPERS DE TEMPO/HORÁRIO ======================
-
-/**
- * Horário em São Paulo (usado em saudação e horários de atendimento)
- */
-function getNowInSaoPaulo() {
-  try {
-    const agoraBR = new Date(
-      new Date().toLocaleString("pt-BR", {
-        timeZone: "America/Sao_Paulo",
-      })
-    );
-    const hora = agoraBR.getHours();
-    const minuto = agoraBR.getMinutes();
-    const minutosDia = hora * 60 + minuto;
-    const diaSemana = agoraBR.getDay(); // 0 = DOM, 6 = SAB
-    const mapDia = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"] as const;
-    const diaCodigo = mapDia[diaSemana] ?? "DOM";
-    return { agoraBR, hora, minuto, minutosDia, diaSemana, diaCodigo };
-  } catch {
-    const now = new Date();
-    const hora = now.getHours();
-    const minuto = now.getMinutes();
-    const minutosDia = hora * 60 + minuto;
-    const diaSemana = now.getDay();
-    const mapDia = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"] as const;
-    const diaCodigo = mapDia[diaSemana] ?? "DOM";
-    return { agoraBR: now, hora, minuto, minutosDia, diaSemana, diaCodigo };
+async function resolveEffectiveClienteId(idcliente?: number): Promise<number> {
+  // Ideal: SEMPRE passar idcliente.
+  // Mantemos fallback apenas pra não quebrar chamadas antigas.
+  if (typeof idcliente === "number" && Number.isFinite(idcliente) && idcliente > 0) {
+    return idcliente;
   }
+
+  const fallback = await getDefaultClienteId();
+  console.warn("[HORARIO] idcliente ausente. Usando fallback cliente=", fallback);
+  return fallback;
 }
 
-/**
- * Saudação baseada no horário (fuso: America/Sao_Paulo)
- */
+// ====================== HORÁRIO (TIMEZONE seguro) ======================
+
+const WEEKDAY_MAP: Record<string, string> = {
+  Sun: "DOM",
+  Mon: "SEG",
+  Tue: "TER",
+  Wed: "QUA",
+  Thu: "QUI",
+  Fri: "SEX",
+  Sat: "SAB",
+};
+
+function getNowInSaoPaulo() {
+  const now = new Date();
+
+  // Usar Intl com timeZone para extrair partes confiáveis
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = fmt.formatToParts(now);
+  const wd = parts.find((p) => p.type === "weekday")?.value || "Sun";
+  const hourStr = parts.find((p) => p.type === "hour")?.value || "00";
+  const minStr = parts.find((p) => p.type === "minute")?.value || "00";
+
+  const hora = Number(hourStr);
+  const minuto = Number(minStr);
+  const minutosDia = hora * 60 + minuto;
+  const diaCodigo = WEEKDAY_MAP[wd] ?? "DOM";
+
+  // diaSemana numérico (0-6) não é essencial, mas mantemos compatível
+  const diaSemana =
+    diaCodigo === "DOM"
+      ? 0
+      : diaCodigo === "SEG"
+      ? 1
+      : diaCodigo === "TER"
+      ? 2
+      : diaCodigo === "QUA"
+      ? 3
+      : diaCodigo === "QUI"
+      ? 4
+      : diaCodigo === "SEX"
+      ? 5
+      : 6;
+
+  return { agoraBR: now, hora, minuto, minutosDia, diaSemana, diaCodigo };
+}
+
 export function getSaudacaoPorHorario(): string {
   const { hora } = getNowInSaoPaulo();
   if (hora >= 4 && hora < 12) return "Bom dia";
@@ -86,7 +132,7 @@ export function getSaudacaoPorHorario(): string {
 }
 
 /**
- * Regra padrão de horário de atendimento humano (fallback 08–18h, seg–sex)
+ * Regra padrão segura: Seg–Sex 08:00–18:00
  */
 function isOutOfBusinessHoursFallback(): boolean {
   const { diaSemana, hora } = getNowInSaoPaulo();
@@ -95,58 +141,100 @@ function isOutOfBusinessHoursFallback(): boolean {
   return false;
 }
 
-// ====================== HORÁRIOS (BANCO) ======================
+// ====================== FETCH (com cache) ======================
+
+async function getHorariosAtivos(idcliente: number, departamentoId?: number | null) {
+  const key = cacheKey(idcliente, departamentoId);
+  const now = Date.now();
+
+  const cached = horariosCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached;
+  }
+
+  const horarioRepo = AppDataSource.getRepository(HorarioAtendimento);
+
+  // 1) horário específico do departamento
+  if (departamentoId != null) {
+    const depRegs = await horarioRepo.find({
+      where: {
+        idcliente: idcliente as any,
+        departamentoId: departamentoId as any,
+        ativo: true as any,
+      },
+      order: { id: "ASC" as any },
+    });
+
+    if (depRegs.length > 0) {
+      const entry: CacheEntry = {
+        expiresAt: now + CACHE_TTL_MS,
+        registros: depRegs,
+        source: "DEPARTAMENTO",
+      };
+      horariosCache.set(key, entry);
+      return entry;
+    }
+  }
+
+  // 2) horário geral do cliente (departamentoId = null)
+  const geralRegs = await horarioRepo.find({
+    where: {
+      idcliente: idcliente as any,
+      departamentoId: null as any,
+      ativo: true as any,
+    },
+    order: { id: "ASC" as any },
+  });
+
+  if (geralRegs.length > 0) {
+    const entry: CacheEntry = {
+      expiresAt: now + CACHE_TTL_MS,
+      registros: geralRegs,
+      source: "GERAL",
+    };
+    horariosCache.set(key, entry);
+    return entry;
+  }
+
+  // 3) nenhum registro -> retorna NONE (sem considerar 24x7 aberto)
+  const entry: CacheEntry = {
+    expiresAt: now + CACHE_TTL_MS,
+    registros: [],
+    source: "NONE",
+  };
+  horariosCache.set(key, entry);
+  return entry;
+}
+
+// ====================== HORÁRIOS (REGRA) ======================
 
 export async function isOutOfBusinessHoursDB(params: {
   idcliente?: number;
   departamentoId?: number | null;
 }): Promise<boolean> {
-  const horarioRepo = AppDataSource.getRepository(HorarioAtendimento);
   const { minutosDia, diaCodigo } = getNowInSaoPaulo();
 
   try {
-    const effectiveClienteId =
-      params.idcliente ?? (await getDefaultClienteId());
+    const effectiveClienteId = await resolveEffectiveClienteId(params.idcliente);
 
-    let registros: HorarioAtendimento[] = [];
+    const entry = await getHorariosAtivos(effectiveClienteId, params.departamentoId);
 
-    // 1) Tenta horário específico do setor
-    if (params.departamentoId != null) {
-      registros = await horarioRepo.find({
-        where: {
-          idcliente: effectiveClienteId as any,
-          departamentoId: params.departamentoId as any,
-          ativo: true as any,
-        },
-        order: { id: "ASC" as any },
-      });
-    }
-
-    // 2) Se não houver, usa horário geral do cliente (departamentoId = null)
-    if (!registros || registros.length === 0) {
-      registros = await horarioRepo.find({
-        where: {
-          idcliente: effectiveClienteId as any,
-          departamentoId: null as any,
-          ativo: true as any,
-        },
-        order: { id: "ASC" as any },
-      });
-    }
-
-    // 3) Se ainda assim não houver registro, considera 24x7 (dentro do horário)
-    if (!registros || registros.length === 0) {
+    // Se não há configuração, usa fallback seguro (não 24x7)
+    if (!entry.registros || entry.registros.length === 0) {
+      const fallback = isOutOfBusinessHoursFallback();
       console.log(
-        "[HORARIO] Nenhum horário configurado para idcliente=",
+        "[HORARIO] Sem horários configurados. Usando fallback padrão.",
+        "idcliente=",
         effectiveClienteId,
         "departamentoId=",
         params.departamentoId,
-        ". Considerando 24x7 (dentro do horário)."
+        "fora?=",
+        fallback
       );
-      return false;
+      return fallback;
     }
 
-    const ativosHoje = registros.filter((h) => {
+    const ativosHoje = entry.registros.filter((h) => {
       if (!h.diasSemana) return false;
       const dias = h.diasSemana
         .split(",")
@@ -155,10 +243,7 @@ export async function isOutOfBusinessHoursDB(params: {
       return dias.includes(diaCodigo);
     });
 
-    if (ativosHoje.length === 0) {
-      // Sem nenhum registro pra esse dia → fora do horário
-      return true;
-    }
+    if (ativosHoje.length === 0) return true;
 
     const dentroDeAlgum = ativosHoje.some((h) => {
       if (!h.inicio || !h.fim) return false;
@@ -178,27 +263,28 @@ export async function isOutOfBusinessHoursDB(params: {
       const minIni = hIni * 60 + mIni;
       const minFim = hFim * 60 + mFim;
 
-      // janela simples (não cruza meia-noite)
-      if (minFim > minIni) {
-        return minutosDia >= minIni && minutosDia < minFim;
-      }
+      // janela simples
+      if (minFim > minIni) return minutosDia >= minIni && minutosDia < minFim;
 
-      // janela que cruza a meia-noite (ex: 22:00–02:00)
+      // cruza meia-noite
       return minutosDia >= minIni || minutosDia < minFim;
     });
 
     const fora = !dentroDeAlgum;
     console.log(
-      "[HORARIO] Cálculo DB: idcliente=",
+      "[HORARIO] Cálculo DB:",
+      "idcliente=",
       effectiveClienteId,
-      "departamentoId=",
+      "dep=",
       params.departamentoId,
       "dia=",
       diaCodigo,
-      "minutosDia=",
+      "minDia=",
       minutosDia,
       "fora?=",
-      fora
+      fora,
+      "source=",
+      entry.source
     );
 
     return fora;
@@ -266,70 +352,40 @@ function formatHorariosRegistros(registros: HorarioAtendimento[]): string {
 
   const max = 4;
   const limited = parts.slice(0, max);
-  const suffix =
-    parts.length > max ? " | +" + (parts.length - max) + " períodos" : "";
+  const suffix = parts.length > max ? ` | +${parts.length - max} períodos` : "";
   return limited.join(" | ") + suffix;
 }
 
-/**
- * Monta o texto amigável com o(s) horário(s) configurados no banco.
- * Se não tiver nada cadastado, cai num texto padrão.
- */
 export async function getHorarioAtendimentoTexto(params: {
   idcliente?: number;
   departamentoId?: number | null;
   prefix?: string;
 }): Promise<string> {
-  const horarioRepo = AppDataSource.getRepository(HorarioAtendimento);
-  const effectiveClienteId =
-    params.idcliente ?? (await getDefaultClienteId());
+  try {
+    const effectiveClienteId = await resolveEffectiveClienteId(params.idcliente);
 
-  let registros: HorarioAtendimento[] = [];
+    const entry = await getHorariosAtivos(effectiveClienteId, params.departamentoId);
 
-  if (params.departamentoId != null) {
-    registros = await horarioRepo.find({
-      where: {
-        idcliente: effectiveClienteId as any,
-        departamentoId: params.departamentoId as any,
-        ativo: true as any,
-      },
-      order: { id: "ASC" as any },
-    });
-  }
+    const prefix =
+      params.prefix ??
+      (params.departamentoId != null ? "🕘 Expediente do setor" : "🕘 Expediente");
 
-  if (!registros || registros.length === 0) {
-    registros = await horarioRepo.find({
-      where: {
-        idcliente: effectiveClienteId as any,
-        departamentoId: null as any,
-        ativo: true as any,
-      },
-      order: { id: "ASC" as any },
-    });
-  }
+    if (!entry.registros || entry.registros.length === 0) {
+      return `${prefix}: Seg–Sex 08:00–18:00.`;
+    }
 
-  const prefix =
-    params.prefix ??
-    (params.departamentoId != null
-      ? "🕘 Expediente do setor"
-      : "🕘 Expediente");
-
-  if (!registros || registros.length === 0) {
-    // Segurança: se não achar nada, usa texto padrão
+    const resumo = formatHorariosRegistros(entry.registros);
+    return resumo ? `${prefix}: ${resumo}.` : `${prefix}: Seg–Sex 08:00–18:00.`;
+  } catch (err) {
+    console.error("[HORARIO] Erro ao montar texto de horário:", err);
+    const prefix =
+      params.prefix ??
+      (params.departamentoId != null ? "🕘 Expediente do setor" : "🕘 Expediente");
     return `${prefix}: Seg–Sex 08:00–18:00.`;
   }
-
-  const resumo = formatHorariosRegistros(registros);
-  return resumo ? `${prefix}: ${resumo}.` : `${prefix}: Seg–Sex 08:00–18:00.`;
 }
 
-/**
- * Limpa o texto de horário para usar em mensagens da IA / templates
- * (remove emojis, markdown e espaços extras, mantendo só a frase).
- */
-export function sanitizeHorarioLabel(
-  horarioTxt?: string | null
-): string | null {
+export function sanitizeHorarioLabel(horarioTxt?: string | null): string | null {
   const t = String(horarioTxt || "").trim();
   if (!t) return null;
   return t

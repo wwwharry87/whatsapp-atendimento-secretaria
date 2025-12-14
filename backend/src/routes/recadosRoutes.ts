@@ -13,8 +13,8 @@ import {
 } from "../services/whatsappService";
 import { getOrganizationStyle, HumanMessagesService } from "../services/humanMessages";
 import { AuthRequest } from "../middlewares/authMiddleware";
-// Importante: Invalida o cache para a IA assumir o controle na próxima mensagem
-import { invalidateSessionCache } from "../services/sessionState"; 
+import { invalidateSessionCache } from "../services/sessionState";
+import { ensureProtocolForSession } from "../services/protocolService";
 
 const router = Router();
 
@@ -24,7 +24,9 @@ const router = Router();
 function resolveIdCliente(req: Request): number {
   const r = req as AuthRequest & { user?: any };
 
-  if (typeof r.idcliente === "number" && !Number.isNaN(Number(r.idcliente))) return Number(r.idcliente);
+  if (typeof (r as any).idcliente === "number" && !Number.isNaN(Number((r as any).idcliente)))
+    return Number((r as any).idcliente);
+
   if (r.user && typeof r.user.idcliente === "number") return Number(r.user.idcliente);
 
   const headerVal = (req.headers["x-id-cliente"] || "").toString();
@@ -43,34 +45,6 @@ function resolveIdCliente(req: Request): number {
 }
 
 /**
- * Gera protocolo: ATD-YYYYMMDD-XXXXXX
- */
-function generateProtocol(atendimentoId: string): string {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  const short = atendimentoId.replace(/-/g, "").slice(0, 6).toUpperCase();
-  return `ATD-${yyyy}${mm}${dd}-${short}`;
-}
-
-/**
- * Garante protocolo no banco
- */
-async function ensureProtocolo(atendimento: Atendimento): Promise<string | null> {
-  const repoAtendimento = AppDataSource.getRepository(Atendimento);
-  let protocolo = atendimento.protocolo || null;
-
-  if (!protocolo) {
-    protocolo = generateProtocol(atendimento.id);
-    await repoAtendimento.update(atendimento.id, { protocolo });
-    (atendimento as any).protocolo = protocolo;
-  }
-
-  return protocolo;
-}
-
-/**
  * GET /recados
  * Lista recados para o painel
  */
@@ -84,19 +58,26 @@ router.get("/", async (req: Request, res: Response) => {
     const page = req.query.page ? Number(req.query.page) : 1;
     const perPage = req.query.perPage ? Number(req.query.perPage) : 20;
 
-    // Status que o painel considera como "Recados"
-    // Incluímos OFFLINE_POST_AGENT_RESPONSE para o agente ver que está aguardando nota
+    // ✅ Inclui WAITING_AGENT porque seu timer muda LEAVE_MESSAGE -> WAITING_AGENT
     let statuses: any[] = [
-      "LEAVE_MESSAGE", 
-      "LEAVE_MESSAGE_DECISION", 
+      "LEAVE_MESSAGE",
+      "LEAVE_MESSAGE_DECISION",
+      "WAITING_AGENT",
       "OFFLINE_POST_AGENT_RESPONSE",
-      "OFFLINE_RATING" 
+      "OFFLINE_RATING",
     ];
 
     if (statusParam === "encerrados") {
       statuses = ["FINISHED"];
     } else if (statusParam === "todos") {
-      statuses = ["LEAVE_MESSAGE", "LEAVE_MESSAGE_DECISION", "OFFLINE_POST_AGENT_RESPONSE", "OFFLINE_RATING", "FINISHED"];
+      statuses = [
+        "LEAVE_MESSAGE",
+        "LEAVE_MESSAGE_DECISION",
+        "WAITING_AGENT",
+        "OFFLINE_POST_AGENT_RESPONSE",
+        "OFFLINE_RATING",
+        "FINISHED",
+      ];
     }
 
     const idcliente = resolveIdCliente(req);
@@ -119,7 +100,9 @@ router.get("/", async (req: Request, res: Response) => {
       );
     }
 
-    qb.orderBy("a.criadoEm", "DESC")
+    // ✅ Ordena por atualizadoEm primeiro (mais útil pro painel)
+    qb.orderBy("a.atualizado_em", "DESC")
+      .addOrderBy("a.criado_em", "DESC")
       .skip((page - 1) * perPage)
       .take(perPage);
 
@@ -128,12 +111,12 @@ router.get("/", async (req: Request, res: Response) => {
     const data = items.map((a) => ({
       id: a.id,
       protocolo: a.protocolo || null,
-      cidadaoNome: a.cidadaoNome,
-      cidadaoNumero: a.cidadaoNumero,
-      departamentoId: a.departamentoId,
-      departamentoNome: a.departamento ? a.departamento.nome : null,
+      cidadaoNome: (a as any).cidadaoNome,
+      cidadaoNumero: (a as any).cidadaoNumero,
+      departamentoId: (a as any).departamentoId,
+      departamentoNome: (a as any).departamento ? (a as any).departamento.nome : null,
       status: a.status,
-      criadoEm: a.criadoEm,
+      criadoEm: (a as any).criadoEm,
       atualizadoEm: (a as any).atualizadoEm,
       encerradoEm: (a as any).encerradoEm,
     }));
@@ -156,9 +139,9 @@ router.get("/:id", async (req: Request, res: Response) => {
     const repoMensagem = AppDataSource.getRepository(Mensagem);
     const idcliente = resolveIdCliente(req);
 
-    const atendimento = await repoAtendimento.findOne({ 
-        where: { id, idcliente } as any, 
-        relations: ["departamento"] 
+    const atendimento = await repoAtendimento.findOne({
+      where: { id, idcliente } as any,
+      relations: ["departamento"],
     });
 
     if (!atendimento) {
@@ -170,7 +153,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       order: { criadoEm: "ASC" as any },
     });
 
-    const detalhe = {
+    res.json({
       ...atendimento,
       mensagens: mensagens.map((m) => ({
         id: m.id,
@@ -179,12 +162,11 @@ router.get("/:id", async (req: Request, res: Response) => {
         conteudoTexto: m.conteudoTexto,
         criadoEm: (m as any).criadoEm,
         remetenteNumero: (m as any).remetenteNumero,
-        mediaUrl: m.mediaUrl, // Importante para o painel mostrar mídia
-        mimeType: m.mimeType
+        mediaUrl: m.mediaUrl,
+        mimeType: m.mimeType,
+        fileName: (m as any).fileName,
       })),
-    };
-
-    res.json(detalhe);
+    });
   } catch (err) {
     console.error("[RECADOS] Erro ao carregar recado:", err);
     res.status(500).json({ error: "Erro ao carregar recado." });
@@ -198,6 +180,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 router.post("/:id/responder", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+
     const {
       mensagem,
       agenteNome,
@@ -216,27 +199,32 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
 
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
-    const idclienteResolved = resolveIdCliente(req);
+    const idclienteReq = resolveIdCliente(req);
 
-    const atendimento = await repoAtendimento.findOne({ 
-        where: { id, idcliente: idclienteResolved } as any, 
-        relations: ["departamento"] 
+    const atendimento = await repoAtendimento.findOne({
+      where: { id, idcliente: idclienteReq } as any,
+      relations: ["departamento"],
     });
 
     if (!atendimento) return res.status(404).json({ error: "Atendimento não encontrado." });
 
-    const idcliente = (atendimento as any).idcliente;
-    const numeroCidadao = atendimento.cidadaoNumero;
-    const protocolo = await ensureProtocolo(atendimento);
+    // ✅ Use sempre o idcliente do atendimento (fonte da verdade)
+    const idcliente = (atendimento as any).idcliente as number;
+    const numeroCidadao = (atendimento as any).cidadaoNumero as string;
 
-    // Mensagem de "Aviso de Resposta" (Humanizada)
+    // ✅ garante protocolo padronizado (serviço único do projeto)
+    const protocolo = await ensureProtocolForSession({
+      atendimentoId: atendimento.id,
+      protocolo: (atendimento as any).protocolo,
+      status: atendimento.status,
+    });
+
+    // Opcional: aviso humanizado antes da resposta (se quiser reativar)
+    /*
     const clienteRepo = AppDataSource.getRepository(Cliente);
     const cliente = await clienteRepo.findOne({ where: { id: Number(idcliente) } });
     const org = getOrganizationStyle({ displayName: cliente?.nome ?? null, orgTipo: null });
-    
-    // Opcional: Se quiser avisar "Chegou recado", descomente abaixo. 
-    // Muitas vezes o agente só quer responder direto sem o aviso prévio.
-    /*
+
     const aviso = HumanMessagesService.recadoToCitizen({
       org,
       citizenName: (atendimento as any).cidadaoNome,
@@ -247,7 +235,7 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
     await sendTextMessage(numeroCidadao, aviso, { idcliente });
     */
 
-    // Preparar Envio
+    // Determina tipo de mensagem
     let tipoMensagem = "TEXT";
     if (mediaId) {
       if (tipoMidia) tipoMensagem = tipoMidia;
@@ -257,15 +245,13 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       else tipoMensagem = "DOCUMENT";
     }
 
-    // Enviar Texto
+    // Envia texto
     if (mensagem && mensagem.trim()) {
-      const corpo = agenteNome 
-        ? `🧑‍💼 *${agenteNome}*:\n${mensagem.trim()}` 
-        : mensagem.trim();
+      const corpo = agenteNome ? `🧑‍💼 *${agenteNome}*:\n${mensagem.trim()}` : mensagem.trim();
       await sendTextMessage(numeroCidadao, corpo, { idcliente });
     }
 
-    // Enviar Mídia
+    // Envia mídia
     if (mediaId) {
       const opts = { idcliente };
       if (tipoMensagem === "IMAGE") await sendImageMessageById(numeroCidadao, mediaId, opts);
@@ -274,8 +260,8 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       else await sendDocumentMessageById(numeroCidadao, mediaId, opts);
     }
 
-    // Salvar no Banco
-    const msg = repoMensagem.create({
+    // Salva no banco
+    const msgEntity = repoMensagem.create({
       idcliente,
       atendimentoId: atendimento.id,
       direcao: "AGENT",
@@ -287,18 +273,24 @@ router.post("/:id/responder", async (req: Request, res: Response) => {
       fileName: fileName || null,
       fileSize: fileSize ?? null,
       remetenteNumero: agenteNumero || (atendimento as any).agenteNumero || "PAINEL",
-      comandoDescricao: "Resposta via Painel"
+      comandoDescricao: "Resposta via Painel",
     } as any);
 
-    await repoMensagem.save(msg);
+    await repoMensagem.save(msgEntity);
 
-    // Atualizar dados do agente
-    const upd: any = {};
+    // Atualiza dados do agente + atualizadoEm
+    const upd: any = {
+      atualizadoEm: new Date(),
+    };
     if (agenteNome) upd.agenteNome = agenteNome;
     if (agenteNumero) upd.agenteNumero = agenteNumero;
-    if (Object.keys(upd).length > 0) await repoAtendimento.update(atendimento.id, upd);
 
-    res.json({ ok: true });
+    await repoAtendimento.update(atendimento.id, upd);
+
+    // ✅ invalida cache do cidadão para o bot recarregar status/agente se ele responder
+    invalidateSessionCache(numeroCidadao);
+
+    res.json({ ok: true, protocolo });
   } catch (err) {
     console.error("[RECADOS] Erro ao responder:", err);
     res.status(500).json({ error: "Erro ao responder." });
@@ -312,103 +304,116 @@ router.patch("/:id/transferir", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { departamentoId, agenteNome, agenteNumero } = req.body;
+
     const repo = AppDataSource.getRepository(Atendimento);
     const idcliente = resolveIdCliente(req);
 
     const atendimento = await repo.findOne({ where: { id, idcliente } as any });
     if (!atendimento) return res.status(404).json({ error: "Não encontrado" });
 
-    const upd: any = {};
+    const upd: any = { atualizadoEm: new Date() };
     if (departamentoId) upd.departamentoId = departamentoId;
     if (agenteNome) upd.agenteNome = agenteNome;
     if (agenteNumero) upd.agenteNumero = agenteNumero;
 
     await repo.update(id, upd);
+
+    // ✅ invalida cache para refletir a transferência no bot
+    invalidateSessionCache((atendimento as any).cidadaoNumero);
+
     res.json({ ok: true });
   } catch (err) {
+    console.error("[RECADOS] Erro ao transferir:", err);
     res.status(500).json({ error: "Erro ao transferir" });
   }
 });
 
-/**
- * PATCH /recados/:id/concluir
- * * AQUI ESTÁ O SEGREDO DO "TOP DO BRASIL":
- * 1. Não encerra o chamado (FINISHED) ainda.
- * 2. Muda o status para OFFLINE_POST_AGENT_RESPONSE.
- * 3. Envia a pergunta de satisfação para o Cidadão.
- * 4. A IA (aiFlowService) vai ler a resposta e pedir a nota.
- */
-router.patch("/:id/concluir", async (req: Request, res: Response) => {
+async function concluirHandler(req: Request, res: Response) {
   try {
     const { id } = req.params;
-    // Ignoramos inputs manuais de nota aqui, pois vamos pedir ao cidadão
 
     const repoAtendimento = AppDataSource.getRepository(Atendimento);
     const repoMensagem = AppDataSource.getRepository(Mensagem);
-    const idcliente = resolveIdCliente(req);
+    const idclienteReq = resolveIdCliente(req);
 
-    const atendimento = await repoAtendimento.findOne({ 
-        where: { id, idcliente } as any,
-        relations: ["departamento"]
+    const atendimento = await repoAtendimento.findOne({
+      where: { id, idcliente: idclienteReq } as any,
+      relations: ["departamento"],
     });
 
     if (!atendimento) return res.status(404).json({ error: "Atendimento não encontrado." });
 
-    const protocolo = await ensureProtocolo(atendimento);
+    const idcliente = (atendimento as any).idcliente as number;
+    const numeroCidadao = (atendimento as any).cidadaoNumero as string;
 
-    // 1. Mudar Status para iniciar fluxo de Pesquisa
-    // Esse status avisa o sessionService que estamos aguardando "Sim/Não"
-    const novoStatus = "OFFLINE_POST_AGENT_RESPONSE";
+    // ✅ Se já está em pesquisa/nota/encerrado, não re-dispara
+    const st = String(atendimento.status || "").toUpperCase();
+    if (st === "OFFLINE_POST_AGENT_RESPONSE" || st === "OFFLINE_RATING" || st === "FINISHED") {
+      return res.json({
+        ok: true,
+        message: "Atendimento já está em fase de pesquisa/encerramento.",
+        protocolo: (atendimento as any).protocolo || null,
+        status: atendimento.status,
+      });
+    }
 
-    await repoAtendimento.update(atendimento.id, {
-      status: novoStatus as AtendimentoStatus,
-      // Não colocamos 'encerradoEm' ainda, só quando a IA finalizar a pesquisa
+    const protocolo = await ensureProtocolForSession({
+      atendimentoId: atendimento.id,
+      protocolo: (atendimento as any).protocolo,
+      status: atendimento.status,
     });
 
-    // 2. Enviar Pergunta de Satisfação no WhatsApp
-    // Texto bem claro e objetivo
-    const msgSatisfacao = 
+    // ✅ muda status e atualiza atualizadoEm
+    const novoStatus = "OFFLINE_POST_AGENT_RESPONSE";
+    await repoAtendimento.update(atendimento.id, {
+      status: novoStatus as AtendimentoStatus,
+      atualizadoEm: new Date(),
+    } as any);
+
+    // ✅ mensagem padrão clara (o novo aiFlowService trata a resposta)
+    const msgSatisfacao =
       `✅ A equipe registrou a conclusão do atendimento (Protocolo: *${protocolo}*).\n\n` +
       `Sua solicitação foi resolvida?\n\n` +
       `1 - Sim, foi resolvida ✅\n` +
       `2 - Não, ainda preciso de ajuda ❌`;
 
-    await sendTextMessage(atendimento.cidadaoNumero, msgSatisfacao, {
-      idcliente: Number(idcliente),
-    });
+    await sendTextMessage(numeroCidadao, msgSatisfacao, { idcliente });
 
-    // 3. Salvar essa mensagem no histórico (tipo IA/SISTEMA)
+    // salva no histórico como IA/SISTEMA
     const msgSis = repoMensagem.create({
-        idcliente: Number(idcliente),
-        atendimentoId: atendimento.id,
-        direcao: "IA", // Sistema enviando
-        tipo: "TEXT",
-        conteudoTexto: msgSatisfacao,
-        remetenteNumero: "SISTEMA",
-        comandoDescricao: "Disparo automático de Pesquisa de Satisfação"
+      idcliente,
+      atendimentoId: atendimento.id,
+      direcao: "IA",
+      tipo: "TEXT",
+      conteudoTexto: msgSatisfacao,
+      remetenteNumero: "SISTEMA",
+      comandoDescricao: "Disparo automático de Pesquisa de Satisfação",
     } as any);
+
     await repoMensagem.save(msgSis);
 
-    // 4. INVALIDAR CACHE (Fundamental)
-    // Isso obriga o bot a recarregar o atendimento do banco quando o cidadão responder "1" ou "2".
-    invalidateSessionCache(atendimento.cidadaoNumero);
+    // ✅ invalida cache: próxima msg do cidadão cai no status OFFLINE_POST_AGENT_RESPONSE
+    invalidateSessionCache(numeroCidadao);
 
-    res.json({
+    return res.json({
       ok: true,
       message: "Atendimento marcado como concluído. Pesquisa de satisfação enviada.",
       protocolo,
     });
   } catch (err) {
     console.error("[RECADOS] Erro ao concluir recado:", err);
-    res.status(500).json({ error: "Erro ao concluir recado." });
+    return res.status(500).json({ error: "Erro ao concluir recado." });
   }
-});
+}
 
-// Suporte a POST também para concluir (alguns frontends usam POST)
-router.post("/:id/concluir", async (req, res) => {
-    // Reutiliza a lógica do PATCH
-    // @ts-ignore
-    return router.stack.find(layer => layer.route && layer.route.path === '/:id/concluir' && layer.route.methods.patch).handle(req, res);
-});
+/**
+ * PATCH /recados/:id/concluir
+ */
+router.patch("/:id/concluir", concluirHandler);
+
+/**
+ * POST /recados/:id/concluir
+ */
+router.post("/:id/concluir", concluirHandler);
 
 export default router;
