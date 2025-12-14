@@ -132,6 +132,11 @@ export type RecadoMensagem = {
   conteudoTexto: string | null;
   criadoEm: string;
   remetenteNumero: string | null;
+
+  // ✅ Novos campos para suportar mídia (foto/áudio)
+  mediaUrl?: string | null;
+  mimeType?: string | null;
+  fileName?: string | null;
 };
 
 // Detalhe de um recado específico

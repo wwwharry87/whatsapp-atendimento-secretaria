@@ -32,6 +32,65 @@ function direcaoLabel(msg: RecadoMensagem) {
   return d || "Outro";
 }
 
+// ✅ Componente auxiliar para renderizar conteúdo da mensagem (Texto ou Mídia)
+function MessageContent({ msg }: { msg: RecadoMensagem }) {
+  const tipo = msg.tipo?.toUpperCase() || "TEXT";
+  const temMedia = tipo !== "TEXT" && (msg.mediaUrl || msg.fileName);
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* Se tiver texto, mostra */}
+      {msg.conteudoTexto && (
+        <p className="whitespace-pre-wrap text-slate-800">{msg.conteudoTexto}</p>
+      )}
+
+      {/* Se for Mídia, renderiza de acordo com o tipo */}
+      {temMedia && (
+        <div className="mt-1">
+          {tipo === "IMAGE" && msg.mediaUrl ? (
+            <a href={msg.mediaUrl} target="_blank" rel="noopener noreferrer">
+              <img
+                src={msg.mediaUrl}
+                alt="Imagem enviada"
+                className="max-w-[200px] max-h-[200px] rounded-lg border border-slate-200 object-cover hover:opacity-90 transition"
+              />
+            </a>
+          ) : tipo === "AUDIO" && msg.mediaUrl ? (
+            <audio controls src={msg.mediaUrl} className="w-[240px] h-10" />
+          ) : (
+            // Documentos, Vídeos ou fallback
+            <a
+              href={msg.mediaUrl || "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-xs text-blue-600 hover:bg-slate-200 transition"
+            >
+              <span className="text-xl">📎</span>
+              <div className="flex flex-col">
+                <span className="font-semibold truncate max-w-[150px]">
+                  {msg.fileName || "Arquivo anexo"}
+                </span>
+                <span className="text-[10px] text-slate-500">{tipo}</span>
+              </div>
+            </a>
+          )}
+        </div>
+      )}
+
+      {/* Caso de borda: Tipo mídia mas sem URL (erro de carga ou arquivo local não salvo) */}
+      {!msg.conteudoTexto && !temMedia && tipo !== "TEXT" && (
+        <p className="italic text-slate-400 text-xs">
+          (Arquivo de mídia não disponível)
+        </p>
+      )}
+      
+      {!msg.conteudoTexto && tipo === "TEXT" && (
+         <p className="italic text-slate-400 text-xs">(mensagem vazia)</p>
+      )}
+    </div>
+  );
+}
+
 export default function RecadoDetalhePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -80,7 +139,6 @@ export default function RecadoDetalhePage() {
 
     const texto = resposta.trim();
     if (!texto && !fileToUpload) {
-      // nada pra enviar
       return;
     }
 
@@ -96,11 +154,10 @@ export default function RecadoDetalhePage() {
           }
         | null = null;
 
-      // 1) Se tiver arquivo, faz upload AGORA (já mandando atendimentoId)
+      // 1) Upload de arquivo
       if (fileToUpload) {
         const formData = new FormData();
         formData.append("file", fileToUpload);
-        // importante para o backend conseguir resolver o idcliente via atendimento
         formData.append("atendimentoId", recado.id);
 
         const uploadResp = await api.post<{
@@ -124,14 +181,11 @@ export default function RecadoDetalhePage() {
         };
       }
 
-      // 2) Envia recado (texto + anexo junto)
+      // 2) Envia resposta
       await api.post(`/recados/${id}/responder`, {
         mensagem: texto || undefined,
-        // opcional: pode preencher com o nome/número do usuário logado no painel
         agenteNome: recado.agenteNome || undefined,
         agenteNumero: recado.agenteNumero || undefined,
-
-        // campos de mídia (o backend pode usar isso pra enviar o anexo)
         mediaId: mediaPayload?.mediaId,
         mimeType: mediaPayload?.mimeType,
         fileName: mediaPayload?.fileName,
@@ -224,7 +278,6 @@ export default function RecadoDetalhePage() {
 
         {recado && (
           <>
-            {/* Cabeçalho */}
             <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col gap-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -267,29 +320,8 @@ export default function RecadoDetalhePage() {
                   {formatarDataBr(recado.encerradoEm)}
                 </div>
               </div>
-
-              {(recado.foiResolvido !== null ||
-                recado.notaSatisfacao !== null) && (
-                <div className="mt-2 text-xs text-slate-600 flex flex-wrap gap-3">
-                  {recado.foiResolvido !== null && (
-                    <span>
-                      Situação declarada pelo cidadão:{" "}
-                      <strong>
-                        {recado.foiResolvido ? "Resolvido" : "Não resolvido"}
-                      </strong>
-                    </span>
-                  )}
-                  {recado.notaSatisfacao !== null && (
-                    <span>
-                      Nota de satisfação:{" "}
-                      <strong>{recado.notaSatisfacao}/5</strong>
-                    </span>
-                  )}
-                </div>
-              )}
             </section>
 
-            {/* Timeline de mensagens */}
             <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex-1 flex flex-col">
               <h2 className="text-sm font-semibold text-slate-800 mb-3">
                 Histórico de mensagens
@@ -317,7 +349,7 @@ export default function RecadoDetalhePage() {
                       }`}
                     >
                       <div
-                        className={`max-w-[80%] rounded-xl px-3 py-2 text-xs shadow-sm border ${
+                        className={`max-w-[85%] rounded-xl px-3 py-2 text-xs shadow-sm border ${
                           isCitizen
                             ? "bg-slate-50 border-slate-200"
                             : isAgent
@@ -325,7 +357,7 @@ export default function RecadoDetalhePage() {
                             : "bg-emerald-50 border-emerald-200"
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center justify-between gap-4 mb-1 border-b border-black/5 pb-1">
                           <span className="font-semibold text-slate-700">
                             {direcaoLabel(m)}
                           </span>
@@ -334,32 +366,14 @@ export default function RecadoDetalhePage() {
                           </span>
                         </div>
 
-                        {m.tipo && m.tipo !== "TEXT" && (
-                          <div className="text-[11px] text-slate-500 mb-1">
-                            Anexo: <strong>{m.tipo}</strong>
-                          </div>
-                        )}
-
-                        {m.conteudoTexto ? (
-                          <p className="whitespace-pre-wrap text-slate-800">
-                            {m.conteudoTexto}
-                          </p>
-                        ) : !m.tipo || m.tipo === "TEXT" ? (
-                          <p className="italic text-slate-500">
-                            (mensagem sem texto)
-                          </p>
-                        ) : (
-                          <p className="italic text-slate-500">
-                            (mensagem com anexo, sem texto)
-                          </p>
-                        )}
+                        {/* ✅ Usa o novo componente de conteúdo */}
+                        <MessageContent msg={m} />
                       </div>
                     </div>
                   );
                 })}
               </div>
 
-              {/* Responder */}
               <form
                 onSubmit={handleResponder}
                 className="mt-4 border-t border-slate-200 pt-3 flex flex-col gap-2"
@@ -375,7 +389,6 @@ export default function RecadoDetalhePage() {
                   disabled={!podeResponder || enviando}
                 />
 
-                {/* Anexo + botão único */}
                 <div className="flex items-center justify-between gap-3 mt-1">
                   <label className="inline-flex items-center gap-2 text-xs text-slate-600">
                     <span className="px-2 py-1 rounded-lg border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100">
