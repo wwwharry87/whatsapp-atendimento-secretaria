@@ -49,6 +49,8 @@ const whatsappVerifyToken = str("WHATSAPP_VERIFY_TOKEN", "verify_token_teste");
 
 // Se você quiser validar assinatura do webhook (x-hub-signature-256)
 const whatsappAppSecret = str("WHATSAPP_APP_SECRET", "");
+const whatsappFromEnv = bool("WHATSAPP_FROM_ENV", false);
+
 
 // DeepSeek / IA
 const deepseekApiKey = str("DEEPSEEK_API_KEY", "");
@@ -85,13 +87,15 @@ if (isProd) {
     required("DB_DATABASE");
   }
 
-  // WhatsApp: token e phone_number_id precisam existir
-  if (!whatsappAccessToken) required("WHATSAPP_ACCESS_TOKEN");
-  if (!whatsappPhoneNumberId) required("WHATSAPP_PHONE_NUMBER_ID");
-
-  // Verify token deve ser configurado (evitar default em prod)
-  if (!process.env.WHATSAPP_VERIFY_TOKEN) {
-    throw new Error("[ENV] WHATSAPP_VERIFY_TOKEN obrigatório em produção.");
+  // WhatsApp:
+  // Por padrão, este projeto pode buscar credenciais no BANCO (tabela clientes).
+  // Se você quiser forçar credenciais via ENV, set WHATSAPP_FROM_ENV=true.
+  if (whatsappFromEnv) {
+    if (!whatsappAccessToken) required("WHATSAPP_ACCESS_TOKEN");
+    if (!whatsappPhoneNumberId) required("WHATSAPP_PHONE_NUMBER_ID");
+    if (!process.env.WHATSAPP_VERIFY_TOKEN) {
+      throw new Error("[ENV] WHATSAPP_VERIFY_TOKEN obrigatório em produção quando WHATSAPP_FROM_ENV=true.");
+    }
   }
 
   // JWT: recomendo fortemente (>= 32 chars)
