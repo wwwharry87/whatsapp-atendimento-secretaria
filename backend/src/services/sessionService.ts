@@ -36,6 +36,7 @@ import {
 import {
   isOutOfBusinessHoursDB,
   getHorarioAtendimentoTexto,
+  getSaudacaoPorHorario, // ✅ agora saudação vem do mesmo "relógio" do sistema
 } from "./horarioService";
 
 import {
@@ -93,9 +94,12 @@ function last8(num: string): string {
 // =========================================================================
 async function logIAMessage(session: Session, texto: string) {
   try {
-    const botNumber = session.phoneNumberId 
-      ? normalizePhone(session.phoneNumberId) 
-      : "550000000000"; 
+    // ✅ evita crash / erro silencioso quando ainda não há atendimentoId
+    if (!session.atendimentoId) return;
+
+    const botNumber = session.phoneNumberId
+      ? normalizePhone(session.phoneNumberId)
+      : "550000000000";
 
     const finalRemetente = botNumber || "550000000000";
 
@@ -107,7 +111,7 @@ async function logIAMessage(session: Session, texto: string) {
       remetenteNumero: finalRemetente,
       idcliente: session.idcliente,
       comandoDescricao: "Resposta automática do sistema/IA",
-      whatsappMessageId: `IA-${Date.now()}-${Math.random().toString(36).substring(7)}` 
+      whatsappMessageId: `IA-${Date.now()}-${Math.random().toString(36).substring(7)}`,
     });
   } catch (err) {
     console.error("[SESSION] Erro ao salvar mensagem da IA no banco:", err);
@@ -116,11 +120,13 @@ async function logIAMessage(session: Session, texto: string) {
 
 async function logAgentMessage(session: Session, texto: string, msg?: IncomingMessage) {
   try {
+    if (!session.atendimentoId) return;
+
     const remetente = normalizePhone(msg?.from || session.agentNumber || "");
-    
+
     if (!remetente) {
       console.warn("[SESSION] Aviso: Tentativa de logar msg de agente sem número definido.");
-      return; 
+      return;
     }
 
     await salvarMensagem({
@@ -174,11 +180,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   // 1. Recupera sessão do Redis
   let session = await getOrCreateSession(citizenKey, phoneNumberId);
-  
+
   // ===========================================================================
-  // 🛡️ CORREÇÃO CRÍTICA: MATADOR DE SESSÃO ZUMBI
-  // Se a sessão recuperada estiver "FINISHED" ou presa em "OFFLINE_RATING" antigo,
-  // nós a destruímos e começamos uma nova LIMPA imediatamente.
+  // 🛡️ MATADOR DE SESSÃO ZUMBI
   // ===========================================================================
   if (session.status === "FINISHED") {
     console.log(`[SESSION] Sessão Zumbi detectada (FINISHED) para ${citizenKey}. Resetando...`);
@@ -193,8 +197,7 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   console.log(`[SESSION] Status: ${session.status} | Cidadão: ${citizenKey} | idcliente=${session.idcliente}`);
 
-  // Se for uma sessão nova recém-criada, session.atendimentoId pode ser undefined até o ASK_NAME criar no banco.
-  // Mas se já tiver ID, salvamos a mensagem.
+  // Se já tiver ID, salvamos a mensagem.
   if (session.atendimentoId) {
     await salvarMensagem({
       atendimentoId: session.atendimentoId,
@@ -247,12 +250,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
     case "LEAVE_MESSAGE_DECISION":
     case "OFFLINE_POST_AGENT_RESPONSE":
     case "OFFLINE_RATING":
-      // Removido "FINISHED" daqui para garantir que não processe lógica se estiver finalizado
       await processOfflineFlow(session, trimmed);
       break;
 
     case "FINISHED":
-      // Se cair aqui (o que o "Matador de Zumbis" deve evitar), forçamos reinício
       await processAskName(session, trimmed);
       break;
 
@@ -261,8 +262,6 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
       break;
   }
 
-  // ✅ Só salva no Redis se NÃO estiver finalizado.
-  // Se estiver finished, a própria função de fluxo já deve ter chamado invalidateSessionCache.
   if (session.status !== "FINISHED") {
     await setSession(session);
   }
@@ -313,6 +312,7 @@ async function processAskName(session: Session, text: string) {
     const clientInfo = await getClientById(session.idcliente || 0);
     const org = getOrganizationStyle({ displayName: clientInfo?.nome, orgTipo: null });
 
+    // ✅ HumanMessagesService agora calcula saudação no timezone certo (DEFAULT_TIMEZONE)
     const saudacao = HumanMessagesService.greetingAskName({
       org,
       seed: session.citizenNumber,
@@ -327,9 +327,6 @@ async function processAskName(session: Session, text: string) {
   session.citizenName = text;
   session.status = "ASK_PROFILE";
 
-  // Se já existe um atendimento (sessão zumbi ressuscitada), atualizamos.
-  // Se não existe, podemos criar agora ou esperar o profile.
-  // Pelo logica atual, ASK_NAME é o inicio, então cria se n tiver.
   if (session.atendimentoId) {
     await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
       cidadaoNome: text,
@@ -387,18 +384,21 @@ async function verificarHorarioEMostrarMenu(session: Session) {
 
   if (foraHorario) {
     const horarioTxt = await getHorarioAtendimentoTexto({ idcliente: session.idcliente });
-    const clienteNomeInfo = await getClientById(session.idcliente || 0);
-    // const org = getOrganizationStyle({ displayName: clienteNomeInfo?.nome, orgTipo: null });
 
     const primeiroNome = session.citizenName?.split(" ")[0] || "";
-    let msgIntro = `No momento estamos fechados, ${primeiroNome}.`;
+    const saudacao = getSaudacaoPorHorario(); // ✅ timezone correto
+
+    let msgIntro = `${saudacao}${primeiroNome ? `, ${primeiroNome}` : ""}! No momento estamos fora do horário de atendimento.`;
 
     if (session.userProfile === "FUNCIONARIO") {
       msgIntro += " Mesmo para servidores, o atendimento humano encerrou por hoje.";
     }
 
     const menu = await montarMenuDepartamentos(session.idcliente || 1, { semTitulo: true, semRodape: true });
-    const fullMsg = `${msgIntro}\n${horarioTxt}\n\nMas você pode deixar um recado. Escolha o setor:\n\n${menu}\n\nDigite o número ou o nome da escola/setor.`;
+    const fullMsg =
+      `${msgIntro}\n${horarioTxt}\n\n` +
+      `Mas você pode deixar um recado. Escolha o setor:\n\n${menu}\n\n` +
+      `Digite o número ou o nome da escola/setor.`;
 
     await sendTextMessage(session.citizenNumber, fullMsg, { idcliente: session.idcliente });
     await logIAMessage(session, fullMsg);
@@ -513,6 +513,8 @@ async function processLeaveMessageFlow(session: Session, text: string) {
 }
 
 async function processOfflineFlow(session: Session, text: string) {
+  const history = await getRecentHistory(session.atendimentoId);
+
   const context: OfflineFlowContext = {
     state: session.status,
     atendimentoStatus: session.status,
@@ -521,17 +523,16 @@ async function processOfflineFlow(session: Session, text: string) {
     cidadaoNumero: session.citizenNumber,
     canalNome: "Atendimento",
     leaveMessageAckSent: session.leaveMessageAckSent || false,
+    lastMessages: history,
   };
 
   const decision = await callOfflineFlowEngine(context, text);
 
-  // Envia a resposta (Ex: "Que bom! Avalie com uma nota...")
   if (decision.replyText) {
     await sendTextMessage(session.citizenNumber, decision.replyText, { idcliente: session.idcliente });
     await logIAMessage(session, decision.replyText);
   }
 
-  // Atualiza o estado da sessão (Ex: muda de OFFLINE_POST_AGENT_RESPONSE para OFFLINE_RATING)
   if (decision.nextState && decision.nextState !== session.status) {
     session.status = decision.nextState as SessionStatus;
     if (session.atendimentoId) {
@@ -541,31 +542,28 @@ async function processOfflineFlow(session: Session, text: string) {
     }
   }
 
-  // Se salvou uma nota, forçamos o encerramento se o fluxo sugerir ou se já for nota
   if (decision.shouldSaveRating && decision.rating) {
     if (session.atendimentoId) {
       await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
         notaSatisfacao: decision.rating,
       } as any);
     }
-    // ✅ FORÇA ENCERRAR AGORA para evitar loop de "Só para confirmar..."
-    // Assumimos que se deu nota, acabou.
+
     await fecharAtendimentoComProtocolo(session);
     session.status = "FINISHED";
     await invalidateSessionCache(session.citizenNumber);
     return;
   }
 
-  // Se o motor de IA decidiu encerrar
   if (decision.shouldCloseAttendance) {
     await fecharAtendimentoComProtocolo(session);
     session.status = "FINISHED";
-    await invalidateSessionCache(session.citizenNumber); // ✅ Await e limpeza garantida
+    await invalidateSessionCache(session.citizenNumber);
     return;
   }
 }
 
-// ====================== TIMERS (CUIDADO COM CALLBACKS ASYNC) ======================
+// ====================== TIMERS ======================
 
 function clearTimers(citizenKey: string) {
   const key = normalizePhone(citizenKey);
@@ -590,9 +588,8 @@ function scheduleInactivityTimers(session: Session) {
   const warnTime = 2 * 60 * 1000;
   const closeTime = 3 * 60 * 1000;
 
-  // ✅ Timer callback agora é async
   const warnTimer = setTimeout(async () => {
-    const current = await getOrCreateSession(key); 
+    const current = await getOrCreateSession(key);
 
     if (current.status === "LEAVE_MESSAGE") {
       let msgWarn =
@@ -607,7 +604,6 @@ function scheduleInactivityTimers(session: Session) {
     }
   }, warnTime);
 
-  // ✅ Timer callback agora é async
   const closeTimer = setTimeout(async () => {
     const current = await getOrCreateSession(key);
 
@@ -626,7 +622,7 @@ function scheduleInactivityTimers(session: Session) {
         });
       }
 
-      await invalidateSessionCache(key); // ✅ Await
+      await invalidateSessionCache(key);
     }
 
     clearTimers(key);
@@ -723,10 +719,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
-  // ✅ Garante consistência do cache
   await setSession(session);
 
-  // ✅ salva msg do agente no banco (audit)
   if (msg.tipo === "TEXT" && text) {
     await logAgentMessage(session, text, msg);
   } else if (msg.tipo !== "TEXT") {
@@ -787,7 +781,6 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       return;
     }
 
-    // Envia resposta do agente para o cidadão
     if (msg.tipo === "TEXT") {
       await sendTextMessage(session.citizenNumber, text, { idcliente: session.idcliente });
     } else {

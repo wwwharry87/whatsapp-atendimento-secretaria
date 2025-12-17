@@ -30,6 +30,45 @@ export type OrgInfoLike = {
   orgTipo?: string | null;
 };
 
+/**
+ * Timezone padrão do sistema.
+ * - Render/Node costuma rodar em UTC
+ * - então precisamos forçar o timezone "do Brasil" aqui
+ */
+function getDefaultTimeZone(): string {
+  return (process.env.DEFAULT_TIMEZONE || "America/Fortaleza").trim() || "America/Fortaleza";
+}
+
+function getHourInTimeZone(date: Date, timeZone: string): number {
+  try {
+    const s = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      hour12: false,
+    }).format(date);
+    const h = Number(String(s).trim());
+    if (Number.isFinite(h)) return h;
+  } catch {}
+  // fallback seguro (horário do servidor)
+  return date.getHours();
+}
+
+function getDayKeyInTimeZone(date: Date, timeZone: string): string {
+  try {
+    // en-CA costuma retornar YYYY-MM-DD
+    const s = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+    // normalmente já vem YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  } catch {}
+  // fallback (UTC) — mas só se Intl falhar
+  return date.toISOString().slice(0, 10);
+}
+
 export function analyzeMessageTone(text: string): MessageTone {
   const t = (text || "").trim().toLowerCase();
   if (!t) return "normal";
@@ -144,8 +183,10 @@ function safeName(name?: string | null): string | undefined {
   return first || undefined;
 }
 
-function greetingByHour(date = new Date()): string {
-  const h = date.getHours();
+function greetingByHour(date = new Date(), timeZone?: string): string {
+  const tz = (timeZone || getDefaultTimeZone()).trim() || getDefaultTimeZone();
+  const h = getHourInTimeZone(date, tz);
+
   if (h >= 5 && h < 12) return "Bom dia";
   if (h >= 12 && h < 18) return "Boa tarde";
   return "Boa noite";
@@ -162,7 +203,9 @@ function stableHash(input: string): number {
 
 function pickVariant(key: string, variants: string[], seed?: string | number): string {
   if (!variants.length) return "";
-  const dayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  const tz = getDefaultTimeZone();
+  const dayKey = getDayKeyInTimeZone(new Date(), tz); // YYYY-MM-DD no timezone correto
   const raw = `${key}|${String(seed ?? "")}|${dayKey}`;
   const idx = stableHash(raw) % variants.length;
   return variants[idx];
@@ -181,7 +224,7 @@ export class HumanMessagesService {
   /** 3 variações de saudação pedindo nome */
   static greetingAskName(args: { org: OrganizationStyle; seed?: string | number; now?: Date }): string {
     const { org, seed } = args;
-    const g = greetingByHour(args.now);
+    const g = greetingByHour(args.now, getDefaultTimeZone());
 
     // Variantes mais amigáveis e menos robóticas
     const variants = [
@@ -203,7 +246,7 @@ export class HumanMessagesService {
     const variants = [
       `Prazer, ${name}! Para eu te direcionar melhor, me conta uma coisa:\n\nVocê faz parte da equipe da *${org.displayName}* ou é da comunidade (pai, aluno, cidadão)?`,
       `Obrigado, ${name}. Antes de prosseguirmos: você é servidor/funcionário da casa ou busca atendimento como cidadão?`,
-      `Certo, ${name}! 📝\nPara agilizar seu atendimento, selecione seu perfil abaixo:`
+      `Certo, ${name}! 📝\nPara agilizar seu atendimento, selecione seu perfil abaixo:`,
     ];
 
     return pickVariant("askProfile", variants, seed);
@@ -217,12 +260,12 @@ export class HumanMessagesService {
     seed?: string | number;
   }): string {
     const name = safeName(args.citizenName);
-    
+
     // Saudação mais rica
     const headerVariants = [
       `Tudo pronto, ${name}. Aqui estão os setores disponíveis para te ajudar:`,
       `Agora sim! ${name}, com qual setor você gostaria de falar?`,
-      `Perfeito. Veja onde podemos te atender hoje:`
+      `Perfeito. Veja onde podemos te atender hoje:`,
     ];
     const header = pickVariant("menuHeader", headerVariants, args.seed);
 
@@ -297,9 +340,11 @@ export class HumanMessagesService {
     seed?: string | number;
   }): string {
     const name = safeName(args.citizenName);
-    const header = `${greetingByHour()}${name ? `, ${name}` : ""}! 👋`;
+    const header = `${greetingByHour(new Date(), getDefaultTimeZone())}${name ? `, ${name}` : ""}! 👋`;
 
-    const horario = args.horarioLabel ? `🕘 Horário de atendimento: *${args.horarioLabel}*` : `🕘 No momento estamos fora do horário de atendimento humano.`;
+    const horario = args.horarioLabel
+      ? `🕘 Horário de atendimento: *${args.horarioLabel}*`
+      : `🕘 No momento estamos fora do horário de atendimento humano.`;
 
     const variants = [
       joinLines([

@@ -42,6 +42,10 @@ const isProd = nodeEnv === "production";
 // (opcional) Render costuma fornecer DATABASE_URL. Se você quiser usar depois, já fica disponível aqui.
 const databaseUrl = str("DATABASE_URL", "");
 
+// ✅ Timezone padrão do sistema (Render costuma rodar em UTC)
+// Use: America/Fortaleza (seu fuso) ou America/Sao_Paulo se preferir
+const defaultTimeZone = str("DEFAULT_TIMEZONE", "America/Fortaleza").trim() || "America/Fortaleza";
+
 // WhatsApp
 const whatsappAccessToken = str("WHATSAPP_ACCESS_TOKEN", "");
 const whatsappPhoneNumberId = str("WHATSAPP_PHONE_NUMBER_ID", "");
@@ -50,7 +54,6 @@ const whatsappVerifyToken = str("WHATSAPP_VERIFY_TOKEN", "verify_token_teste");
 // Se você quiser validar assinatura do webhook (x-hub-signature-256)
 const whatsappAppSecret = str("WHATSAPP_APP_SECRET", "");
 const whatsappFromEnv = bool("WHATSAPP_FROM_ENV", false);
-
 
 // DeepSeek / IA
 const deepseekApiKey = str("DEEPSEEK_API_KEY", "");
@@ -73,7 +76,6 @@ const idleTimeoutMs = num("DB_IDLE_TIMEOUT_MS", 30000);
 const connectionTimeoutMs = num("DB_CONNECTION_TIMEOUT_MS", 10000);
 
 // JWT (mesmo que seu config/auth.ts leia direto do process.env, já deixo regra aqui)
-// (Não forço aqui pra não quebrar import, mas você pode exigir no auth.ts como já fizemos)
 const jwtSecret = str("JWT_SECRET", "");
 const jwtExpiresIn = str("JWT_EXPIRES_IN", "8h");
 
@@ -109,8 +111,9 @@ export const env = {
   isProd,
   port: num("PORT", 3000),
 
-  // Se você quiser no futuro mudar o DataSource para usar URL:
-  // env.db.url estará pronto.
+  // ✅ Timezone do sistema (usado para saudação e regras de horário)
+  DEFAULT_TIMEZONE: defaultTimeZone,
+
   db: {
     url: databaseUrl || undefined,
     host: dbHost,
@@ -142,7 +145,7 @@ export const env = {
   DEEPSEEK_MODEL: deepseekModel,
   IA_HABILITADA: iaHabilitada,
 
-  // JWT (útil se você quiser centralizar config depois)
+  // JWT
   JWT_SECRET: jwtSecret || undefined,
   JWT_EXPIRES_IN: jwtExpiresIn,
 };

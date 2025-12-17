@@ -83,12 +83,22 @@ const WEEKDAY_MAP: Record<string, string> = {
   Sat: "SAB",
 };
 
-function getNowInSaoPaulo() {
+function getDefaultTimeZone(): string {
+  return (process.env.DEFAULT_TIMEZONE || "America/Fortaleza").trim() || "America/Fortaleza";
+}
+
+/**
+ * Retorna horário/dia no timezone configurado
+ * Obs: o Date "agoraBR" aqui é o Date real do servidor, mas as partes (hora/min/dia)
+ * são calculadas via Intl no timezone correto.
+ */
+function getNowInTimeZone() {
   const now = new Date();
+  const timeZone = getDefaultTimeZone();
 
   // Usar Intl com timeZone para extrair partes confiáveis
   const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
+    timeZone,
     weekday: "short",
     hour: "2-digit",
     minute: "2-digit",
@@ -121,11 +131,11 @@ function getNowInSaoPaulo() {
       ? 5
       : 6;
 
-  return { agoraBR: now, hora, minuto, minutosDia, diaSemana, diaCodigo };
+  return { agoraBR: now, hora, minuto, minutosDia, diaSemana, diaCodigo, timeZone };
 }
 
 export function getSaudacaoPorHorario(): string {
-  const { hora } = getNowInSaoPaulo();
+  const { hora } = getNowInTimeZone();
   if (hora >= 4 && hora < 12) return "Bom dia";
   if (hora >= 12 && hora < 18) return "Boa tarde";
   return "Boa noite";
@@ -135,7 +145,7 @@ export function getSaudacaoPorHorario(): string {
  * Regra padrão segura: Seg–Sex 08:00–18:00
  */
 function isOutOfBusinessHoursFallback(): boolean {
-  const { diaSemana, hora } = getNowInSaoPaulo();
+  const { diaSemana, hora } = getNowInTimeZone();
   if (diaSemana === 0 || diaSemana === 6) return true; // domingo/sábado
   if (hora < 8 || hora >= 18) return true;
   return false;
@@ -212,7 +222,7 @@ export async function isOutOfBusinessHoursDB(params: {
   idcliente?: number;
   departamentoId?: number | null;
 }): Promise<boolean> {
-  const { minutosDia, diaCodigo } = getNowInSaoPaulo();
+  const { minutosDia, diaCodigo, timeZone } = getNowInTimeZone();
 
   try {
     const effectiveClienteId = await resolveEffectiveClienteId(params.idcliente);
@@ -224,6 +234,8 @@ export async function isOutOfBusinessHoursDB(params: {
       const fallback = isOutOfBusinessHoursFallback();
       console.log(
         "[HORARIO] Sem horários configurados. Usando fallback padrão.",
+        "tz=",
+        timeZone,
         "idcliente=",
         effectiveClienteId,
         "departamentoId=",
@@ -273,6 +285,8 @@ export async function isOutOfBusinessHoursDB(params: {
     const fora = !dentroDeAlgum;
     console.log(
       "[HORARIO] Cálculo DB:",
+      "tz=",
+      timeZone,
       "idcliente=",
       effectiveClienteId,
       "dep=",

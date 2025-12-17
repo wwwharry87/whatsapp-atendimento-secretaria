@@ -19,6 +19,7 @@ export type SessionStatus =
   | "WAITING_AGENT"
   | "OFFLINE_POST_AGENT_RESPONSE"
   | "OFFLINE_RATING"
+  | "CLOSED"
   | "ASK_SATISFACTION_RESOLUTION"
   | "ASK_SATISFACTION_RATING"
   | "FINISHED"
@@ -58,7 +59,6 @@ export interface Session {
 
 // ====================== MAPS EM MEMÓRIA ======================
 
-// citizenKey = número normalizado completo
 export const sessionsByCitizen = new Map<string, Session>();
 
 /**
@@ -120,7 +120,10 @@ export function setSession(session: Session): void {
   const existing = sessionsByCitizen.get(citizenKey);
 
   // remove vinculo antigo de agente se mudou
-  if (existing?.agentNumber && (existing.agentNumber !== session.agentNumber || existing.idcliente !== session.idcliente)) {
+  if (
+    existing?.agentNumber &&
+    (existing.agentNumber !== session.agentNumber || existing.idcliente !== session.idcliente)
+  ) {
     const oldKey = getAgentKey(existing.agentNumber, existing.idcliente);
     if (oldKey) sessionsByAgent.delete(oldKey);
   }
@@ -147,7 +150,6 @@ export function invalidateSessionCache(citizenNumber: string): void {
 
 /**
  * Atenção: isso só responde com base no cache em memória.
- * (Depois vamos melhorar no sessionService para tentar recoverAgentSession quando precisar.)
  */
 export function isAgentNumber(number: string, idcliente?: number): boolean {
   const key = getAgentKey(number, idcliente);
@@ -213,7 +215,7 @@ async function resolveClienteId(citizenKey: string, phoneNumberId?: string): Pro
   const byPhone = await resolveClienteIdByPhoneNumberId(phoneNumberId);
   if (byPhone != null) return byPhone;
 
-  // 2) inferir pelo último atendimento do cidadão (evita cair no município errado)
+  // 2) inferir pelo último atendimento do cidadão
   if (citizenKey) {
     const atendimentoRepo = AppDataSource.getRepository(Atendimento);
     const last = await atendimentoRepo.findOne({
@@ -253,19 +255,24 @@ export async function recoverAgentSession(
   if (!last8) return undefined;
 
   // tenta resolver idcliente pelo número do WhatsApp do município
-  const idcliente = await resolveClienteId("", phoneNumberId);
+  const idclienteByPhone = await resolveClienteIdByPhoneNumberId(phoneNumberId);
 
-  const cachedKey = getAgentKey(agentFull, idcliente);
-  if (cachedKey && sessionsByAgent.has(cachedKey)) {
-    return sessionsByAgent.get(cachedKey);
+  // cache (se tiver idcliente resolvido)
+  if (idclienteByPhone != null) {
+    const cachedKey = getAgentKey(agentFull, idclienteByPhone);
+    if (cachedKey && sessionsByAgent.has(cachedKey)) {
+      return sessionsByAgent.get(cachedKey);
+    }
   }
 
   const repo = AppDataSource.getRepository(Atendimento);
 
-  const atendimento = await repo
+  // 🔥 IMPORTANTE:
+  // - Se phoneNumberId veio, filtra por idcliente (multi-tenant correto)
+  // - Se NÃO veio, busca o atendimento mais recente em QUALQUER cliente
+  const qb = repo
     .createQueryBuilder("a")
     .leftJoinAndSelect("a.departamento", "d")
-    .where("a.idcliente = :idcliente", { idcliente })
     .andWhere("a.status IN (:...statuses)", {
       statuses: ["WAITING_AGENT_CONFIRMATION", "ACTIVE", "WAITING_AGENT"],
     })
@@ -274,10 +281,22 @@ export async function recoverAgentSession(
         "OR right(regexp_replace(coalesce(d.responsavel_numero, ''), '\\D', '', 'g'), 8) = :last8)",
       { last8 }
     )
-    .orderBy("a.atualizado_em", "DESC")
-    .getOne();
+    .orderBy("a.atualizado_em", "DESC");
 
+  if (idclienteByPhone != null) {
+    qb.andWhere("a.idcliente = :idcliente", { idcliente: idclienteByPhone });
+  }
+
+  const atendimento = await qb.getOne();
   if (!atendimento) return undefined;
+
+  const idclienteFinal = atendimento.idcliente as any;
+
+  // se agora temos idcliente, tenta cache novamente
+  const cachedKey2 = getAgentKey(agentFull, idclienteFinal);
+  if (cachedKey2 && sessionsByAgent.has(cachedKey2)) {
+    return sessionsByAgent.get(cachedKey2);
+  }
 
   const session: Session = {
     citizenNumber: normalizePhone(atendimento.cidadaoNumero),
@@ -288,7 +307,8 @@ export async function recoverAgentSession(
     departmentName: atendimento.departamento?.nome ?? undefined,
     agentNumber: normalizePhone(atendimento.agenteNumero ?? ""),
     agentName: atendimento.agenteNome ?? undefined,
-    idcliente: atendimento.idcliente,
+    protocolo: atendimento.protocolo ?? undefined,
+    idcliente: idclienteFinal,
     phoneNumberId,
     lastActiveAt: Date.now(),
   };
@@ -356,7 +376,7 @@ export async function getOrCreateSession(
         protocolo: active.protocolo ?? undefined,
         idcliente: active.idcliente,
         phoneNumberId,
-        leaveMessageAckSent: active.status === "LEAVE_MESSAGE",
+        leaveMessageAckSent: active.status === "LEAVE_MESSAGE" ? false : true,
         lastActiveAt: Date.now(),
       };
       setSession(session);
@@ -364,6 +384,7 @@ export async function getOrCreateSession(
     }
 
     // 4) Busca atendimento encerrado recente (últimas 24h) -> permite pós-atendimento
+    // ✅ Mas não reabre se já tiver nota (evita pedir avaliação repetida)
     const ontem = new Date();
     ontem.setDate(ontem.getDate() - 1);
 
@@ -378,21 +399,26 @@ export async function getOrCreateSession(
     });
 
     if (recentFinished) {
-      console.log(
-        `[SESSION] Recuperando atendimento ENCERRADO recente: ID=${recentFinished.id}`
-      );
+      const jaTemNota = (recentFinished as any)?.notaSatisfacao != null;
 
-      const session: Session = {
-        citizenNumber: citizenKey,
-        status: "OFFLINE_POST_AGENT_RESPONSE",
-        atendimentoId: recentFinished.id,
-        citizenName: recentFinished.cidadaoNome ?? undefined,
-        idcliente: recentFinished.idcliente,
-        phoneNumberId,
-        lastActiveAt: Date.now(),
-      };
-      setSession(session);
-      return session;
+      if (!jaTemNota) {
+        console.log(
+          `[SESSION] Recuperando atendimento ENCERRADO recente (sem nota): ID=${recentFinished.id}`
+        );
+
+        const session: Session = {
+          citizenNumber: citizenKey,
+          status: "OFFLINE_POST_AGENT_RESPONSE",
+          atendimentoId: recentFinished.id,
+          citizenName: recentFinished.cidadaoNome ?? undefined,
+          protocolo: recentFinished.protocolo ?? undefined,
+          idcliente: recentFinished.idcliente,
+          phoneNumberId,
+          lastActiveAt: Date.now(),
+        };
+        setSession(session);
+        return session;
+      }
     }
 
     // 5) Novo atendimento
@@ -403,8 +429,6 @@ export async function getOrCreateSession(
 
     const temNome = !!ultimo?.cidadaoNome;
 
-    // ⚠️ Evitar `as any` aqui: com TypeORM, isso pode fazer o TS escolher o overload
-    // de "array" e tipar o retorno como Atendimento[] (quebrando `.id`, `.status`, etc.).
     const novoAtendimento = repo.create({
       idcliente,
       cidadaoNumero: citizenKey,
