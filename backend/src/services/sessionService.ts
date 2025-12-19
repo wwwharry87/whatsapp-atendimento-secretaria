@@ -691,7 +691,7 @@ async function tentarTratarConsultaProtocolo(session: Session, text: string): Pr
   if (!codigo) return false;
 
   const repo = AppDataSource.getRepository(Atendimento);
-  const atd = await repo.findOne({ where: { protocolo: codigo } as any });
+  const atd = await repo.findOne({ where: { idcliente: session.idcliente as any, protocolo: codigo } as any });
 
   if (atd) {
     const desc = mapStatusToDescricao(atd.status);

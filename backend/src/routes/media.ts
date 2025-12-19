@@ -46,37 +46,40 @@ async function resolveClienteFromRequest(
   const clienteRepo = AppDataSource.getRepository(Cliente);
   const atendimentoRepo = AppDataSource.getRepository(Atendimento);
 
-  let idcliente = getRequestClienteId(req);
+  const idcliente = getRequestClienteId(req);
 
-  // fallback: tenta descobrir pelo atendimentoId (se vier no body)
-  if (!idcliente && atendimentoIdFromBody) {
-    const atendimento = await atendimentoRepo.findOne({
-      where: { id: atendimentoIdFromBody },
-    });
-
-    if (atendimento && (atendimento as any).idcliente) {
-      idcliente = (atendimento as any).idcliente;
-    }
+  // 🔒 Em produção multi-tenant, idcliente SEMPRE vem do token (authMiddleware).
+  if (!idcliente) {
+    console.error("[MEDIA] Erro: idcliente ausente no request (token).");
+    throw {
+      status: 401,
+      message: "Não autorizado. Faça login novamente.",
+    };
   }
 
-  if (!idcliente) {
-    console.error(
-      "[MEDIA] Erro no upload: ID do cliente (idcliente) não encontrado no token ou atendimento."
-    );
-    throw {
-      status: 400,
-      message:
-        "ID do cliente não encontrado. Faça login novamente ou tente a partir de um atendimento válido.",
-    };
+  // Se o painel informou atendimentoId, validamos que ele pertence a este cliente
+  if (atendimentoIdFromBody) {
+    const atendimento = await atendimentoRepo.findOne({
+      where: { id: atendimentoIdFromBody as any, idcliente: idcliente as any } as any,
+      select: ["id", "idcliente"] as any,
+    });
+
+    if (!atendimento) {
+      console.error(
+        "[MEDIA] Upload recusado: atendimentoId não encontrado para este cliente.",
+        { idcliente, atendimentoIdFromBody }
+      );
+      throw {
+        status: 403,
+        message: "Atendimento inválido para este município.",
+      };
+    }
   }
 
   const cliente = await clienteRepo.findOneBy({ id: idcliente });
 
   if (!cliente) {
-    console.error(
-      "[MEDIA] Cliente não encontrado para idcliente=",
-      idcliente
-    );
+    console.error("[MEDIA] Cliente não encontrado para idcliente=", idcliente);
     throw {
       status: 404,
       message: "Cliente não encontrado para o usuário autenticado.",
@@ -101,6 +104,7 @@ async function resolveClienteFromRequest(
 
 /**
  * GET /media/:mediaId
+
  *
  * Proxy para buscar mídias da API do WhatsApp Cloud.
  *
@@ -124,34 +128,31 @@ router.get("/:mediaId", async (req: Request, res: Response) => {
     const clienteRepo = AppDataSource.getRepository(Cliente);
     const mensagemRepo = AppDataSource.getRepository(Mensagem);
 
-    let idcliente = getRequestClienteId(req);
-    let cliente: Cliente | null = null;
+    const idcliente = getRequestClienteId(req);
 
-    // 1) Se veio idcliente do token, usa direto
-    if (idcliente) {
-      cliente = await clienteRepo.findOneBy({ id: idcliente });
+    // 🔒 idcliente sempre vem do token (authMiddleware)
+    if (!idcliente) {
+      return res.status(401).send("Não autorizado.");
     }
 
-    // 2) Se por algum motivo não achou cliente pelo token, tenta buscar pela Mensagem
-    if (!cliente) {
-      const msg = await mensagemRepo.findOne({
-        where: { whatsappMediaId: mediaId as any },
-      });
+    // 🔒 Valida que a mídia pertence a este município (evita baixar mídia aleatória)
+    const msg = await mensagemRepo.findOne({
+      where: { idcliente: idcliente as any, whatsappMediaId: mediaId as any } as any,
+      select: ["id", "idcliente", "whatsappMediaId"] as any,
+    });
 
-      if (msg && (msg as any).idcliente) {
-        idcliente = (msg as any).idcliente;
-        cliente = await clienteRepo.findOneBy({ id: idcliente });
-      }
+    if (!msg) {
+      return res.status(404).send("Mídia não encontrada para este município.");
     }
+
+    const cliente = await clienteRepo.findOneBy({ id: idcliente });
 
     if (!cliente || !cliente.whatsappAccessToken) {
-      console.error(
-        "[MEDIA] Nenhum cliente com token configurado para buscar mídia."
-      );
+      console.error("[MEDIA] Cliente sem token configurado:", idcliente);
       return res.status(500).send("Configuração de WhatsApp não encontrada.");
     }
 
-    // 3) Busca metadados da mídia (url, mime_type, etc.)
+    // 1) Busca metadados da mídia (url, mime_type, etc.)
     const metaUrl = `https://graph.facebook.com/${env.whatsapp.apiVersion}/${mediaId}`;
 
     console.log("[MEDIA] Buscando metadados da mídia:", metaUrl);
@@ -173,9 +174,7 @@ router.get("/:mediaId", async (req: Request, res: Response) => {
       return res.status(404).send("Mídia não encontrada.");
     }
 
-    console.log("[MEDIA] URL da mídia obtida. Baixando arquivo...");
-
-    // 4) Baixa a mídia com Authorization e faz streaming para o cliente
+    // 2) Baixa a mídia com Authorization e faz streaming para o cliente
     const mediaResp = await axios.get(url, {
       responseType: "stream",
       headers: {
@@ -200,6 +199,7 @@ router.get("/:mediaId", async (req: Request, res: Response) => {
 
 /**
  * POST /media/upload
+
  *
  * Upload de um arquivo para a API do WhatsApp Cloud, retornando o mediaId.
  *

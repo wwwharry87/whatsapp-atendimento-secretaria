@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from "typeorm";
 import { Departamento } from "./Departamento";
 import { Cliente } from "./Cliente";
@@ -28,6 +29,10 @@ export type AtendimentoStatus =
   | "ASK_SATISFACTION_RATING"
   | "FINISHED";
 
+@Index("UQ_atendimentos_idcliente_protocolo", ["idcliente", "protocolo"], {
+  unique: true,
+  where: `"protocolo" IS NOT NULL`,
+})
 @Entity("atendimentos")
 export class Atendimento {
   @PrimaryGeneratedColumn("uuid")

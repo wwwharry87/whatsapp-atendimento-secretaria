@@ -60,10 +60,16 @@ async function getDefaultClienteId(): Promise<number> {
 }
 
 async function resolveEffectiveClienteId(idcliente?: number): Promise<number> {
-  // Ideal: SEMPRE passar idcliente.
-  // Mantemos fallback apenas pra não quebrar chamadas antigas.
+  // 🔒 Produção multi-tenant: SEMPRE exigir idcliente.
   if (typeof idcliente === "number" && Number.isFinite(idcliente) && idcliente > 0) {
     return idcliente;
+  }
+
+  const allowFallback =
+    (process.env.ALLOW_DEFAULT_CLIENTE_FALLBACK || "").toLowerCase() === "true";
+
+  if (!allowFallback) {
+    throw new Error("idcliente obrigatório (fallback desabilitado)");
   }
 
   const fallback = await getDefaultClienteId();
@@ -302,7 +308,20 @@ export async function isOutOfBusinessHoursDB(params: {
     );
 
     return fora;
-  } catch (err) {
+  } catch (err: any) {
+    const emsg = String(err?.message || err || "");
+
+    // 🔒 Se o idcliente não foi resolvido, preferimos considerar "fora do horário"
+    // (evita aplicar horário de outro município por engano).
+    if (emsg.toLowerCase().includes("idcliente obrigatório")) {
+      console.warn("[HORARIO] idcliente ausente ao consultar horários. Considerando fora do expediente.", {
+        departamentoId: params.departamentoId,
+        diaCodigo,
+        minutosDia,
+      });
+      return true;
+    }
+
     console.log(
       "[HORARIO] Erro ao consultar horários no banco. Usando fallback padrão.",
       err
