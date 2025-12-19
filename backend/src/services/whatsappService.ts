@@ -471,7 +471,7 @@ export async function sendNovoAtendimentoTemplateToAgent(
       to,
       type: "template",
       template: {
-        name: "novo_atendimento",
+        name: "novo_atendimento_agente",
         language: {
           code: "pt_BR",
         },
