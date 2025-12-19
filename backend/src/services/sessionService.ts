@@ -79,6 +79,10 @@ export type IncomingMessage = {
 const inactivityTimers = new Map<string, NodeJS.Timeout>();
 const warningTimers = new Map<string, NodeJS.Timeout>();
 
+// Inatividade em chat humano (ACTIVE)
+const chatIdleWarnTimers = new Map<string, NodeJS.Timeout>();
+const chatIdleAutoCloseTimers = new Map<string, NodeJS.Timeout>();
+
 function normalizePhone(phone: string | undefined | null): string {
   if (!phone) return "";
   return String(phone).replace(/\D/g, "");
@@ -221,6 +225,10 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   session.phoneNumberId = phoneNumberId || session.phoneNumberId;
   if (trimmed) session.lastCitizenText = trimmed;
 
+  // Marca o "último a falar" (para controle de inatividade em chat humano)
+  (session as any).lastMessageAt = Date.now();
+  (session as any).lastMessageBy = "CITIZEN";
+
   console.log(`[SESSION] Status: ${session.status} | Cidadão: ${citizenKey} | idcliente=${session.idcliente}`);
 
   // Se já tiver ID, salvamos a mensagem.
@@ -241,6 +249,32 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
 
   // Consulta de protocolo "fura" a sessão
   if (await tentarTratarConsultaProtocolo(session, trimmed)) return;
+
+  // Se o sistema pediu confirmação por inatividade (cidadão foi o alvo),
+  // tratamos aqui antes do roteamento normal.
+  if (session.status === "ACTIVE" && (session as any).pendingIdleTarget === "CITIZEN") {
+    const choice = (trimmed || "").replace(/\s+/g, "").trim();
+
+    // Qualquer resposta do cidadão já interrompe o auto-encerramento
+    (session as any).pendingIdleTarget = null;
+    (session as any).pendingIdleAt = null;
+
+    if (choice === "1" || trimmed.toLowerCase() === "encerrar" || choice === "3") {
+      // Reaproveita o mesmo fluxo de encerramento do cidadão
+      await processActiveChat(session, { ...msg, text: "encerrar" });
+      await setSession(session);
+      return;
+    }
+
+    if (choice === "2") {
+      const ok = "Perfeito! Pode continuar enviando sua mensagem por aqui.";
+      await sendTextMessage(session.citizenNumber, ok, { idcliente: session.idcliente });
+      await logIAMessage(session, ok);
+      await setSession(session);
+      // segue para o fluxo normal se houver texto além do "2"
+      if (trimmed === "2") return;
+    }
+  }
 
   // Roteamento de Estado
   switch (session.status) {
@@ -291,6 +325,9 @@ export async function handleCitizenMessage(msg: IncomingMessage) {
   if (session.status !== "FINISHED") {
     await setSession(session);
   }
+
+  // Agenda timer de inatividade para chat humano
+  scheduleActiveChatInactivityTimers(session);
 }
 
 // ====================== FLUXOS CIDADÃO ======================
@@ -605,6 +642,143 @@ function clearTimers(citizenKey: string) {
     clearTimeout(t);
     inactivityTimers.delete(key);
   }
+
+  const cw = chatIdleWarnTimers.get(key);
+  if (cw) {
+    clearTimeout(cw);
+    chatIdleWarnTimers.delete(key);
+  }
+
+  const cc = chatIdleAutoCloseTimers.get(key);
+  if (cc) {
+    clearTimeout(cc);
+    chatIdleAutoCloseTimers.delete(key);
+  }
+}
+
+function scheduleActiveChatInactivityTimers(session: Session) {
+  const key = normalizePhone(session.citizenNumber);
+  if (!key) return;
+
+  // Apenas quando há chat humano ativo
+  if (session.status !== "ACTIVE") return;
+  if (!session.agentNumber) return;
+
+  const idcliente = session.idcliente;
+
+  // 10 minutos de inatividade -> aviso
+  const warnAfterMs = 10 * 60 * 1000;
+  // Se o último a falar foi o agente e o cidadão não respondeu, após o aviso
+  // aguardamos mais 5 minutos e encerramos automaticamente.
+  const autoCloseAfterWarnMs = 5 * 60 * 1000;
+
+  const warnTimer = setTimeout(async () => {
+    const current = await getOrCreateSession(key);
+    if (current.status !== "ACTIVE") return;
+
+    const lastAt = (current as any).lastMessageAt || current.lastActiveAt || 0;
+    const lastBy = (current as any).lastMessageBy as ("CITIZEN" | "AGENT" | undefined);
+    const idleMs = Date.now() - Number(lastAt || 0);
+    if (!lastAt || idleMs < warnAfterMs) return;
+
+    // Evita spam: não manda o mesmo aviso repetido se já avisou e ninguém falou.
+    const alreadyWarnedAt = (current as any).idleWarnSentAt as number | undefined;
+    if (alreadyWarnedAt && alreadyWarnedAt >= lastAt) return;
+
+    (current as any).idleWarnSentAt = Date.now();
+
+    // Se o último a falar foi o cidadão, quem deve ser cutucado é o agente.
+    if (lastBy === "CITIZEN") {
+      const agentTarget = normalizePhone(current.agentNumber || "");
+      if (!agentTarget) return;
+
+      (current as any).pendingIdleTarget = "AGENT";
+      (current as any).pendingIdleAt = Date.now();
+
+      const nomeCid = current.citizenName || "Cidadão";
+      const msgAgent =
+        `⏳ Sem interação há 10 minutos. O(a) *${nomeCid}* enviou mensagem e ainda aguarda retorno.\n\n` +
+        `Você deseja encerrar este atendimento?\n1 - Continuar\n2 - Encerrar`;
+
+      await sendTextMessage(agentTarget, msgAgent, { idcliente });
+      await logIAMessage(current, msgAgent);
+
+      await setSession(current);
+      return;
+    }
+
+    // Se o último a falar foi o agente, o aviso vai para o cidadão.
+    const agentName = current.agentName || "Atendente";
+    (current as any).pendingIdleTarget = "CITIZEN";
+    (current as any).pendingIdleAt = Date.now();
+
+    const msgCitizen =
+      `⏳ Faz 10 minutos que estamos sem novas mensagens.\n` +
+      `Se você ainda precisa de ajuda, é só responder aqui.\n\n` +
+      `Deseja encerrar este atendimento agora?\n1 - Sim, encerrar\n2 - Não, continuar`;
+
+    await sendTextMessage(current.citizenNumber, msgCitizen, { idcliente });
+    await logIAMessage(current, msgCitizen);
+
+    // Agenda auto-encerramento (somente quando o último a falar foi o agente)
+    const autoCloseTimer = setTimeout(async () => {
+      const cur2 = await getOrCreateSession(key);
+      if (cur2.status !== "ACTIVE") return;
+
+      const lastAt2 = (cur2 as any).lastMessageAt || cur2.lastActiveAt || 0;
+      const lastBy2 = (cur2 as any).lastMessageBy as ("CITIZEN" | "AGENT" | undefined);
+      const warnSentAt2 = (cur2 as any).idleWarnSentAt as number | undefined;
+
+      // só auto-fecha se nada mudou desde o aviso e o último a falar continua sendo o agente
+      if (!warnSentAt2) return;
+      if (lastBy2 !== "AGENT") return;
+      if (Number(lastAt2 || 0) > warnSentAt2) return;
+
+      await closeAttendanceDueToInactivity(cur2, { reason: "CITIZEN_INACTIVE" });
+    }, autoCloseAfterWarnMs);
+
+    chatIdleAutoCloseTimers.set(key, autoCloseTimer);
+    await setSession(current);
+  }, warnAfterMs);
+
+  chatIdleWarnTimers.set(key, warnTimer);
+}
+
+async function closeAttendanceDueToInactivity(session: Session, opts: { reason: "CITIZEN_INACTIVE" }) {
+  try {
+    clearTimers(session.citizenNumber);
+
+    const protocolo = await fecharAtendimentoComProtocolo(session);
+
+    session.status = "OFFLINE_POST_AGENT_RESPONSE";
+    if (session.atendimentoId) {
+      await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+        status: "OFFLINE_POST_AGENT_RESPONSE" as any,
+      });
+    }
+
+    const msgCitizen =
+      `✅ Encerramos este atendimento por falta de resposta.\n` +
+      `Protocolo: *${protocolo}*.\n\n` +
+      `Sua solicitação foi resolvida?\n1 - Sim\n2 - Não`;
+
+    await sendTextMessage(session.citizenNumber, msgCitizen, { idcliente: session.idcliente });
+    await logIAMessage(session, msgCitizen);
+
+    // Notifica o agente (se houver)
+    if (session.agentNumber) {
+      const agentTarget = normalizePhone(session.agentNumber);
+      if (agentTarget) {
+        const msgAgent = `ℹ️ Atendimento *${protocolo}* encerrado automaticamente por inatividade do cidadão.`;
+        await sendTextMessage(agentTarget, msgAgent, { idcliente: session.idcliente });
+        await logIAMessage(session, msgAgent);
+      }
+    }
+
+    await setSession(session);
+  } catch (err) {
+    console.error("[SESSION] Erro ao encerrar por inatividade:", err);
+  }
 }
 
 function scheduleInactivityTimers(session: Session) {
@@ -685,12 +859,14 @@ async function direcionarParaDepartamento(session: Session, departamento: any) {
   session.departmentId = departamento.id;
 
   session.agentNumber = departamento.responsavelNumero;
+  session.agentName = departamento.responsavelNome ?? session.agentName;
   session.status = "WAITING_AGENT_CONFIRMATION";
 
   if (session.atendimentoId) {
     await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
       departamentoId: departamento.id,
       agenteNumero: departamento.responsavelNumero,
+      agenteNome: departamento.responsavelNome ?? null,
       status: "WAITING_AGENT_CONFIRMATION" as any,
     });
   }
@@ -744,6 +920,14 @@ export async function handleAgentMessage(msg: IncomingMessage) {
     return;
   }
 
+  // Qualquer interação do agente reinicia o timer de inatividade do chat humano
+  clearTimers(session.citizenNumber);
+
+  // Marca o "último a falar" (para controle de inatividade)
+  session.lastActiveAt = Date.now();
+  (session as any).lastMessageAt = Date.now();
+  (session as any).lastMessageBy = "AGENT";
+
   await setSession(session);
 
   if (msg.tipo === "TEXT" && text) {
@@ -764,11 +948,13 @@ export async function handleAgentMessage(msg: IncomingMessage) {
         });
       }
 
-      const msgOk = "✅ O atendente iniciou a conversa. Pode enviar sua mensagem.";
+      const nomeAg = session.agentName || "Atendente";
+      const msgOk = `✅ *${nomeAg}* iniciou a conversa. Pode enviar sua mensagem.`;
       await sendTextMessage(session.citizenNumber, msgOk, { idcliente: session.idcliente });
       await logIAMessage(session, msgOk);
 
       await setSession(session);
+      scheduleActiveChatInactivityTimers(session);
       return;
     }
 
@@ -786,6 +972,46 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   // Atendimento ativo
   if (session.status === "ACTIVE") {
+    // Se o sistema pediu confirmação por inatividade (agente foi o alvo), tratamos aqui.
+    if ((session as any).pendingIdleTarget === "AGENT") {
+      const choice = (text || "").replace(/\s+/g, "").trim();
+
+      (session as any).pendingIdleTarget = null;
+      (session as any).pendingIdleAt = null;
+
+      if (choice === "2") {
+        // Encerrar pelo agente
+        const protocolo = await fecharAtendimentoComProtocolo(session);
+
+        session.status = "OFFLINE_POST_AGENT_RESPONSE";
+        if (session.atendimentoId) {
+          await AppDataSource.getRepository(Atendimento).update(session.atendimentoId, {
+            status: "OFFLINE_POST_AGENT_RESPONSE" as any,
+          });
+        }
+
+        const msgEnc =
+          `Atendimento encerrado pelo agente. Protocolo: *${protocolo}*.\n\n` +
+          `Sua solicitação foi resolvida?\n1 - Sim\n2 - Não`;
+
+        await sendTextMessage(session.citizenNumber, msgEnc, { idcliente: session.idcliente });
+        await logIAMessage(session, msgEnc);
+
+        await setSession(session);
+        return;
+      }
+
+      if (choice === "1") {
+        const ok = "✅ Certo! Você pode continuar respondendo o cidadão normalmente.";
+        await sendTextMessage(from, ok, { idcliente: session.idcliente });
+        // se a mensagem foi apenas "1", não encaminha para o cidadão
+        if (text === "1") {
+          scheduleActiveChatInactivityTimers(session);
+          return;
+        }
+      }
+    }
+
     if (text.toLowerCase() === "encerrar" || text === "3") {
       const protocolo = await fecharAtendimentoComProtocolo(session);
 
@@ -807,15 +1033,19 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       return;
     }
 
+    const agentName = session.agentName || "Atendente";
+    const header = `🧑‍💼 *${agentName}*: `;
+
     if (msg.tipo === "TEXT") {
-      await sendTextMessage(session.citizenNumber, text, { idcliente: session.idcliente });
+      await sendTextMessage(session.citizenNumber, `${header}${text}`, { idcliente: session.idcliente });
     } else {
-      await sendTextMessage(session.citizenNumber, "📎 O atendente enviou uma mídia.", {
+      await sendTextMessage(session.citizenNumber, `${header}enviou uma mídia.`, {
         idcliente: session.idcliente,
       });
     }
 
     await setSession(session);
+    scheduleActiveChatInactivityTimers(session);
     return;
   }
 

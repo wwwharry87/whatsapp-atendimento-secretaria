@@ -1,8 +1,8 @@
 // ESTE ARQUIVO É GERADO AUTOMATICAMENTE POR scripts/generateVersion.cjs
 // NÃO EDITE MANUALMENTE.
 
-export const APP_VERSION = "1.0.33";
-export const APP_BUILD_DATE_ISO = "2025-12-19T15:46:02.989Z";
+export const APP_VERSION = "1.0.34";
+export const APP_BUILD_DATE_ISO = "2025-12-19T18:34:48.303Z";
 
 export const VERSION_STORAGE_KEY = "atende_app_version";
 export const VERSION_SNOOZE_KEY = "atende_app_version_snooze_until";
