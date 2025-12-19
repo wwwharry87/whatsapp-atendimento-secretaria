@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { AtendimentoResumo, MensagemAtendimento } from "../types";
 import dayjs from "dayjs";
 import "dayjs/locale/pt-br";
+import MediaPreview from "../components/MediaPreview";
 
 dayjs.locale("pt-br");
 
@@ -71,8 +72,7 @@ function normalizarAutor(autor?: string | null) {
  */
 function normalizarDirecao(msg: MensagemAtendimento) {
   // Suporta tanto "direction" quanto "direcao"
-  const rawDirection =
-    (msg as any).direction ?? (msg as any).direcao ?? "";
+  const rawDirection = (msg as any).direction ?? (msg as any).direcao ?? "";
 
   const dir = rawDirection.toString().toUpperCase().trim();
 
@@ -87,7 +87,7 @@ function normalizarDirecao(msg: MensagemAtendimento) {
   }
 
   // Fallback usando o autor
-  const a = normalizarAutor(msg.autor);
+  const a = normalizarAutor((msg as any).autor);
   if (a.includes("CIDAD")) return "CIDADAO";
   if (a.includes("SIST")) return "SISTEMA";
   if (a.includes("IA") || a.includes("BOT")) return "IA";
@@ -114,9 +114,7 @@ export default function AtendimentoDetalhePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const [atendimento, setAtendimento] = useState<AtendimentoResumo | null>(
-    null
-  );
+  const [atendimento, setAtendimento] = useState<AtendimentoResumo | null>(null);
   const [mensagens, setMensagens] = useState<MensagemAtendimento[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -156,9 +154,7 @@ export default function AtendimentoDetalhePage() {
   const titulo = useMemo(() => {
     if (!atendimento) return "Atendimento";
     const nome = atendimento.cidadao_nome || atendimento.cidadao_numero;
-    const protocolo = atendimento.protocolo
-      ? ` · Protocolo ${atendimento.protocolo}`
-      : "";
+    const protocolo = atendimento.protocolo ? ` · Protocolo ${atendimento.protocolo}` : "";
     return `${nome}${protocolo}`;
   }, [atendimento]);
 
@@ -166,8 +162,7 @@ export default function AtendimentoDetalhePage() {
   const mensagensOrdenadas = useMemo(
     () =>
       [...mensagens].sort(
-        (a, b) =>
-          new Date(a.criado_em).getTime() - new Date(b.criado_em).getTime()
+        (a, b) => new Date((a as any).criado_em).getTime() - new Date((b as any).criado_em).getTime()
       ),
     [mensagens]
   );
@@ -176,28 +171,13 @@ export default function AtendimentoDetalhePage() {
   // Helpers de mensagens
   // ----------------------
 
-  function getMediaUrl(msg: MensagemAtendimento) {
-    if (!msg.media_id) return null;
-
-    const baseFromApi = api.defaults.baseURL as string | undefined;
-    const baseFromEnv = import.meta.env.VITE_API_BASE_URL as
-      | string
-      | undefined;
-
-    const base = baseFromApi || baseFromEnv || "";
-    const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
-
-    return `${normalizedBase}/media/${msg.media_id}`;
-  }
-
   function getRotuloAutor(msg: MensagemAtendimento) {
     if (!atendimento) return "Autor não identificado";
 
     const direcao = normalizarDirecao(msg);
 
     if (direcao === "CIDADAO") {
-      const nome =
-        atendimento.cidadao_nome || atendimento.cidadao_numero || "Cidadão";
+      const nome = atendimento.cidadao_nome || atendimento.cidadao_numero || "Cidadão";
       return `CIDADÃO – ${nome}`;
     }
 
@@ -214,16 +194,21 @@ export default function AtendimentoDetalhePage() {
   }
 
   function getDescricaoComando(msg: MensagemAtendimento): string | null {
-    const codigo = msg.comando_codigo || undefined;
-    const descricao = msg.comando_descricao || undefined;
+    const codigo = (msg as any).comando_codigo || undefined;
+    const descricao = (msg as any).comando_descricao || undefined;
 
-    if (descricao && codigo) {
-      return descricao;
-    }
+    if (descricao && codigo) return descricao;
     if (descricao) return descricao;
     if (codigo) return `Comando interpretado pelo sistema: ${codigo}`;
     return null;
   }
+
+  const apiBaseUrl =
+    (api.defaults.baseURL as string | undefined) ||
+    ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "");
+
+  // IMPORTANTE: esse token precisa ser o MESMO que você usa no axios interceptor
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
   // ----------------------
   // Render
@@ -242,17 +227,12 @@ export default function AtendimentoDetalhePage() {
           <h1 className="text-xl font-semibold text-slate-800">{titulo}</h1>
           {atendimento && (
             <p className="text-xs text-slate-500 mt-1 flex flex-wrap gap-1 items-center">
-              <span>
-                Departamento:{" "}
-                {atendimento.departamento_nome || "Não informado"}
-              </span>
+              <span>Departamento: {atendimento.departamento_nome || "Não informado"}</span>
               <span className="mx-1">•</span>
               <span>
                 Criado em: {formatDateTime(atendimento.criado_em)}{" "}
                 {atendimento.encerrado_em &&
-                  ` · Encerrado em: ${formatDateTime(
-                    atendimento.encerrado_em
-                  )}`}
+                  ` · Encerrado em: ${formatDateTime(atendimento.encerrado_em)}`}
               </span>
             </p>
           )}
@@ -294,9 +274,7 @@ export default function AtendimentoDetalhePage() {
 
           <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2">
             {loading && (
-              <p className="text-xs text-slate-500 px-2">
-                Carregando mensagens...
-              </p>
+              <p className="text-xs text-slate-500 px-2">Carregando mensagens...</p>
             )}
 
             {!loading && mensagensOrdenadas.length === 0 && (
@@ -307,7 +285,12 @@ export default function AtendimentoDetalhePage() {
 
             {!loading &&
               mensagensOrdenadas.map((msg) => {
-                const mediaUrl = getMediaUrl(msg);
+                // Campos extras podem vir da API mesmo não estando no type TS
+                const mediaId = (msg as any).media_id ?? (msg as any).whatsapp_media_id ?? null;
+                const mimeType = (msg as any).mime_type ?? null;
+                const fileName = (msg as any).file_name ?? null;
+                const fileSize = (msg as any).file_size ?? null;
+
                 const cidadao = isCidadao(msg);
                 const sistema = isSistema(msg);
                 const ia = isIA(msg);
@@ -333,8 +316,7 @@ export default function AtendimentoDetalhePage() {
                 if (sistema) {
                   wrapperAlign = "items-center";
                   rowJustify = "justify-center";
-                  bubbleClasses =
-                    "bg-transparent text-slate-500 text-[11px] px-3 py-1";
+                  bubbleClasses = "bg-transparent text-slate-500 text-[11px] px-3 py-1";
                   metaAlign = "text-center";
                 }
 
@@ -342,30 +324,24 @@ export default function AtendimentoDetalhePage() {
                 if (ia && !sistema && !cidadao) {
                   bubbleClasses =
                     "bg-violet-50 text-violet-900 rounded-2xl rounded-br-sm border border-violet-100";
-                  // metaAlign continua "text-right"
                 }
 
+                const texto = (msg as any).texto ?? (msg as any).conteudo_texto ?? "";
+
                 return (
-                  <div
-                    key={msg.id}
-                    className={`flex flex-col ${wrapperAlign} w-full`}
-                  >
+                  <div key={(msg as any).id} className={`flex flex-col ${wrapperAlign} w-full`}>
                     {/* Rótulo de quem falou (esconde pro SISTEMA) */}
                     {!sistema && (
                       <div
                         className={`flex ${rowJustify} w-full px-1 mb-0.5 text-[10px] text-slate-500`}
                       >
-                        <span className="max-w-[80%] truncate">
-                          {getRotuloAutor(msg)}
-                        </span>
+                        <span className="max-w-[80%] truncate">{getRotuloAutor(msg)}</span>
                       </div>
                     )}
 
                     {/* Bolha */}
                     <div className={`flex w-full ${rowJustify}`}>
-                      <div
-                        className={`max-w-[80%] px-3 py-2 shadow-sm ${bubbleClasses}`}
-                      >
+                      <div className={`max-w-[80%] px-3 py-2 shadow-sm ${bubbleClasses}`}>
                         {/* Etiqueta IA */}
                         {ia && !sistema && !cidadao && (
                           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 flex items-center justify-center gap-1">
@@ -375,72 +351,38 @@ export default function AtendimentoDetalhePage() {
                         )}
 
                         {/* Conteúdo principal */}
-                        {sistema && (
-                          <span className="whitespace-pre-wrap">
-                            {msg.texto}
-                          </span>
+                        {sistema && <span className="whitespace-pre-wrap">{texto}</span>}
+
+                        {!sistema && (msg as any).tipo === "TEXT" && texto && (
+                          <p className="whitespace-pre-wrap text-[13px] leading-relaxed">{texto}</p>
                         )}
 
-                        {!sistema && msg.tipo === "TEXT" && msg.texto && (
-                          <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
-                            {msg.texto}
-                          </p>
-                        )}
-
-                        {!sistema && msg.tipo === "AUDIO" && mediaUrl && (
-                          <audio controls className="mt-1 max-w-full">
-                            <source src={mediaUrl} />
-                            Seu navegador não suporta áudio.
-                          </audio>
-                        )}
-
-                        {!sistema && msg.tipo === "IMAGE" && mediaUrl && (
-                          <img
-                            src={mediaUrl}
-                            alt="Imagem do atendimento"
-                            className="mt-1 max-w-xs rounded-lg border border-slate-200"
+                        {/* MÍDIAS (com auth via fetch -> blob) */}
+                        {!sistema && (msg as any).tipo !== "TEXT" && (
+                          <MediaPreview
+                            apiBaseUrl={apiBaseUrl}
+                            token={token}
+                            tipo={(msg as any).tipo}
+                            whatsappMediaId={mediaId}
+                            mediaUrl={(msg as any).media_url ?? null}
+                            mimeType={mimeType}
+                            fileName={fileName}
+                            fileSize={fileSize}
                           />
                         )}
-
-                        {!sistema && msg.tipo === "VIDEO" && mediaUrl && (
-                          <video
-                            controls
-                            className="mt-1 max-w-xs rounded-lg border border-slate-200"
-                          >
-                            <source src={mediaUrl} />
-                            Seu navegador não suporta vídeo.
-                          </video>
-                        )}
-
-                        {!sistema &&
-                          msg.tipo === "DOCUMENT" &&
-                          mediaUrl && (
-                            <a
-                              href={mediaUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-1 text-[12px] underline"
-                            >
-                              Abrir documento
-                            </a>
-                          )}
 
                         {descricaoComando && (
                           <div className="mt-1 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
                             <div className="flex items-start gap-1">
                               <span>💡</span>
-                              <span className="whitespace-pre-wrap">
-                                {descricaoComando}
-                              </span>
+                              <span className="whitespace-pre-wrap">{descricaoComando}</span>
                             </div>
                           </div>
                         )}
 
                         {/* Horário */}
-                        <div
-                          className={`mt-1 text-[10px] opacity-70 ${metaAlign}`}
-                        >
-                          {formatDateTime(msg.criado_em)}
+                        <div className={`mt-1 text-[10px] opacity-70 ${metaAlign}`}>
+                          {formatDateTime((msg as any).criado_em)}
                         </div>
                       </div>
                     </div>
@@ -459,8 +401,7 @@ export default function AtendimentoDetalhePage() {
           {atendimento ? (
             <>
               <p>
-                <span className="font-semibold">Protocolo:</span>{" "}
-                {atendimento.protocolo || "-"}
+                <span className="font-semibold">Protocolo:</span> {atendimento.protocolo || "-"}
               </p>
               <p>
                 <span className="font-semibold">Cidadão:</span>{" "}
@@ -471,12 +412,10 @@ export default function AtendimentoDetalhePage() {
                 {atendimento.departamento_nome || "-"}
               </p>
               <p>
-                <span className="font-semibold">Agente:</span>{" "}
-                {atendimento.agente_nome || "-"}
+                <span className="font-semibold">Agente:</span> {atendimento.agente_nome || "-"}
               </p>
               <p>
-                <span className="font-semibold">Início:</span>{" "}
-                {formatDateTime(atendimento.criado_em)}
+                <span className="font-semibold">Início:</span> {formatDateTime(atendimento.criado_em)}
               </p>
               <p>
                 <span className="font-semibold">Encerrado:</span>{" "}
@@ -495,8 +434,7 @@ export default function AtendimentoDetalhePage() {
                 {atendimento.nota_satisfacao ?? "-"}
               </p>
               <p>
-                <span className="font-semibold">Status detalhado:</span>{" "}
-                {getStatusLabel(atendimento.status)}
+                <span className="font-semibold">Status detalhado:</span> {getStatusLabel(atendimento.status)}
               </p>
             </>
           ) : (

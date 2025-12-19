@@ -3,6 +3,7 @@ import { useEffect, useState, ChangeEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { RecadoStatus, RecadoDetalhe, RecadoMensagem } from "../types";
+import MediaPreview from "../components/MediaPreview";
 
 function formatarDataBr(valor?: string | null) {
   if (!valor) return "-";
@@ -25,67 +26,90 @@ function statusLabel(status: RecadoStatus) {
 }
 
 function direcaoLabel(msg: RecadoMensagem) {
-  const d = msg.direcao?.toUpperCase();
+  const d = (msg as any).direcao?.toUpperCase?.() ?? "";
   if (d === "CITIZEN") return "Cidadão";
   if (d === "AGENT") return "Agente";
   if (d === "IA") return "Assistente Virtual";
   return d || "Outro";
 }
 
-// ✅ Componente auxiliar para renderizar conteúdo da mensagem (Texto ou Mídia)
-function MessageContent({ msg }: { msg: RecadoMensagem }) {
-  const tipo = msg.tipo?.toUpperCase() || "TEXT";
-  const temMedia = tipo !== "TEXT" && (msg.mediaUrl || msg.fileName);
+// ✅ Componente auxiliar para renderizar conteúdo da mensagem (Texto + Mídia com JWT via Blob)
+function MessageContent({
+  msg,
+  apiBaseUrl,
+  token,
+}: {
+  msg: RecadoMensagem;
+  apiBaseUrl: string;
+  token: string | null;
+}) {
+  const tipo = ((msg as any).tipo?.toUpperCase?.() || "TEXT") as string;
+
+  // Campos podem vir em camelCase ou snake_case dependendo do backend
+  const texto =
+    (msg as any).conteudoTexto ??
+    (msg as any).conteudo_texto ??
+    (msg as any).texto ??
+    "";
+
+  const mediaId =
+    (msg as any).mediaId ??
+    (msg as any).media_id ??
+    (msg as any).whatsapp_media_id ??
+    null;
+
+  const mediaUrl =
+    (msg as any).mediaUrl ??
+    (msg as any).media_url ??
+    null;
+
+  const mimeType =
+    (msg as any).mimeType ??
+    (msg as any).mime_type ??
+    null;
+
+  const fileName =
+    (msg as any).fileName ??
+    (msg as any).file_name ??
+    null;
+
+  const fileSize =
+    (msg as any).fileSize ??
+    (msg as any).file_size ??
+    null;
+
+  const isText = tipo === "TEXT";
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Se tiver texto, mostra */}
-      {msg.conteudoTexto && (
-        <p className="whitespace-pre-wrap text-slate-800">{msg.conteudoTexto}</p>
+      {/* Texto (se existir) */}
+      {texto && (
+        <p className="whitespace-pre-wrap text-slate-800">{texto}</p>
       )}
 
-      {/* Se for Mídia, renderiza de acordo com o tipo */}
-      {temMedia && (
-        <div className="mt-1">
-          {tipo === "IMAGE" && msg.mediaUrl ? (
-            <a href={msg.mediaUrl} target="_blank" rel="noopener noreferrer">
-              <img
-                src={msg.mediaUrl}
-                alt="Imagem enviada"
-                className="max-w-[200px] max-h-[200px] rounded-lg border border-slate-200 object-cover hover:opacity-90 transition"
-              />
-            </a>
-          ) : tipo === "AUDIO" && msg.mediaUrl ? (
-            <audio controls src={msg.mediaUrl} className="w-[240px] h-10" />
-          ) : (
-            // Documentos, Vídeos ou fallback
-            <a
-              href={msg.mediaUrl || "#"}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-xs text-blue-600 hover:bg-slate-200 transition"
-            >
-              <span className="text-xl">📎</span>
-              <div className="flex flex-col">
-                <span className="font-semibold truncate max-w-[150px]">
-                  {msg.fileName || "Arquivo anexo"}
-                </span>
-                <span className="text-[10px] text-slate-500">{tipo}</span>
-              </div>
-            </a>
-          )}
-        </div>
+      {/* Mídia (se não for TEXT) */}
+      {!isText && (
+        <MediaPreview
+          apiBaseUrl={apiBaseUrl}
+          token={token}
+          tipo={tipo}
+          whatsappMediaId={mediaId}
+          mediaUrl={mediaUrl}
+          mimeType={mimeType}
+          fileName={fileName}
+          fileSize={fileSize}
+        />
       )}
 
-      {/* Caso de borda: Tipo mídia mas sem URL (erro de carga ou arquivo local não salvo) */}
-      {!msg.conteudoTexto && !temMedia && tipo !== "TEXT" && (
+      {/* Casos de borda */}
+      {!texto && isText && (
+        <p className="italic text-slate-400 text-xs">(mensagem vazia)</p>
+      )}
+
+      {!texto && !isText && !mediaId && !mediaUrl && (
         <p className="italic text-slate-400 text-xs">
           (Arquivo de mídia não disponível)
         </p>
-      )}
-      
-      {!msg.conteudoTexto && tipo === "TEXT" && (
-         <p className="italic text-slate-400 text-xs">(mensagem vazia)</p>
       )}
     </div>
   );
@@ -107,6 +131,13 @@ export default function RecadoDetalhePage() {
   const [concluindo, setConcluindo] = useState(false);
 
   const podeResponder = !!recado && recado.status !== "FINISHED";
+
+  const apiBaseUrl =
+    (api.defaults.baseURL as string | undefined) ||
+    ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "");
+
+  // ⚠️ Importante: tem que ser o mesmo token usado no axios interceptor
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
   async function carregar() {
     if (!id) return;
@@ -138,9 +169,7 @@ export default function RecadoDetalhePage() {
     if (!id || !recado) return;
 
     const texto = resposta.trim();
-    if (!texto && !fileToUpload) {
-      return;
-    }
+    if (!texto && !fileToUpload) return;
 
     try {
       setEnviando(true);
@@ -158,7 +187,10 @@ export default function RecadoDetalhePage() {
       if (fileToUpload) {
         const formData = new FormData();
         formData.append("file", fileToUpload);
-        formData.append("atendimentoId", recado.id);
+
+        // ⚠️ Aqui você estava enviando atendimentoId=recado.id (que é recadoId).
+        // Mantive como estava pra não quebrar seu backend atual, mas o ideal é o backend aceitar recadoId também.
+        formData.append("atendimentoId", (recado as any).id);
 
         const uploadResp = await api.post<{
           mediaId: string;
@@ -184,8 +216,8 @@ export default function RecadoDetalhePage() {
       // 2) Envia resposta
       await api.post(`/recados/${id}/responder`, {
         mensagem: texto || undefined,
-        agenteNome: recado.agenteNome || undefined,
-        agenteNumero: recado.agenteNumero || undefined,
+        agenteNome: (recado as any).agenteNome || undefined,
+        agenteNumero: (recado as any).agenteNumero || undefined,
         mediaId: mediaPayload?.mediaId,
         mimeType: mediaPayload?.mimeType,
         fileName: mediaPayload?.fileName,
@@ -232,27 +264,25 @@ export default function RecadoDetalhePage() {
           >
             Voltar
           </button>
-          <h1 className="text-xl font-semibold text-slate-800">
-            Detalhe do Recado
-          </h1>
+          <h1 className="text-xl font-semibold text-slate-800">Detalhe do Recado</h1>
         </div>
 
         <div className="flex items-center gap-3">
-          {recado?.status && (
+          {(recado as any)?.status && (
             <span
               className={`text-xs px-2 py-1 rounded-full border ${
-                recado.status === "LEAVE_MESSAGE"
+                (recado as any).status === "LEAVE_MESSAGE"
                   ? "border-amber-400 bg-amber-50 text-amber-700"
-                  : recado.status === "FINISHED"
+                  : (recado as any).status === "FINISHED"
                   ? "border-emerald-400 bg-emerald-50 text-emerald-700"
                   : "border-slate-300 bg-slate-50 text-slate-700"
               }`}
             >
-              {statusLabel(recado.status)}
+              {statusLabel((recado as any).status)}
             </span>
           )}
 
-          {recado && recado.status !== "FINISHED" && (
+          {recado && (recado as any).status !== "FINISHED" && (
             <button
               type="button"
               onClick={handleConcluir}
@@ -266,14 +296,10 @@ export default function RecadoDetalhePage() {
       </header>
 
       <main className="flex-1 px-6 py-4 max-w-5xl w-full mx-auto flex flex-col gap-4">
-        {loading && (
-          <div className="text-sm text-slate-500">Carregando recado...</div>
-        )}
+        {loading && <div className="text-sm text-slate-500">Carregando recado...</div>}
 
         {!loading && !recado && (
-          <div className="text-sm text-red-500">
-            Recado não encontrado ou erro ao carregar.
-          </div>
+          <div className="text-sm text-red-500">Recado não encontrado ou erro ao carregar.</div>
         )}
 
         {recado && (
@@ -283,24 +309,22 @@ export default function RecadoDetalhePage() {
                 <div>
                   <div className="text-sm text-slate-500">Cidadão</div>
                   <div className="text-base font-semibold text-slate-800">
-                    {recado.cidadaoNome || "Cidadão sem nome"}
+                    {(recado as any).cidadaoNome || "Cidadão sem nome"}
                   </div>
                   <div className="text-xs text-slate-500">
-                    Telefone: {recado.cidadaoNumero}
+                    Telefone: {(recado as any).cidadaoNumero}
                   </div>
                 </div>
 
                 <div className="text-right">
                   <div className="text-sm text-slate-500">Setor</div>
                   <div className="text-base font-semibold text-slate-800">
-                    {recado.departamentoNome || "Não definido"}
+                    {(recado as any).departamentoNome || "Não definido"}
                   </div>
-                  {recado.protocolo && (
+                  {(recado as any).protocolo && (
                     <div className="text-xs text-slate-500">
                       Protocolo:{" "}
-                      <span className="font-mono font-semibold">
-                        {recado.protocolo}
-                      </span>
+                      <span className="font-mono font-semibold">{(recado as any).protocolo}</span>
                     </div>
                   )}
                 </div>
@@ -308,44 +332,38 @@ export default function RecadoDetalhePage() {
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-slate-500 mt-2">
                 <div>
-                  <span className="font-semibold">Criado em:</span>{" "}
-                  {formatarDataBr(recado.criadoEm)}
+                  <span className="font-semibold">Criado em:</span> {formatarDataBr((recado as any).criadoEm)}
                 </div>
                 <div>
                   <span className="font-semibold">Última atualização:</span>{" "}
-                  {formatarDataBr(recado.atualizadoEm)}
+                  {formatarDataBr((recado as any).atualizadoEm)}
                 </div>
                 <div>
-                  <span className="font-semibold">Encerrado em:</span>{" "}
-                  {formatarDataBr(recado.encerradoEm)}
+                  <span className="font-semibold">Encerrado em:</span> {formatarDataBr((recado as any).encerradoEm)}
                 </div>
               </div>
             </section>
 
             <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex-1 flex flex-col">
-              <h2 className="text-sm font-semibold text-slate-800 mb-3">
-                Histórico de mensagens
-              </h2>
+              <h2 className="text-sm font-semibold text-slate-800 mb-3">Histórico de mensagens</h2>
+
               <div className="flex-1 overflow-auto max-h-[400px] pr-1 space-y-3">
-                {recado.mensagens.length === 0 && (
+                {(recado as any).mensagens?.length === 0 && (
                   <div className="text-xs text-slate-500">
                     Ainda não há mensagens registradas neste recado.
                   </div>
                 )}
 
-                {recado.mensagens.map((m) => {
-                  const isCitizen = m.direcao?.toUpperCase() === "CITIZEN";
-                  const isAgent = m.direcao?.toUpperCase() === "AGENT";
+                {(recado as any).mensagens?.map((m: RecadoMensagem) => {
+                  const dir = (m as any).direcao?.toUpperCase?.() ?? "";
+                  const isCitizen = dir === "CITIZEN";
+                  const isAgent = dir === "AGENT";
 
                   return (
                     <div
-                      key={m.id}
+                      key={(m as any).id}
                       className={`flex ${
-                        isCitizen
-                          ? "justify-start"
-                          : isAgent
-                          ? "justify-end"
-                          : "justify-center"
+                        isCitizen ? "justify-start" : isAgent ? "justify-end" : "justify-center"
                       }`}
                     >
                       <div
@@ -358,16 +376,11 @@ export default function RecadoDetalhePage() {
                         }`}
                       >
                         <div className="flex items-center justify-between gap-4 mb-1 border-b border-black/5 pb-1">
-                          <span className="font-semibold text-slate-700">
-                            {direcaoLabel(m)}
-                          </span>
-                          <span className="text-[10px] text-slate-400">
-                            {formatarDataBr(m.criadoEm)}
-                          </span>
+                          <span className="font-semibold text-slate-700">{direcaoLabel(m)}</span>
+                          <span className="text-[10px] text-slate-400">{formatarDataBr((m as any).criadoEm)}</span>
                         </div>
 
-                        {/* ✅ Usa o novo componente de conteúdo */}
-                        <MessageContent msg={m} />
+                        <MessageContent msg={m} apiBaseUrl={apiBaseUrl} token={token} />
                       </div>
                     </div>
                   );
@@ -381,6 +394,7 @@ export default function RecadoDetalhePage() {
                 <label className="text-xs font-semibold text-slate-700">
                   Responder ao cidadão (via WhatsApp)
                 </label>
+
                 <textarea
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y"
                   placeholder="Digite aqui a resposta que será enviada para o WhatsApp do cidadão..."
@@ -410,11 +424,7 @@ export default function RecadoDetalhePage() {
                   <div className="flex justify-end">
                     <button
                       type="submit"
-                      disabled={
-                        enviando ||
-                        !podeResponder ||
-                        (!resposta.trim() && !fileToUpload)
-                      }
+                      disabled={enviando || !podeResponder || (!resposta.trim() && !fileToUpload)}
                       className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       {enviando ? "Enviando..." : "Enviar resposta"}
