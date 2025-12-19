@@ -84,6 +84,32 @@ function normalizePhone(phone: string | undefined | null): string {
   return String(phone).replace(/\D/g, "");
 }
 
+
+function normalizeConfirmOption(text: string): "1" | "2" | "" {
+  const raw = (text || "").trim();
+  if (!raw) return "";
+  if (raw === "1" || raw === "2") return raw as any;
+
+  // Remove acentos e pontuação básica para comparar com botões
+  const simplified = raw
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.,;:!?]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Textos dos botões do template
+  if (simplified === "sim vou atender" || (simplified.startsWith("sim") && simplified.includes("atend"))) {
+    return "1";
+  }
+  if (simplified === "nao estou ocupado" || (simplified.startsWith("nao") && simplified.includes("ocup"))) {
+    return "2";
+  }
+
+  return "";
+}
+
 function last8(num: string): string {
   const n = normalizePhone(num);
   return n.length > 8 ? n.slice(-8) : n;
@@ -669,23 +695,15 @@ async function direcionarParaDepartamento(session: Session, departamento: any) {
     });
   }
 
-  // Garante que todo atendimento tenha um protocolo (mesmo fora do modo recado),
-  // pois o agente/dash e notificações dependem dele.
-  await ensureProtocolForSession(session);
-
   const msgDir = `Aguarde um momento, estou chamando o responsável pelo setor *${departamento.nome}*.`;
   await sendTextMessage(session.citizenNumber, msgDir, { idcliente: session.idcliente });
   await logIAMessage(session, msgDir);
 
-  if (session.agentNumber) {
+  if (session.agentNumber && session.idcliente != null) {
     await sendNovoAtendimentoTemplateToAgent({
       to: session.agentNumber,
       citizenName: session.citizenName,
       citizenPhone: session.citizenNumber,
-      departmentName: session.departmentName,
-      protocolo: session.protocolo,
-      resumo:
-        "Atendimento iniciado. O munícipe ainda não descreveu o assunto.",
       idcliente: session.idcliente,
     });
   }
@@ -736,7 +754,8 @@ export async function handleAgentMessage(msg: IncomingMessage) {
 
   // Confirmação de atendimento
   if (session.status === "WAITING_AGENT_CONFIRMATION") {
-    if (text === "1") {
+    const opt = normalizeConfirmOption(text);
+    if (opt === "1") {
       session.status = "ACTIVE";
 
       if (session.atendimentoId) {
@@ -753,7 +772,7 @@ export async function handleAgentMessage(msg: IncomingMessage) {
       return;
     }
 
-    if (text === "2") {
+    if (opt === "2") {
       const msgFila = "Ok, deixei este atendimento na fila.";
       await sendTextMessage(from, msgFila, { idcliente: session.idcliente });
       return;

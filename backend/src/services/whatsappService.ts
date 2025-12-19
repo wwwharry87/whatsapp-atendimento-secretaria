@@ -195,7 +195,50 @@ async function postToWhatsapp(payload: any, params?: LoadConfigParams) {
   });
 }
 
-// ====================== TEXTO / MÍDIA / TEMPLATES ======================
+// ====================== TEXTO / MÍDIA / // ----------------------
+// Sanitização de parâmetros de template (Meta)
+// - Não pode ter \n/\t
+// - Não pode ter >4 espaços consecutivos
+// ----------------------
+function sanitizeTemplateParam(value: any, maxLen = 200): string {
+  const s = String(value ?? "");
+  // remove quebras e tabs
+  let out = s.replace(/[\n\r\t]+/g, " ");
+  // colapsa espaços (máximo 4 consecutivos)
+  out = out.replace(/\s{5,}/g, "    ");
+  out = out.trim();
+  if (!out) return "-";
+  if (out.length > maxLen) out = out.slice(0, maxLen - 1) + "…";
+  return out;
+}
+
+// Normaliza telefone BR para formato aceito pelo WhatsApp Cloud API (somente dígitos, com DDI 55 quando possível)
+function normalizePhoneE164BR(raw: string) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits) return "";
+
+  // Já veio com DDI (ex: 55...)
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+
+  // Se veio com outro DDI, devolve como está (somente dígitos)
+  if (digits.length > 11) return digits;
+
+  // 10/11 dígitos (DDD + número) → prefixa 55
+  if (digits.length === 10 || digits.length === 11) return "55" + digits;
+
+  // 8/9 dígitos (sem DDD) → devolve como está
+  return digits;
+}
+
+// Compat: algumas funções antigas ainda chamam sendWhatsappRequest
+async function sendWhatsappRequest(payload: any, params: LoadConfigParams) {
+  return postToWhatsapp(payload, params);
+}
+
+
+// ======================
+// TEMPLATES
+// ======================
 
 export async function sendTextMessage(
   to: string,
@@ -451,123 +494,102 @@ export async function sendSaudacaoPedirNomeTemplate(
 }
 
 type NovoAtendimentoTemplateParams = {
-  to: string;
+  // número do agente (pode vir como 'to' ou 'agentPhone' por compatibilidade)
+  to?: string;
+  agentPhone?: string;
   citizenName?: string;
   citizenPhone?: string;
-  departmentName?: string;
-  protocolo?: string;
-  resumo?: string;
-  idcliente?: number;
+  idcliente: number;
   phoneNumberId?: string;
 };
 
-export async function sendNovoAtendimentoTemplateToAgent(
-  params: NovoAtendimentoTemplateParams
-) {
+export async function sendNovoAtendimentoTemplateToAgent(params: NovoAtendimentoTemplateParams) {
   const {
-    to,
+    to: toRaw,
+    agentPhone,
     citizenName,
     citizenPhone,
-    departmentName,
-    protocolo,
-    resumo,
     idcliente,
     phoneNumberId,
   } = params;
 
-  const nome = citizenName || "Cidadão";
-  const setor = departmentName || "Setor";
-  const prot = protocolo || "-";
-  const tel = citizenPhone || "-";
-  const resumoFinal = (resumo && resumo.trim())
-    ? `Protocolo: ${prot}\n${resumo.trim()}`
-    : `Protocolo: ${prot}\nAguardando mensagem do cidadão.`;
+  const to = normalizePhoneE164BR(agentPhone || toRaw || "");
+
+  // ✅ Template fixo (sem variável de ambiente)
+  const templateName = "atende_agente";
+  const languageCode = "pt_BR";
+
+  const bodyParam1 = sanitizeTemplateParam(citizenName || "Cidadão", 80);
+  const bodyParam2 = sanitizeTemplateParam(citizenPhone || "-", 40);
+
+  const payload: any = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: languageCode },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: bodyParam1 },
+            { type: "text", text: bodyParam2 },
+          ],
+        },
+      ],
+    },
+  };
 
   try {
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: {
-        name: "novo_atendimento_agente",
-        language: {
-          code: "pt_BR",
-        },
-        components: [
-          {
-            type: "header",
-            parameters: [{ type: "text", text: setor }],
-          },
-          {
-            type: "body",
-            parameters: [
-              { type: "text", text: nome },
-              { type: "text", text: tel },
-              { type: "text", text: resumoFinal },
-            ],
-          },
-        ],
-      },
-    };
-
     console.log(
-      "[WHATSAPP_TEMPLATE novo_atendimento_agente] Enviando para agente",
+      `[WHATSAPP_TEMPLATE ${templateName}] Enviando para agente`,
+      "agent=",
       to,
-      "nome=",
-      nome,
-      "setor=",
-      setor,
-      "protocolo=",
-      prot,
+      "cidadão=",
+      bodyParam1,
+      "telefone=",
+      bodyParam2,
       "idcliente=",
       idcliente,
       "phoneNumberId=",
       phoneNumberId
     );
 
-    const res = await postToWhatsapp(payload, { idcliente, phoneNumberId });
-
-    console.log(
-      "[WHATSAPP_TEMPLATE novo_atendimento_agente] Sucesso:",
-      res?.data
-    );
+    const resp = await sendWhatsappRequest(payload, { idcliente, phoneNumberId });
+    console.log(`[WHATSAPP_TEMPLATE ${templateName}] Sucesso:`, resp?.data);
+    return resp?.data;
   } catch (err: any) {
-    console.error(
-      "[WHATSAPP_TEMPLATE novo_atendimento_agente] Erro ao enviar template:",
-      err?.response?.data || err.message
-    );
+    const details = err?.response?.data ?? err?.message ?? err;
+    console.error(`[WHATSAPP_TEMPLATE ${templateName}] Erro ao enviar template:`, details);
 
-    // Fallback em texto simples
+    // 🔁 Fallback por texto simples (sempre funciona)
+    const fallbackText =
+      `📩 *SOLICITAÇÃO DE ATENDIMENTO*\n` +
+      `Munícipe: *${bodyParam1}*\n` +
+      `Telefone: *${bodyParam2}*\n\n` +
+      `Disponível para atender agora?`;
+
     try {
-      await sendTextMessage(
-        to,
-        `📩 Novo atendimento para o setor *${setor}*.\n` +
-          `👤 Munícipe: *${nome}*\n` +
-          `📞 Telefone: *${tel}*\n` +
-          `🔖 Protocolo: *${prot}*\n` +
-          `📝 Resumo: ${resumoFinal.replace(/^Protocolo:\s*[^\n]+\n?/i, "").trim() || "-"}`,
-        { idcliente, phoneNumberId }
-      );
-      console.log(
-        "[WHATSAPP_TEMPLATE novo_atendimento_agente] Fallback de texto enviado com sucesso."
-      );
-    } catch (fallbackErr: any) {
-      console.error(
-        "[WHATSAPP_TEMPLATE novo_atendimento_agente] Falha também no fallback de texto:",
-        fallbackErr?.response?.data || fallbackErr.message
-      );
+      await sendTextMessage(to, fallbackText, { idcliente, phoneNumberId });
+      console.log(`[WHATSAPP_TEMPLATE ${templateName}] Fallback de texto enviado com sucesso.`);
+    } catch (e: any) {
+      console.error(`[WHATSAPP_TEMPLATE ${templateName}] Falha no fallback de texto:`, e?.message || e);
     }
+
+    return null;
   }
 }
 
-type MenuComNomeTemplateParams = {
+
+export interface MenuComNomeTemplateParams {
   to: string;
-  citizenName?: string;
-  saudacao?: string;
-  menuTexto?: string;
-  idcliente?: number;
+  saudacao: string;
+  citizenName: string;
+  menuTexto: string;
+  idcliente: number;
   phoneNumberId?: string;
-};
+}
 
 export async function sendMenuComNomeTemplate(
   params: MenuComNomeTemplateParams

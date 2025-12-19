@@ -126,6 +126,9 @@ function mapMessageToIncoming(rawMessage: any, phoneNumberId?: string): Incoming
     mediaId = rawMessage.document?.id;
     mimeType = rawMessage.document?.mime_type;
     fileName = rawMessage.document?.filename || undefined;
+  } else if (waType === "button") {
+    tipo = "TEXT";
+    text = rawMessage.button?.text || rawMessage.button?.payload || undefined;
   } else if (waType === "interactive") {
     tipo = "TEXT";
     const interactive = rawMessage.interactive;
