@@ -669,6 +669,10 @@ async function direcionarParaDepartamento(session: Session, departamento: any) {
     });
   }
 
+  // Garante que todo atendimento tenha um protocolo (mesmo fora do modo recado),
+  // pois o agente/dash e notificações dependem dele.
+  await ensureProtocolForSession(session);
+
   const msgDir = `Aguarde um momento, estou chamando o responsável pelo setor *${departamento.nome}*.`;
   await sendTextMessage(session.citizenNumber, msgDir, { idcliente: session.idcliente });
   await logIAMessage(session, msgDir);
@@ -677,8 +681,11 @@ async function direcionarParaDepartamento(session: Session, departamento: any) {
     await sendNovoAtendimentoTemplateToAgent({
       to: session.agentNumber,
       citizenName: session.citizenName,
+      citizenPhone: session.citizenNumber,
       departmentName: session.departmentName,
       protocolo: session.protocolo,
+      resumo:
+        "Atendimento iniciado. O munícipe ainda não descreveu o assunto.",
       idcliente: session.idcliente,
     });
   }

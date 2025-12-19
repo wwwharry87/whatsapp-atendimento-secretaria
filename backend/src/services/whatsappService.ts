@@ -453,8 +453,10 @@ export async function sendSaudacaoPedirNomeTemplate(
 type NovoAtendimentoTemplateParams = {
   to: string;
   citizenName?: string;
+  citizenPhone?: string;
   departmentName?: string;
   protocolo?: string;
+  resumo?: string;
   idcliente?: number;
   phoneNumberId?: string;
 };
@@ -462,8 +464,24 @@ type NovoAtendimentoTemplateParams = {
 export async function sendNovoAtendimentoTemplateToAgent(
   params: NovoAtendimentoTemplateParams
 ) {
-  const { to, citizenName, departmentName, protocolo, idcliente, phoneNumberId } =
-    params;
+  const {
+    to,
+    citizenName,
+    citizenPhone,
+    departmentName,
+    protocolo,
+    resumo,
+    idcliente,
+    phoneNumberId,
+  } = params;
+
+  const nome = citizenName || "Cidadão";
+  const setor = departmentName || "Setor";
+  const prot = protocolo || "-";
+  const tel = citizenPhone || "-";
+  const resumoFinal = (resumo && resumo.trim())
+    ? `Protocolo: ${prot}\n${resumo.trim()}`
+    : `Protocolo: ${prot}\nAguardando mensagem do cidadão.`;
 
   try {
     const payload = {
@@ -477,20 +495,15 @@ export async function sendNovoAtendimentoTemplateToAgent(
         },
         components: [
           {
+            type: "header",
+            parameters: [{ type: "text", text: setor }],
+          },
+          {
             type: "body",
             parameters: [
-              {
-                type: "text",
-                text: citizenName || "Cidadão",
-              },
-              {
-                type: "text",
-                text: departmentName || "Setor",
-              },
-              {
-                type: "text",
-                text: protocolo || "-",
-              },
+              { type: "text", text: nome },
+              { type: "text", text: tel },
+              { type: "text", text: resumoFinal },
             ],
           },
         ],
@@ -498,14 +511,14 @@ export async function sendNovoAtendimentoTemplateToAgent(
     };
 
     console.log(
-      "[WHATSAPP_TEMPLATE novo_atendimento] Enviando para agente",
+      "[WHATSAPP_TEMPLATE novo_atendimento_agente] Enviando para agente",
       to,
       "nome=",
-      citizenName,
+      nome,
       "setor=",
-      departmentName,
+      setor,
       "protocolo=",
-      protocolo,
+      prot,
       "idcliente=",
       idcliente,
       "phoneNumberId=",
@@ -514,32 +527,33 @@ export async function sendNovoAtendimentoTemplateToAgent(
 
     const res = await postToWhatsapp(payload, { idcliente, phoneNumberId });
 
-    console.log("[WHATSAPP_TEMPLATE novo_atendimento] Sucesso:", res?.data);
+    console.log(
+      "[WHATSAPP_TEMPLATE novo_atendimento_agente] Sucesso:",
+      res?.data
+    );
   } catch (err: any) {
     console.error(
-      "[WHATSAPP_TEMPLATE novo_atendimento] Erro ao enviar template:",
+      "[WHATSAPP_TEMPLATE novo_atendimento_agente] Erro ao enviar template:",
       err?.response?.data || err.message
     );
 
     // Fallback em texto simples
     try {
-      const nome = citizenName || "Cidadão";
-      const setor = departmentName || "Setor";
-      const prot = protocolo || "-";
-
       await sendTextMessage(
         to,
         `📩 Novo atendimento para o setor *${setor}*.\n` +
-          `👤 Cidadão: *${nome}*\n` +
-          `🔖 Protocolo: *${prot}*`,
+          `👤 Munícipe: *${nome}*\n` +
+          `📞 Telefone: *${tel}*\n` +
+          `🔖 Protocolo: *${prot}*\n` +
+          `📝 Resumo: ${resumoFinal.replace(/^Protocolo:\s*[^\n]+\n?/i, "").trim() || "-"}`,
         { idcliente, phoneNumberId }
       );
       console.log(
-        "[WHATSAPP_TEMPLATE novo_atendimento] Fallback de texto enviado com sucesso."
+        "[WHATSAPP_TEMPLATE novo_atendimento_agente] Fallback de texto enviado com sucesso."
       );
     } catch (fallbackErr: any) {
       console.error(
-        "[WHATSAPP_TEMPLATE novo_atendimento] Falha também no fallback de texto:",
+        "[WHATSAPP_TEMPLATE novo_atendimento_agente] Falha também no fallback de texto:",
         fallbackErr?.response?.data || fallbackErr.message
       );
     }
